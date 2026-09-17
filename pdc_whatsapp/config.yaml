@@ -1,5 +1,5 @@
 name: PDC WhatsApp Bridge
-version: "1.0.2"
+version: "1.1.0"
 slug: pdc_whatsapp
 description: Self-hosted Baileys sender for Pitch Duplicate Checker alerts
 arch:
@@ -8,6 +8,8 @@ arch:
 init: false
 startup: application
 boot: auto
+# Lets the bridge raise Home Assistant notifications when WhatsApp is unlinked or offline.
+homeassistant_api: true
 # No host port is published. The Cloudflared add-on reaches this add-on over
 # the internal Supervisor network.
 ports:
