@@ -12,7 +12,9 @@ const PORT = Number(process.env.PORT || 8787);
 // Baileys connection with pairing-code login and automatic reconnects.
 // ---------------------------------------------------------------------------
 export function startWhatsApp(options) {
-  const logger = pino({ level: 'warn' });
+  // Baileys warns about app-state sync (chat mutes, pins) it can't decrypt on a fresh link.
+  // Sending doesn't use that data, so only real errors are logged.
+  const logger = pino({ level: 'error' });
   let sock = null, connected = false, accountOk = false, paired = false, retry = 0;
 
   async function connect() {
