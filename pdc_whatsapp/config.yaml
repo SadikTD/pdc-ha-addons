@@ -1,0 +1,23 @@
+name: PDC WhatsApp Bridge
+version: "1.0.0"
+slug: pdc_whatsapp
+description: Self-hosted Baileys sender for Pitch Duplicate Checker alerts
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+watchdog: tcp://[HOST]:8787
+# No host port is published. The Cloudflared add-on reaches this add-on over
+# the internal Supervisor network.
+ports:
+  8787/tcp: null
+options:
+  api_token: ""
+  sender_number: ""
+  recipient_number: ""
+schema:
+  api_token: password
+  sender_number: match(^\+[1-9]\d{7,14}$)
+  recipient_number: match(^\+[1-9]\d{7,14}$)
