@@ -21,7 +21,7 @@ export function startWhatsApp(options) {
     paired = Boolean(state.creds.registered);
     const { version } = await fetchLatestBaileysVersion().catch(() => ({}));
     sock = makeWASocket({
-      auth: state, logger, browser: Browsers.ubuntu('PDC Alerts'),
+      auth: state, logger, browser: Browsers.macOS('Chrome'), // WhatsApp rejects phone-number pairing for unknown client names
       markOnlineOnConnect: false, syncFullHistory: false, ...(version ? { version } : {}),
     });
     sock.ev.on('creds.update', saveCreds);
