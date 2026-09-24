@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Net Monitor</title>
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<main class="viz-root">
+  <header class="top">
+    <div class="status" id="status" role="status" aria-live="polite">
+      <span class="status-pill" id="status-pill"><span class="dot" aria-hidden="true"></span><span id="status-label">Checking…</span></span>
+      <span class="status-detail" id="status-detail"></span>
+    </div>
+    <div class="actions">
+      <button id="btn-run" class="btn primary">Run speedtest now</button>
+      <div class="pause">
+        <select id="pause-select" aria-label="Pause scheduled speedtests">
+          <option value="">Pause speedtests…</option>
+          <option value="60">for 1 hour</option>
+          <option value="180">for 3 hours</option>
+          <option value="480">for 8 hours</option>
+          <option value="-1">until I resume</option>
+        </select>
+        <button id="btn-resume" class="btn" hidden>Resume speedtests</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="now" id="now-cards" aria-label="Latest speedtest"></section>
+
+  <section class="filters" aria-label="Time range">
+    <div class="chips" id="range-chips" role="radiogroup" aria-label="Range">
+      <button class="chip" data-range="86400" role="radio">24 hours</button>
+      <button class="chip" data-range="604800" role="radio">7 days</button>
+      <button class="chip" data-range="2592000" role="radio">30 days</button>
+      <button class="chip" data-range="7776000" role="radio">90 days</button>
+      <button class="chip" data-range="31536000" role="radio">1 year</button>
+      <button class="chip" data-range="custom" role="radio">Custom</button>
+    </div>
+    <div class="custom" id="custom-range" hidden>
+      <label>From <input type="datetime-local" id="custom-from"></label>
+      <label>To <input type="datetime-local" id="custom-to"></label>
+      <button class="btn" id="btn-apply-range">Apply</button>
+    </div>
+  </section>
+
+  <section class="tiles" id="summary-tiles" aria-label="Summary for selected range"></section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Speed (international, Mbit/s)</h2>
+      <div class="legend" id="speed-legend"></div>
+    </div>
+    <div class="chart-wrap"><canvas id="speed-chart" aria-label="Download and upload speed over time"></canvas></div>
+    <p class="empty" id="speed-empty" hidden>No speedtests in this range yet. The first scheduled test runs at the top of the hour — or press “Run speedtest now”.</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Latency to the internet (ms)</h2>
+      <div class="legend" id="latency-legend"></div>
+    </div>
+    <div class="chart-wrap small"><canvas id="latency-chart" aria-label="Connection latency over time"></canvas></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>What was my internet like at…</h2></div>
+    <form class="lookup" id="lookup-form">
+      <input type="datetime-local" id="lookup-at" required aria-label="Date and time">
+      <button class="btn primary" type="submit">Look up</button>
+    </form>
+    <div id="lookup-result" class="lookup-result"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Outages</h2>
+      <a class="link" id="export-outages" href="#">Download CSV</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>From</th><th>To</th><th class="num">Duration</th><th>What happened</th><th>Came back with</th></tr></thead>
+        <tbody id="outage-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Speedtests</h2>
+      <a class="link" id="export-tests" href="#">Download CSV</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th class="num">Download</th><th class="num">Upload</th><th class="num">Ping</th><th class="num">Jitter</th><th class="num">Loss</th><th>Server</th><th>Why</th><th></th></tr></thead>
+        <tbody id="test-rows"></tbody>
+      </table>
+    </div>
+    <button class="btn more" id="btn-more-tests" hidden>Show all</button>
+  </section>
+
+  <footer class="foot" id="foot"></footer>
+</main>
+<script src="static/chart.umd.min.js"></script>
+<script src="static/app.js"></script>
+</body>
+</html>

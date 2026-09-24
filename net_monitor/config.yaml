@@ -1,0 +1,54 @@
+name: Net Monitor
+version: "1.0.0"
+slug: net_monitor
+description: Hourly international speedtest and internet outage tracker
+url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+# Host networking lets the add-on see the router over UPnP (to skip speedtests
+# while the line is busy) and test the real LAN path, not Docker's NAT.
+host_network: true
+ingress: true
+ingress_port: 38765
+panel_icon: mdi:speedometer
+panel_title: Net Monitor
+# Publishes sensors and sends outage-recovery notifications.
+homeassistant_api: true
+options:
+  speedtest_interval_minutes: 60
+  server_ids:
+    - 13623
+    - 5935
+    - 7311
+    - 31293
+  check_interval_seconds: 30
+  # International hosts only (Singapore + Cloudflare). 8.8.8.8 / 9.9.9.9 are
+  # served from in-country caches and would hide an international outage.
+  check_targets:
+    - sgp-ping.vultr.com:443
+    - m1speedtest1.m1net.com.sg:8080
+    - speedtest.singnet.com.sg:8080
+    - 1.1.1.1:443
+  busy_threshold_mbps: 5
+  busy_retry_minutes: 10
+  recovery_speedtest_min_outage_minutes: 2
+  notify_service: ""
+  notify_min_outage_minutes: 1
+  retention_days: 365
+schema:
+  speedtest_interval_minutes: int(15,1440)
+  server_ids:
+    - int
+  check_interval_seconds: int(10,300)
+  check_targets:
+    - match(^[A-Za-z0-9.\-]+:\d{1,5}$)
+  busy_threshold_mbps: float(0,10000)
+  busy_retry_minutes: int(1,60)
+  recovery_speedtest_min_outage_minutes: int(0,1440)
+  notify_service: str?
+  notify_min_outage_minutes: int(0,1440)
+  retention_days: int(7,3650)
