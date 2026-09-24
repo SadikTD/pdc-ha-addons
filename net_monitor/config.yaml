@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.1.1"
+version: "1.2.0"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
@@ -35,7 +35,11 @@ options:
     - m1speedtest1.m1net.com.sg:8080
     - speedtest.singnet.com.sg:8080
     - 1.1.1.1:443
+  # The line counts as busy (test postponed) if ANY of these is exceeded. Gaming and
+  # calls use little bandwidth, so upload and outgoing packet rate catch them.
   busy_threshold_mbps: 5
+  busy_upload_mbps: 0.25
+  busy_packets_per_second: 40
   busy_retry_minutes: 10
   recovery_speedtest_min_outage_minutes: 2
   notify_service: ""
@@ -49,6 +53,9 @@ options:
   weekly_report_day: sun
   weekly_report_hour: 21
   quality_samples: 5
+  # Daily windows (local time) when the router restarts on schedule, e.g. "02:58-03:10".
+  # Outages inside them aren't counted, alerted or followed by a speedtest.
+  maintenance_windows: []
 schema:
   speedtest_interval_minutes: int(15,1440)
   server_ids:
@@ -57,6 +64,8 @@ schema:
   check_targets:
     - match(^[A-Za-z0-9.\-]+:\d{1,5}$)
   busy_threshold_mbps: float(0,10000)
+  busy_upload_mbps: float(0,10000)
+  busy_packets_per_second: int(0,100000)
   busy_retry_minutes: int(1,60)
   recovery_speedtest_min_outage_minutes: int(0,1440)
   notify_service: str?
@@ -70,3 +79,5 @@ schema:
   weekly_report_day: list(mon|tue|wed|thu|fri|sat|sun)
   weekly_report_hour: int(0,23)
   quality_samples: int(1,10)
+  maintenance_windows:
+    - match(^\d{1,2}:\d{2}-\d{1,2}:\d{2}$)

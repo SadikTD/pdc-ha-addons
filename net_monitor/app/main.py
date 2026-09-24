@@ -56,6 +56,9 @@ DEFAULT_OPTIONS = {
     "weekly_report_day": "sun",
     "weekly_report_hour": 21,
     "quality_samples": 5,
+    "busy_upload_mbps": 0.25,
+    "busy_packets_per_second": 40,
+    "maintenance_windows": [],
 }
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -260,6 +263,8 @@ def publish_connectivity():
         "packet_loss_pct": state.last_loss_pct,
         "online_since": iso(online_since()) if state.online else None,
         "offline_since": iso(state.outage_start),
+        # True while the internet is down only because of the router's scheduled restart.
+        "planned_outage": outage_is_planned(),
     })
 
 
@@ -369,10 +374,12 @@ class RouterTraffic:
 
     def _counters(self):
         return (self._soap("GetTotalBytesReceived", "NewTotalBytesReceived"),
-                self._soap("GetTotalBytesSent", "NewTotalBytesSent"))
+                self._soap("GetTotalBytesSent", "NewTotalBytesSent"),
+                self._soap("GetTotalPacketsSent", "NewTotalPacketsSent"))
 
-    def measure(self, seconds=5.0):
-        """Returns (down_mbps, up_mbps) currently flowing through the router, or None."""
+    def measure(self, seconds=8.0):
+        """Returns {"down": Mbps, "up": Mbps, "pps_out": packets/s} flowing through the
+        router's WAN right now, or None if the router can't be read."""
         for attempt in range(2):
             try:
                 if not self.control_url:
@@ -386,11 +393,14 @@ class RouterTraffic:
                 state.router_upnp = True
                 dt = t1 - t0
 
-                def rate(x0, x1):  # counters are 32-bit on most routers
-                    delta = x1 - x0 if x1 >= x0 else x1 + 2 ** 32 - x0
-                    return delta * 8 / dt / 1e6
+                def delta(x0, x1):  # counters are 32-bit on most routers
+                    return x1 - x0 if x1 >= x0 else x1 + 2 ** 32 - x0
 
-                return rate(a[0], b[0]), rate(a[1], b[1])
+                out = {"down": delta(a[0], b[0]) * 8 / dt / 1e6, "up": delta(a[1], b[1]) * 8 / dt / 1e6,
+                       "pps_out": delta(a[2], b[2]) / dt}
+                if max(out["down"], out["up"]) > 10000:  # counters reset (router rebooted)
+                    return None
+                return out
             except Exception as e:  # router rebooted / URL changed: rediscover once
                 log.debug("UPnP read failed (%s), rediscovering", e)
                 self.control_url = None
@@ -455,6 +465,47 @@ def online_since():
     return (row and row["t"]) or first
 
 
+def in_maintenance(ts):
+    """If ts falls in a configured daily window (e.g. "02:58-03:10", the router's
+    scheduled reboot), returns that window's end timestamp; otherwise None."""
+    lt = time.localtime(ts)
+    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    for spec in OPTS["maintenance_windows"] or []:
+        try:
+            a, b = [int(h) * 3600 + int(m) * 60 for h, m in (p.strip().split(":") for p in spec.split("-"))]
+        except ValueError:
+            continue
+        for day in (-86400, 0):  # a window crossing midnight may have started yesterday
+            start, end = midnight + day + a, midnight + day + (b if b > a else b + 86400)
+            if start <= ts < end:
+                return end
+    return None
+
+
+def classify_outage(outage_id, start, end):
+    """Splits off the part of an outage that happened inside a maintenance window.
+    Returns (event_id, start) of the remaining real outage, or None if it was all planned."""
+    window_end = in_maintenance(start)
+    if not window_end:
+        return outage_id, start
+    db.execute("UPDATE events SET kind='planned_restart', end=? WHERE id=?", (min(end, window_end), outage_id))
+    if end <= window_end:
+        log.info("Outage %s-%s was the scheduled router restart", fmt_time(start), fmt_time(end))
+        return None
+    real_id = open_event("internet_down", window_end)
+    close_event(real_id, end)
+    return real_id, window_end
+
+
+def outage_is_planned(now=None):
+    """True while the current outage is still inside its maintenance window."""
+    now = now or time.time()
+    if not state.outage_start:
+        return False
+    window_end = in_maintenance(state.outage_start)
+    return bool(window_end and now < window_end)
+
+
 def open_event(kind, start):
     return db.execute("INSERT INTO events(kind, start) VALUES(?, ?)", (kind, start))
 
@@ -483,7 +534,7 @@ def handle_startup_gap(interval):
 def monitor_loop():
     interval = OPTS["check_interval_seconds"]
     handle_startup_gap(interval)
-    fails, first_fail_ts, prev_ts = 0, None, None
+    fails, first_fail_ts, prev_ts, planned = 0, None, None, False
     while True:
         t0 = time.time()
         if prev_ts and t0 - prev_ts > 3 * interval:  # host was suspended/stalled
@@ -502,8 +553,10 @@ def monitor_loop():
                     outage_id, start = state.outage_id, state.outage_start
                     close_event(outage_id, t0)
                     state.outage_id = state.outage_start = None
-                    log.info("Internet back after %s", fmt_duration(t0 - start))
-                    threading.Thread(target=after_outage, args=(outage_id, start, t0), daemon=True).start()
+                    real = classify_outage(outage_id, start, t0)
+                    if real:
+                        log.info("Internet back after %s", fmt_duration(t0 - real[1]))
+                        threading.Thread(target=after_outage, args=(real[0], real[1], t0), daemon=True).start()
                 changed = state.online is not True
                 state.online = True
             else:
@@ -518,6 +571,10 @@ def monitor_loop():
                 if fails >= 2:
                     changed = state.online is not False
                     state.online = False
+            # A planned restart that overruns its window becomes a real outage right then.
+            now_planned = outage_is_planned(t0)
+            changed = changed or now_planned != planned
+            planned = now_planned
         if changed:
             publish_connectivity()
         prev_ts = t0
@@ -691,9 +748,28 @@ def scheduler_loop():
             log.exception("Scheduled speedtest crashed")
 
 
+def busy_reason(traffic):
+    """Why the line counts as in use, or None. Download catches downloads/streaming;
+    upload and outgoing packet rate catch gaming and calls, which use little bandwidth."""
+    if not traffic:
+        return None
+    if OPTS["busy_threshold_mbps"] > 0 and traffic["down"] > OPTS["busy_threshold_mbps"]:
+        return f"{traffic['down']:.1f} Mbps download in use"
+    if OPTS["busy_upload_mbps"] > 0 and traffic["up"] > OPTS["busy_upload_mbps"]:
+        return f"{traffic['up']:.2f} Mbps upload in use (gaming / call?)"
+    if OPTS["busy_packets_per_second"] > 0 and traffic["pps_out"] > OPTS["busy_packets_per_second"]:
+        return f"{traffic['pps_out']:.0f} packets/s outgoing (gaming / call?)"
+    return None
+
+
 def run_scheduled(slot, interval):
     retry = OPTS["busy_retry_minutes"] * 60
     deadline = slot + interval * 60 - 120
+    window_end = in_maintenance(time.time())
+    if window_end:  # e.g. the router's nightly reboot: test once it's back
+        state.scheduler_note = f"Waiting for scheduled router restart to finish ({fmt_time(window_end)})"
+        state.next_test_ts = window_end + 120
+        time.sleep(max(0, window_end + 120 - time.time()))
     last_busy = None
     while True:
         if is_paused():
@@ -703,23 +779,22 @@ def run_scheduled(slot, interval):
         if state.online is False:
             state.scheduler_note = "Skipped: internet down"
             return  # the outage itself is recorded; a failed test adds nothing
-        traffic = router.measure(5)
-        busy = max(traffic) if traffic else None
-        threshold = OPTS["busy_threshold_mbps"]
-        if busy is not None and threshold > 0 and busy > threshold:
-            last_busy = busy
+        traffic = router.measure()
+        reason = busy_reason(traffic)
+        if reason:
+            last_busy = traffic["down"]
             if time.time() + retry < deadline:
-                state.scheduler_note = f"Line busy ({busy:.1f} Mbps), retrying at {fmt_time(time.time() + retry)}"
+                state.scheduler_note = f"Line busy ({reason}), retrying at {fmt_time(time.time() + retry)}"
                 state.next_test_ts = time.time() + retry
                 log.info(state.scheduler_note)
                 time.sleep(retry)
                 continue
             state.scheduler_note = "Skipped: line busy all hour"
             insert_speedtest({"ts": time.time(), "status": "skipped_busy", "trigger": "scheduled",
-                              "busy_mbps": last_busy})
+                              "busy_mbps": last_busy, "error": reason})
             return
         state.scheduler_note = ""
-        run_speedtest("scheduled", busy)
+        run_speedtest("scheduled", traffic["down"] if traffic else None)
         return
 
 
@@ -800,7 +875,8 @@ def summary(lo, hi):
     evs = events_in(lo_eff, hi_eff)
     down = sum(overlap(e["start"], e["end"] or now, lo_eff, hi_eff) for e in evs if e["kind"] == "internet_down")
     offline = sum(overlap(e["start"], e["end"] or now, lo_eff, hi_eff) for e in evs if e["kind"] == "monitor_offline")
-    observed = max(0.0, span - offline)
+    planned = sum(overlap(e["start"], e["end"] or now, lo_eff, hi_eff) for e in evs if e["kind"] == "planned_restart")
+    observed = max(0.0, span - offline - planned)
     stats = db.one(
         "SELECT COUNT(*) AS n, AVG(download_mbps) AS avg_down, MIN(download_mbps) AS min_down, "
         "MAX(download_mbps) AS max_down, AVG(upload_mbps) AS avg_up, MIN(upload_mbps) AS min_up, "
@@ -812,7 +888,8 @@ def summary(lo, hi):
         "from": lo_eff, "to": hi_eff, "observed_s": observed,
         "uptime_pct": (max(0.0, min(100.0, 100.0 * (observed - down) / observed))
                        if observed >= 60 else None),
-        "downtime_s": down, "monitor_offline_s": offline,
+        "downtime_s": down, "monitor_offline_s": offline, "planned_s": planned,
+        "planned_restarts": sum(1 for e in evs if e["kind"] == "planned_restart"),
         "outages": sum(1 for e in evs if e["kind"] == "internet_down"),
         "speed": stats, "test_counts": counts,
     }
@@ -857,7 +934,8 @@ def report(lo, hi):
     tests = db.query("SELECT ts, download_mbps, upload_mbps, ping_ms FROM speedtests "
                      "WHERE status='ok' AND trigger != 'after_outage' AND ts BETWEEN ? AND ?", (lo, hi))
     pd, pu = plan_down(), plan_up()
-    out = {**{k: s[k] for k in ("uptime_pct", "downtime_s", "outages", "monitor_offline_s", "observed_s")},
+    out = {**{k: s[k] for k in ("uptime_pct", "downtime_s", "outages", "monitor_offline_s", "observed_s",
+                                "planned_s", "planned_restarts")},
            "plan_down": pd, "plan_up": pu, "tests": len(tests), "test_counts": s["test_counts"],
            "data_mb": s["speed"]["data_mb"]}
     if tests:
@@ -901,9 +979,10 @@ def timeline(lo, hi, buckets):
         span = max(0.0, b_eff - a_eff)
         down = sum(overlap(e["start"], e["end"] or now, a_eff, b_eff) for e in evs if e["kind"] == "internet_down")
         off = sum(overlap(e["start"], e["end"] or now, a_eff, b_eff) for e in evs if e["kind"] == "monitor_offline")
-        observed = span - off
+        planned = sum(overlap(e["start"], e["end"] or now, a_eff, b_eff) for e in evs if e["kind"] == "planned_restart")
+        observed = span - off - planned
         n_out = sum(1 for e in evs if e["kind"] == "internet_down" and e["start"] < b and (e["end"] or now) > a)
-        out.append({"from": a, "to": b, "observed_s": observed, "downtime_s": down, "offline_s": off,
+        out.append({"from": a, "to": b, "observed_s": observed, "downtime_s": down, "offline_s": off, "planned_s": planned,
                     "outages": n_out,
                     "uptime_pct": (100 * (observed - down) / observed) if observed >= 30 else None})
     return out
@@ -928,6 +1007,7 @@ def status_payload():
         "now": time.time(), "online": state.online, "last_check_ts": state.last_check_ts,
         "latency_ms": state.last_latency_ms, "jitter_ms": state.last_jitter_ms, "loss_pct": state.last_loss_pct,
         "online_since": online_since() if state.online else None, "outage_start": state.outage_start,
+        "planned_outage": outage_is_planned(),
         "sparkline": spark,
         "test_running": state.test_running, "test_started_ts": state.test_started_ts,
         "test_phase": state.test_phase, "test_progress": state.test_progress, "test_live_mbps": state.test_live_mbps,

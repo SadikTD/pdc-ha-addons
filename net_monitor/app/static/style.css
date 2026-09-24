@@ -23,6 +23,7 @@
   --none: #e1e0d9;
   --band-down: rgba(208, 59, 59, 0.14);
   --band-offline: rgba(137, 135, 129, 0.18);
+  --band-planned: rgba(74, 58, 167, 0.14);
   --wash: rgba(11, 11, 11, 0.045);
   --glow: rgba(12, 163, 12, 0.10);
   --heat-0: #cde2fb; --heat-1: #9ec5f4; --heat-2: #6da7ec; --heat-3: #3987e5; --heat-4: #256abf; --heat-5: #104281;
@@ -47,6 +48,7 @@
   --none: #2c2c2a;
   --band-down: rgba(208, 59, 59, 0.22);
   --band-offline: rgba(137, 135, 129, 0.16);
+  --band-planned: rgba(144, 133, 233, 0.18);
   --wash: rgba(255, 255, 255, 0.05);
   --glow: rgba(12, 163, 12, 0.14);
   --heat-0: #104281; --heat-1: #184f95; --heat-2: #256abf; --heat-3: #3987e5; --heat-4: #6da7ec; --heat-5: #b7d3f6;
@@ -129,6 +131,9 @@ input {
   background: radial-gradient(circle, var(--glow), transparent 70%); pointer-events: none; transition: background .4s;
 }
 .conn.down { --glow: rgba(208, 59, 59, 0.16); }
+.conn.planned { --glow: rgba(74, 58, 167, 0.16); }
+.conn.planned .pulse { background: var(--series-lat); }
+.conn.planned .pulse::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: inherit; animation: ping 2s cubic-bezier(0, 0, .2, 1) infinite; }
 .conn-top { display: flex; gap: 14px; align-items: center; }
 .pulse { position: relative; width: 14px; height: 14px; border-radius: 50%; background: var(--text-muted); flex: none; }
 .conn.up .pulse { background: var(--good); }
@@ -260,6 +265,7 @@ tbody tr:hover td { background: var(--wash); }
 .tag.down::before { background: var(--critical); }
 .tag.ok::before { background: var(--good); }
 .tag.warn::before { background: var(--warning); }
+.tag.planned::before { background: var(--series-lat); }
 .pbar { display: inline-flex; align-items: center; gap: 8px; }
 .pbar i { display: inline-block; width: 64px; height: 5px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
 .pbar i b { display: block; height: 100%; background: var(--series-1); border-radius: 99px; }

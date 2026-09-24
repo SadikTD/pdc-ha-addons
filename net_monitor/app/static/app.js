@@ -160,9 +160,11 @@
     if (!s) return;
     const card = $("conn-card");
     card.classList.toggle("up", s.online === true);
-    card.classList.toggle("down", s.online === false);
+    card.classList.toggle("down", s.online === false && !s.planned_outage);
+    card.classList.toggle("planned", s.online === false && !!s.planned_outage);
     $("conn-state").classList.remove("loading");
-    $("conn-state").textContent = s.online === true ? "Online" : s.online === false ? "Internet down" : "Checking…";
+    $("conn-state").textContent = s.online === true ? "Online"
+      : s.online === false ? (s.planned_outage ? "Router restarting" : "Internet down") : "Checking…";
     tickSince();
     countUp($("q-latency"), s.online ? s.latency_ms : null, (v) => (v == null ? "—" : `${ms(v)} ms`));
     countUp($("q-jitter"), s.online ? s.jitter_ms : null, (v) => (v == null ? "—" : `${ms(v)} ms`));
@@ -202,6 +204,7 @@
     const now = Date.now() / 1000;
     let text = "";
     if (s.online === true && s.online_since) text = `Online for ${dur(now - s.online_since, true)}`;
+    else if (s.online === false && s.outage_start && s.planned_outage) text = `Scheduled restart since ${time(s.outage_start)} · ${dur(now - s.outage_start, true)}`;
     else if (s.online === false && s.outage_start) text = `Down since ${when(s.outage_start)} · ${dur(now - s.outage_start, true)}`;
     if (s.last_check_ts) text += `${text ? " · " : ""}checked ${relative(s.last_check_ts)}`;
     $("conn-since").textContent = text || " ";
@@ -291,6 +294,7 @@
     const body = b.uptime_pct == null
       ? "<span>Not monitored</span>"
       : `<span>${pct(b.uptime_pct, 2)} uptime</span>${b.downtime_s ? `<span>${dur(b.downtime_s)} down · ${b.outages} outage${b.outages === 1 ? "" : "s"}</span>` : ""}` +
+        (b.planned_s > 30 ? `<span>${dur(b.planned_s)} scheduled router restart</span>` : "") +
         (b.offline_s > 30 ? `<span>${dur(b.offline_s)} not monitored</span>` : "");
     showTip(ev, `<b>${esc(head)}</b>${body}`);
   });
@@ -316,7 +320,8 @@
       tile("Avg upload", r.avg_up == null ? "—" : `${mbps(r.avg_up)}<small>Mbit/s</small>`, r.avg_up == null ? "" : `${r.avg_up_pct.toFixed(0)}% of plan`),
       tile("Avg ping", r.avg_ping == null ? "—" : `${ms(r.avg_ping)}<small>ms</small>`, "to Singapore"),
       tile("Below half of plan", r.below_50_pct == null ? "—" : pct(r.below_50_pct), r.below_80_pct == null ? "" : `${pct(r.below_80_pct)} below 80%`),
-      tile("Outages", String(r.outages), r.downtime_s ? `${dur(r.downtime_s)} down in total` : "no downtime"),
+      tile("Outages", String(r.outages), (r.downtime_s ? `${dur(r.downtime_s)} down in total` : "no downtime") +
+        (r.planned_restarts ? ` · ${r.planned_restarts} scheduled restart${r.planned_restarts === 1 ? "" : "s"} excluded` : "")),
       tile("Longest outage", lo ? dur(lo.duration_s) : "—", lo ? when(lo.start) : ""),
       tile("Slowest hour", r.slowest_hour ? esc(r.slowest_hour.label) : "—", r.slowest_hour ? `avg ${mbps(r.slowest_hour.avg_down)} Mbit/s` : "needs more data"),
       tile("Fastest hour", r.fastest_hour ? esc(r.fastest_hour.label) : "—", r.fastest_hour ? `avg ${mbps(r.fastest_hour.avg_down)} Mbit/s` : ""),
@@ -333,7 +338,7 @@
         const x0 = Math.max(a.left, x.getPixelForValue(e.start * 1000));
         const x1 = Math.min(a.right, x.getPixelForValue((e.end ?? Date.now() / 1000) * 1000));
         if (x1 <= a.left || x0 >= a.right) continue;
-        ctx.fillStyle = e.kind === "internet_down" ? css("--band-down") : css("--band-offline");
+        ctx.fillStyle = e.kind === "internet_down" ? css("--band-down") : e.kind === "planned_restart" ? css("--band-planned") : css("--band-offline");
         ctx.fillRect(x0, a.top, Math.max(2, x1 - x0), a.bottom - a.top);
       }
       ctx.restore();
@@ -455,7 +460,7 @@
       options: opts, plugins: [bandsPlugin, planPlugin, crosshairPlugin],
     });
     legend($("speed-legend"), [["Download", css("--series-1")], ["Upload", css("--series-2")], ["Plan", "", "dash"],
-      ["Internet down", css("--band-down"), "band"], ["Not monitored", css("--band-offline"), "band"]]);
+      ["Internet down", css("--band-down"), "band"], ["Scheduled restart", css("--band-planned"), "band"], ["Not monitored", css("--band-offline"), "band"]]);
   }
 
   function renderQualityCharts() {
@@ -584,7 +589,7 @@
     $("outage-rows").innerHTML = rows.length ? rows.map((e) => `<tr>
       <td>${when(e.start)}</td><td>${e.ongoing ? "<strong>ongoing</strong>" : when(e.end)}</td>
       <td class="num">${dur(e.duration_s)}</td>
-      <td>${e.kind === "internet_down" ? '<span class="tag down">Internet down</span>' : '<span class="tag">Not monitored (Pi off)</span>'}</td>
+      <td>${e.kind === "internet_down" ? '<span class="tag down">Internet down</span>' : e.kind === "planned_restart" ? '<span class="tag planned">Scheduled router restart</span>' : '<span class="tag">Not monitored (Pi off)</span>'}</td>
       <td>${recoveryText(e)}</td></tr>`).join("")
       : '<tr><td colspan="5" class="muted">No outages in this range.</td></tr>';
   }
@@ -597,8 +602,8 @@
     $("test-rows").innerHTML = shown.length ? shown.map((t) => {
       if (t.status !== "ok") {
         const [cls, label] = SKIP[t.status] || ["", t.status];
-        const why = label + (t.busy_mbps ? ` (${mbps(t.busy_mbps)} Mbit/s in use)` : "");
-        return `<tr><td>${when(t.ts)}</td><td colspan="7"><span class="tag ${cls}">${esc(why)}</span>${t.error ? ` <span class="muted" title="${esc(t.error)}">${esc(t.error.slice(0, 70))}</span>` : ""}</td><td>${TRIGGER[t.trigger] || esc(t.trigger)}</td><td></td></tr>`;
+        const why = t.status === "skipped_busy" && t.error ? `${label}: ${t.error}` : label + (t.busy_mbps ? ` (${mbps(t.busy_mbps)} Mbit/s in use)` : "");
+        return `<tr><td>${when(t.ts)}</td><td colspan="7"><span class="tag ${cls}">${esc(why)}</span>${t.error && t.status !== "skipped_busy" ? ` <span class="muted" title="${esc(t.error)}">${esc(t.error.slice(0, 70))}</span>` : ""}</td><td>${TRIGGER[t.trigger] || esc(t.trigger)}</td><td></td></tr>`;
       }
       return `<tr><td>${when(t.ts)}</td>
         <td class="num"><strong>${mbps(t.download_mbps)}</strong></td><td>${pbar(t.download_mbps, plan)}</td>
@@ -620,6 +625,8 @@
     const lines = [`<div><strong>${fullFmt.format(ts * 1000)}</strong></div>`];
     if (r.event && r.event.kind === "internet_down") {
       lines.push(`<div><span class="tag down">Internet was down</span> from ${when(r.event.start)} to ${r.event.ongoing ? "now" : when(r.event.end)} (${dur(r.event.duration_s)})</div>`);
+    } else if (r.event && r.event.kind === "planned_restart") {
+      lines.push(`<div><span class="tag planned">Scheduled router restart</span> from ${when(r.event.start)} to ${when(r.event.end)} (${dur(r.event.duration_s)}) — not counted as downtime</div>`);
     } else if (r.event) {
       lines.push(`<div><span class="tag">Not monitored</span> — the monitor was off from ${when(r.event.start)} to ${when(r.event.end)}</div>`);
     } else if (r.check) {
