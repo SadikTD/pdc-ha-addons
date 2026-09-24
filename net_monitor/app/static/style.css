@@ -96,7 +96,9 @@ input {
 .link { color: var(--series-1); text-decoration: none; font-size: 13px; }
 .link:hover { text-decoration: underline; }
 
-.brand { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+/* The reveal animation makes each block its own stacking context, so the header
+   (which owns the Pause dropdown) must sit above everything that follows it. */
+.brand { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; position: relative; z-index: 30; }
 .actions { display: flex; gap: 8px; align-items: center; }
 .menu { position: relative; }
 .menu-list {

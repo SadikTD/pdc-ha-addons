@@ -874,8 +874,9 @@ def report(lo, hi):
             by_hour.setdefault(time.localtime(t["ts"]).tm_hour, []).append(t["download_mbps"])
         hours = [{"hour": h, "label": hour_label(h), "avg_down": sum(v) / len(v), "n": len(v)}
                  for h, v in by_hour.items()]
-        min_n = 2 if any(h["n"] >= 2 for h in hours) else 1
-        hours = [h for h in hours if h["n"] >= min_n]
+        # Prefer hours with repeat samples once there are enough of them to compare.
+        if sum(h["n"] >= 2 for h in hours) >= 3:
+            hours = [h for h in hours if h["n"] >= 2]
         out["slowest_hour"] = min(hours, key=lambda h: h["avg_down"]) if len(hours) > 1 else None
         out["fastest_hour"] = max(hours, key=lambda h: h["avg_down"]) if len(hours) > 1 else None
     else:

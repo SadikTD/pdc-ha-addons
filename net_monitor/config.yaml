@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.1.0"
+version: "1.1.1"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
