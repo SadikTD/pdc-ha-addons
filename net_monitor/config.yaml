@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.2.0"
+version: "1.3.0"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
@@ -16,8 +16,10 @@ ingress: true
 ingress_port: 38765
 panel_icon: mdi:speedometer
 panel_title: Net Monitor
-# Publishes sensors and sends outage-recovery notifications.
+# Publishes sensors, sends notifications and drives Alexa announcements.
 homeassistant_api: true
+# Read-only: looks up the PDC WhatsApp Bridge add-on's internal IP for outage reports.
+hassio_api: true
 options:
   speedtest_interval_minutes: 60
   # Best-routed Singapore Ookla servers from Bangladesh (Indosat, Firstmedia,
@@ -56,6 +58,28 @@ options:
   # Daily windows (local time) when the router restarts on schedule, e.g. "02:58-03:10".
   # Outages inside them aren't counted, alerted or followed by a speedtest.
   maintenance_windows: []
+  # Echo devices (Alexa Media Player) that announce when the internet drops and returns.
+  alexa_entities: []
+  alexa_volume: 60
+  alexa_down_message: "Warning! The internet is down right now."
+  # {duration} becomes e.g. "27 minutes".
+  alexa_up_message: "Good news! The internet is back. It was down for {duration}."
+  # No announcements in these daily windows, e.g. "00:00-07:30".
+  alexa_quiet_hours: []
+  # Alexa can't speak without internet. If Amazon is unreachable, the "down" warning
+  # is spoken by this phone instead, e.g. notify.mobile_app_my_phone.
+  offline_tts_service: ""
+  # Outage report over the PDC WhatsApp Bridge add-on (same api_token as the bridge).
+  whatsapp_to: ""
+  whatsapp_api_token: ""
+  # Only needed if the bridge can't be found automatically, e.g. http://172.30.33.6:8787
+  whatsapp_bridge_url: ""
+  # ISP report card for the previous month, over WhatsApp on the 1st.
+  monthly_report_enabled: true
+  monthly_report_hour: 10
+  # Monthly bill, for the report's value-for-money line (0 = leave it out).
+  plan_price: 0
+  plan_currency: "৳"
 schema:
   speedtest_interval_minutes: int(15,1440)
   server_ids:
@@ -81,3 +105,18 @@ schema:
   quality_samples: int(1,10)
   maintenance_windows:
     - match(^\d{1,2}:\d{2}-\d{1,2}:\d{2}$)
+  alexa_entities:
+    - match(^media_player\.[a-z0-9_]+$)
+  alexa_volume: int(0,100)
+  alexa_down_message: str
+  alexa_up_message: str
+  alexa_quiet_hours:
+    - match(^\d{1,2}:\d{2}-\d{1,2}:\d{2}$)
+  offline_tts_service: str?
+  whatsapp_to: match(^(\+[1-9]\d{7,14})?$)?
+  whatsapp_api_token: password?
+  whatsapp_bridge_url: str?
+  monthly_report_enabled: bool
+  monthly_report_hour: int(0,23)
+  plan_price: float(0,10000000)
+  plan_currency: str

@@ -175,6 +175,48 @@
     </article>
   </section>
 
+  <section class="grid-2">
+    <article class="card reveal">
+      <div class="card-head"><h2>Alexa announcements</h2></div>
+      <dl class="alert-facts" id="alexa-facts"></dl>
+      <div class="alert-actions">
+        <button class="btn" data-announce="down" data-device="alexa">Test “down” on Alexa</button>
+        <button class="btn" data-announce="up" data-device="alexa">Test “back” on Alexa</button>
+        <button class="btn ghost" data-announce="down" data-device="phone" id="btn-phone-test">Test on phone</button>
+      </div>
+      <p class="small muted" id="announce-result" aria-live="polite"></p>
+      <p class="small muted">Alexa needs Amazon's servers, so it can't speak while the international link is down.
+        The “down” warning is then spoken by the phone instead (Home Assistant app, persistent connection on).</p>
+    </article>
+    <article class="card reveal">
+      <div class="card-head">
+        <h2>WhatsApp outage report</h2>
+        <button class="btn" id="btn-wa-test">Send test</button>
+      </div>
+      <p class="small muted" id="wa-note"></p>
+      <div class="wa-chat"><div class="wa-bubble" id="wa-preview"></div></div>
+      <p class="small muted" id="wa-result" aria-live="polite"></p>
+    </article>
+  </section>
+
+  <section class="card reveal">
+    <div class="card-head">
+      <h2>Monthly ISP report</h2>
+      <button class="btn" id="btn-month-send" disabled>Send this month's report</button>
+    </div>
+    <div class="month-grid">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Month</th><th>Grade</th><th class="num">Speed vs plan</th><th class="num">Uptime</th><th class="num">Outages</th><th class="num">Down</th></tr></thead>
+          <tbody id="month-rows"></tbody>
+        </table>
+        <p class="small muted">Sent on WhatsApp on the 1st of each month. Click a month to preview its report.</p>
+        <p class="small muted" id="month-result" aria-live="polite"></p>
+      </div>
+      <div class="wa-chat"><div class="wa-bubble" id="month-preview"></div></div>
+    </div>
+  </section>
+
   <section class="card reveal">
     <div class="card-head">
       <h2>Outages</h2>

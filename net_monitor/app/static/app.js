@@ -152,6 +152,8 @@
     renderTests();
     $("export-tests").href = `api/export/speedtests.csv?${q}`;
     $("export-outages").href = `api/export/outages.csv?${q}`;
+    loadAlerts().catch((e) => console.error(e));
+    loadMonths().catch((e) => console.error(e));
   }
 
   // --------------------------------------------------------------------- hero
@@ -684,6 +686,90 @@
     await api("api/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: Number(b.dataset.min) }) });
     loadStatus();
   }));
+  // ------------------------------------------------------------------- alerts
+  // WhatsApp markup (*bold*, _italic_) on already-escaped text.
+  const waFormat = (t) => esc(t)
+    .replace(/(^|[\s(])\*([^*\n]+)\*/gm, "$1<strong>$2</strong>")
+    .replace(/(^|[\s(])_([^_\n]+)_/gm, "$1<em>$2</em>");
+
+  async function loadAlerts() {
+    const a = await api("api/alerts");
+    const off = (t) => `<span class="off">${esc(t)}</span>`;
+    $("alexa-facts").innerHTML = [
+      ["Echo devices", a.alexa_entities.length ? esc(a.alexa_entities.join(", ")) : off("not set (alexa_entities)")],
+      ["Volume", `${a.alexa_volume}% while speaking, then restored`],
+      ["When it drops", `“${esc(a.down_message)}”`],
+      ["When it's back", `“${esc(a.up_message)}”`],
+      ["Quiet hours", a.alexa_quiet_hours.length ? esc(a.alexa_quiet_hours.join(", ")) : off("none")],
+      ["Offline fallback", a.offline_tts_service ? esc(a.offline_tts_service) : off("not set (offline_tts_service)")],
+    ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+    document.querySelectorAll("[data-device='alexa']").forEach((b) => { b.disabled = !a.alexa_entities.length; });
+    $("btn-phone-test").disabled = !a.offline_tts_service;
+    $("btn-wa-test").disabled = !a.whatsapp_configured;
+    $("wa-note").textContent = (a.whatsapp_configured ? "Sent when the internet comes back. " : "Set whatsapp_to and whatsapp_api_token to enable. ")
+      + (a.preview_is_real ? "Preview of your latest outage:" : "Sample preview (no outages recorded yet):");
+    $("wa-preview").innerHTML = waFormat(a.preview);
+  }
+
+  document.querySelectorAll("[data-announce]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      const r = await api("api/test/announce", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: b.dataset.announce, device: b.dataset.device }) });
+      $("announce-result").textContent = `Sent: “${r.text}”`;
+    } catch (e) {
+      $("announce-result").textContent = "Couldn't send the test announcement.";
+    }
+    setTimeout(() => { b.disabled = false; }, 4000);
+  }));
+  $("btn-wa-test").addEventListener("click", async () => {
+    $("btn-wa-test").disabled = true;
+    $("wa-result").textContent = "Sending…";
+    try {
+      await api("api/test/whatsapp", { method: "POST" });
+      $("wa-result").textContent = "Test report sent to WhatsApp.";
+    } catch (e) {
+      $("wa-result").textContent = "Not sent. Check the add-on log (is the WhatsApp bridge connected?).";
+    }
+    $("btn-wa-test").disabled = false;
+  });
+
+  let selMonth = null;
+  async function showMonth(key) {
+    selMonth = key;
+    document.querySelectorAll("#month-rows tr").forEach((tr) => tr.classList.toggle("sel", tr.dataset.month === key));
+    const tr = document.querySelector(`#month-rows tr[data-month="${key}"]`);
+    $("btn-month-send").textContent = `Send ${tr ? tr.dataset.label : key} report`;
+    const r = await api(`api/monthly_report?month=${key}`);
+    $("month-preview").innerHTML = waFormat(r.text);
+  }
+  async function loadMonths() {
+    const months = await api("api/months");
+    const pct = (v, d = 0) => (v == null ? "—" : `${v.toFixed(d)}%`);
+    $("month-rows").innerHTML = months.map((m) => {
+      const key = `${m.year}-${String(m.month).padStart(2, "0")}`;
+      const partial = m.monitored_days < m.days - 1 ? ` <span class="muted small">(${Math.round(m.monitored_days)} of ${Math.round(m.days)} days)</span>` : "";
+      return `<tr data-month="${key}" data-label="${esc(m.label)}"><td>${esc(m.label)}${partial}</td><td><strong>${m.grade || "—"}</strong></td>
+        <td class="num">${pct(m.avg_down_pct)}</td><td class="num">${pct(m.uptime_pct, 2)}</td>
+        <td class="num">${m.outages}</td><td class="num">${m.downtime_s ? dur(m.downtime_s) : "—"}</td></tr>`;
+    }).join("") || `<tr><td colspan="6" class="muted">No data yet</td></tr>`;
+    document.querySelectorAll("#month-rows tr[data-month]").forEach((tr) => tr.addEventListener("click", () => showMonth(tr.dataset.month)));
+    const a = await api("api/alerts");
+    $("btn-month-send").disabled = !a.whatsapp_configured || !months.length;
+    if (months.length) await showMonth(selMonth || `${months[0].year}-${String(months[0].month).padStart(2, "0")}`);
+  }
+  $("btn-month-send").addEventListener("click", async () => {
+    $("btn-month-send").disabled = true;
+    $("month-result").textContent = "Sending…";
+    try {
+      await api("api/test/monthly", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ month: selMonth }) });
+      $("month-result").textContent = `${selMonth} report sent to WhatsApp.`;
+    } catch (e) {
+      $("month-result").textContent = "Not sent. Check the add-on log (is the WhatsApp bridge connected?).";
+    }
+    $("btn-month-send").disabled = false;
+  });
+
   $("btn-more-tests").addEventListener("click", () => { showAllTests = true; renderTests(); });
   $("lookup-form").addEventListener("submit", (e) => { e.preventDefault(); lookup(fromLocalInput($("lookup-at").value)); });
   osDark.addEventListener("change", () => applyTheme());

@@ -2,7 +2,8 @@
 
 Runs three loops:
   * connectivity monitor - TCP-connects to a few international (Singapore) hosts every
-    N seconds and records outages (start/end) in SQLite.
+    N seconds and records outages (start/end) in SQLite. Outages are announced on Alexa
+    and reported over WhatsApp once the line is back.
   * speedtest scheduler - runs the Ookla CLI against a pinned (Singapore) server
     on a wall-clock schedule, postponing while the router shows the line is busy.
   * HTTP server - the Ingress dashboard and its JSON API.
@@ -13,6 +14,7 @@ import io
 import json
 import logging
 import os
+import queue
 import re
 import socket
 import sqlite3
@@ -59,6 +61,19 @@ DEFAULT_OPTIONS = {
     "busy_upload_mbps": 0.25,
     "busy_packets_per_second": 40,
     "maintenance_windows": [],
+    "alexa_entities": [],
+    "alexa_volume": 60,
+    "alexa_down_message": "Warning! The internet is down right now.",
+    "alexa_up_message": "Good news! The internet is back. It was down for {duration}.",
+    "alexa_quiet_hours": [],
+    "offline_tts_service": "",
+    "whatsapp_to": "",
+    "whatsapp_api_token": "",
+    "whatsapp_bridge_url": "",
+    "monthly_report_enabled": True,
+    "monthly_report_hour": 10,
+    "plan_price": 0,
+    "plan_currency": "৳",
 }
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -209,10 +224,11 @@ def fmt_duration(seconds):
 
 # ------------------------------------------------------------ home assistant
 
-def _supervisor_request(method, path, payload=None):
+def _supervisor_call(method, path, payload=None, timeout=10):
+    """Returns (HTTP status, parsed JSON body); status is None if the API is unreachable."""
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
-        return None
+        return None, None
     body = json.dumps(payload).encode() if payload is not None else None
     for host in ("http://supervisor", "http://172.30.32.2"):
         req = urllib.request.Request(
@@ -220,15 +236,31 @@ def _supervisor_request(method, path, payload=None):
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                return r.status
-        except urllib.error.URLError as e:
-            if isinstance(e, urllib.error.HTTPError):
-                log.warning("HA API %s %s -> %s", method, path, e.code)
-                return e.code
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw = r.read()
+                try:
+                    return r.status, json.loads(raw) if raw else None
+                except ValueError:
+                    return r.status, None
+        except urllib.error.HTTPError as e:
+            log.warning("HA API %s %s -> %s", method, path, e.code)
+            return e.code, None
+        except OSError:
             continue  # try the next host name
     log.warning("HA API unreachable for %s", path)
-    return None
+    return None, None
+
+
+def _supervisor_request(method, path, payload=None):
+    return _supervisor_call(method, path, payload)[0]
+
+
+def ha_service(domain, service, data, timeout=30):
+    return _supervisor_call("POST", f"/core/api/services/{domain}/{service}", data, timeout)[0]
+
+
+def ha_get_state(entity_id):
+    return _supervisor_call("GET", f"/core/api/states/{entity_id}")[1]
 
 
 def ha_set_state(entity_id, value, attributes):
@@ -468,9 +500,14 @@ def online_since():
 def in_maintenance(ts):
     """If ts falls in a configured daily window (e.g. "02:58-03:10", the router's
     scheduled reboot), returns that window's end timestamp; otherwise None."""
+    return in_window(ts, OPTS["maintenance_windows"])
+
+
+def in_window(ts, specs):
+    """End timestamp of the daily "HH:MM-HH:MM" window in specs that ts falls in, or None."""
     lt = time.localtime(ts)
     midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
-    for spec in OPTS["maintenance_windows"] or []:
+    for spec in specs or []:
         try:
             a, b = [int(h) * 3600 + int(m) * 60 for h, m in (p.strip().split(":") for p in spec.split("-"))]
         except ValueError:
@@ -534,7 +571,7 @@ def handle_startup_gap(interval):
 def monitor_loop():
     interval = OPTS["check_interval_seconds"]
     handle_startup_gap(interval)
-    fails, first_fail_ts, prev_ts, planned = 0, None, None, False
+    fails, first_fail_ts, prev_ts, planned, down_announced = 0, None, None, False, False
     while True:
         t0 = time.time()
         if prev_ts and t0 - prev_ts > 3 * interval:  # host was suspended/stalled
@@ -556,7 +593,9 @@ def monitor_loop():
                     real = classify_outage(outage_id, start, t0)
                     if real:
                         log.info("Internet back after %s", fmt_duration(t0 - real[1]))
+                        announce("up", t0 - real[1])
                         threading.Thread(target=after_outage, args=(real[0], real[1], t0), daemon=True).start()
+                    down_announced = False
                 changed = state.online is not True
                 state.online = True
             else:
@@ -575,6 +614,9 @@ def monitor_loop():
             now_planned = outage_is_planned(t0)
             changed = changed or now_planned != planned
             planned = now_planned
+            if state.online is False and not now_planned and not down_announced:
+                down_announced = True
+                announce("down")
         if changed:
             publish_connectivity()
         prev_ts = t0
@@ -595,6 +637,267 @@ def after_outage(outage_id, start, end):
             msg += (f" Back at {row['download_mbps']:.1f} Mbps down / {row['upload_mbps']:.1f} up, "
                     f"{row['ping_ms']:.0f} ms ({row['server_location']}).")
         ha_notify("🌐 Internet is back", msg)
+        whatsapp_send(outage_report(outage_id, start, end, row), f"netmon-outage-{outage_id}-{int(start)}")
+
+
+# ------------------------------------------------------------ announcements
+
+# Alexa speaks through Amazon's cloud, so it can't announce while the international
+# link is down. The "down" warning goes to Alexa only if Amazon is still reachable
+# (partial outages); otherwise to the phone (HA companion app TTS), which gets it
+# over the home Wi-Fi without internet if its persistent connection is on.
+AMAZON_PROBE = "alexa.amazon.com:443"
+announce_queue = queue.Queue()
+
+
+def spoken_duration(seconds):
+    """27 minutes / 1 hour and 5 minutes / 3 minutes and 20 seconds."""
+    seconds = int(round(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    parts = [f"{n} {unit}{'s' if n != 1 else ''}" for n, unit in ((h, "hour"), (m, "minute")) if n]
+    if s and not h and m < 10:
+        parts.append(f"{s} second{'s' if s != 1 else ''}")
+    if not parts:
+        return "less than a second"
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def announce_message(kind, duration=None):
+    template = OPTS["alexa_down_message"] if kind == "down" else OPTS["alexa_up_message"]
+    return template.replace("{duration}", spoken_duration(duration or 0))
+
+
+def announce(kind, duration=None):
+    """Queues a spoken "down" / "up" announcement, unless it's quiet hours."""
+    if not OPTS["alexa_entities"] and not (kind == "down" and OPTS["offline_tts_service"]):
+        return
+    if in_window(time.time(), OPTS["alexa_quiet_hours"]):
+        log.info("Quiet hours: not announcing internet %s", kind)
+        return
+    announce_queue.put((kind, duration))
+
+
+def announcer_loop():
+    while True:
+        kind, duration = announce_queue.get()
+        try:
+            speak(kind, duration)
+        except Exception:
+            log.exception("Announcement failed")
+
+
+def speak(kind, duration):
+    text = announce_message(kind, duration)
+    if kind == "down":
+        if state.online is not False:
+            return  # already back; the "up" announcement follows
+        if OPTS["alexa_entities"] and _tcp_probe(AMAZON_PROBE) is not None:
+            alexa_say(text)
+        elif OPTS["offline_tts_service"]:
+            log.info("Amazon unreachable, so Alexa can't speak; announcing on the phone instead")
+            phone_say(text)
+        else:
+            log.info("Amazon unreachable, so Alexa can't announce the outage")
+        return
+    # Up: the link is back, but give Alexa a moment if Amazon isn't answering yet.
+    for _ in range(18):
+        if _tcp_probe(AMAZON_PROBE) is not None:
+            alexa_say(text)
+            return
+        time.sleep(10)
+    log.warning("Amazon still unreachable 3 minutes after the internet came back; skipped announcement")
+
+
+def alexa_say(text):
+    """Raises the Echo(s) to alexa_volume, announces, then restores each one's volume."""
+    entities = OPTS["alexa_entities"]
+    target = max(0, min(100, OPTS["alexa_volume"])) / 100
+    restore = {}
+    for entity in entities:
+        volume = ((ha_get_state(entity) or {}).get("attributes") or {}).get("volume_level")
+        if volume is None:
+            log.warning("%s doesn't report its volume; announcing at its current volume", entity)
+        elif abs(volume - target) > 0.005:
+            restore[entity] = volume
+    for entity in restore:
+        ha_service("media_player", "volume_set", {"entity_id": entity, "volume_level": target})
+    if restore:
+        time.sleep(1.5)  # the Echo applies the volume before it starts speaking
+    status = ha_service("notify", "alexa_media", {
+        "message": text, "target": entities, "data": {"type": "announce", "method": "speak"}})
+    log.info("Alexa announcement (%s): %s", status, text)
+    time.sleep(5 + len(text) / 12)  # cloud round trip + chime + speech
+    for entity, volume in restore.items():
+        ha_service("media_player", "volume_set", {"entity_id": entity, "volume_level": volume})
+
+
+def phone_say(text):
+    service = OPTS["offline_tts_service"].strip()
+    domain, _, name = service.partition(".")
+    if not name:
+        domain, name = "notify", domain
+    # alarm_stream_max: plays at full alarm volume, then Android restores it.
+    ha_service(domain, name, {"message": "TTS", "data": {"tts_text": text, "media_stream": "alarm_stream_max"}})
+
+
+# ------------------------------------------------------------------ whatsapp
+
+_bridge_url = None
+
+
+def bridge_url():
+    """The PDC WhatsApp Bridge's address. It isn't published on the host, so it's
+    reached on its Supervisor-network IP, looked up via the Supervisor API."""
+    global _bridge_url
+    if OPTS["whatsapp_bridge_url"]:
+        return OPTS["whatsapp_bridge_url"].rstrip("/")
+    if not _bridge_url:
+        own = (_supervisor_call("GET", "/addons/self/info")[1] or {}).get("data") or {}
+        slug = re.sub(r"net_monitor$", "pdc_whatsapp", own.get("slug") or "")
+        info = ((_supervisor_call("GET", f"/addons/{slug}/info")[1] or {}).get("data") or {}) if slug else {}
+        if info.get("ip_address"):
+            _bridge_url = f"http://{info['ip_address']}:8787"
+        else:
+            log.warning("Couldn't find the PDC WhatsApp Bridge add-on; set whatsapp_bridge_url")
+    return _bridge_url
+
+
+def whatsapp_post(url, text, key):
+    body = json.dumps({"to": OPTS["whatsapp_to"], "text": text, "idempotencyKey": key}).encode()
+    req = urllib.request.Request(f"{url}/send", data=body, method="POST", headers={
+        "Authorization": f"Bearer {OPTS['whatsapp_api_token']}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=40) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+    except (OSError, ValueError):
+        return None, {}
+
+
+def whatsapp_send(text, key, give_up_after=1800):
+    """Sends text through the bridge. Retries while WhatsApp reconnects after the outage;
+    the idempotency key keeps a retry from sending the message twice."""
+    global _bridge_url
+    if not (OPTS["whatsapp_to"] and OPTS["whatsapp_api_token"]):
+        return False
+    deadline, delay = time.time() + give_up_after, 15
+    while True:
+        url = bridge_url()
+        status, body = whatsapp_post(url, text, key) if url else (None, {})
+        if status == 200:
+            log.info("WhatsApp message sent (%s)", key)
+            return True
+        if status in (400, 401, 403, 413):
+            log.error("WhatsApp bridge rejected the message (%s %s): check whatsapp_to / whatsapp_api_token",
+                      status, body.get("status"))
+            return False
+        if status in (409, 502) and body.get("status") == "unknown":
+            log.warning("WhatsApp message may or may not have been delivered (bridge lost track)")
+            return False
+        if status is None:
+            _bridge_url = None  # the bridge restarted and may have a new IP
+        if time.time() + delay > deadline:
+            log.warning("Gave up sending the WhatsApp message (%s %s)", status, body.get("status"))
+            return False
+        time.sleep(delay)
+        delay = min(120, delay * 2)
+
+
+def _bar(pct, width=10):
+    filled = max(0, min(width, round((pct or 0) / 100 * width)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def _when(ts, with_date):
+    return time.strftime("%a %d %b, ", time.localtime(ts)) + fmt_time(ts) if with_date else fmt_time(ts)
+
+
+def _plural(n, word):
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
+def outage_report(outage_id, start, end, row=None):
+    """WhatsApp-formatted report for an outage that has just ended."""
+    duration = end - start
+    two_days = time.strftime("%Y%m%d", time.localtime(start)) != time.strftime("%Y%m%d", time.localtime(end))
+    lines = ["✅ *INTERNET IS BACK*", "_Net Monitor · outage report_", "",
+             f"🔴 *Went down:*  {_when(start, two_days)}",
+             f"🟢 *Came back:*  {_when(end, two_days)}",
+             f"⏱️ *Lasted:*  {fmt_duration(duration)}"]
+    if not two_days:
+        lines.append(f"📅 {time.strftime('%A, %d %B', time.localtime(start))}")
+    lines += ["", "━━━━━━━━━━━━━━━", ""]
+
+    if row and row.get("status") == "ok":
+        pd_pct, pu_pct = 100 * row["download_mbps"] / plan_down(), 100 * row["upload_mbps"] / plan_up()
+        lines += ["⚡ *Speed after recovery*",
+                  f"⬇️ {row['download_mbps']:.1f} Mbps  {_bar(pd_pct)} {pd_pct:.0f}%",
+                  f"⬆️ {row['upload_mbps']:.1f} Mbps  {_bar(pu_pct)} {pu_pct:.0f}%",
+                  f"📶 {row['ping_ms']:.0f} ms ping · {row.get('server_location') or row.get('server_name')}"]
+    else:
+        after = db.one("SELECT AVG(latency_ms) AS lat, AVG(loss_pct) AS loss FROM checks "
+                       "WHERE up=1 AND ts BETWEEN ? AND ?", (end, end + 300))
+        lines.append("⚡ *Connection now*")
+        if after and after["lat"] is not None:
+            lines.append(f"📶 {after['lat']:.0f} ms ping · {after['loss'] or 0:.0f}% packet loss")
+        lines.append("_Speedtest failed after recovery._" if row else "_Short outage, so no speedtest was run._")
+    lines.append("")
+
+    # What the line looked like in the 10 minutes before it dropped, vs the day before.
+    pre = db.one("SELECT AVG(latency_ms) AS lat, MAX(loss_pct) AS loss, COUNT(*) AS n FROM checks "
+                 "WHERE up=1 AND ts BETWEEN ? AND ?", (start - 600, start))
+    base = db.one("SELECT AVG(latency_ms) AS lat FROM checks WHERE up=1 AND ts BETWEEN ? AND ?",
+                  (start - 86400, start - 600))
+    if pre and pre["n"] and pre["lat"] is not None:
+        signs = []
+        if pre["loss"] and pre["loss"] >= 20:
+            signs.append(f"packet loss up to {pre['loss']:.0f}%")
+        if base and base["lat"] and pre["lat"] > 1.5 * base["lat"] + 20:
+            signs.append(f"ping {pre['lat']:.0f} ms (usually {base['lat']:.0f} ms)")
+        lines += ["🔎 *Before it dropped*",
+                  ("⚠️ Warning signs: " + ", ".join(signs) + ".") if signs else
+                  f"Line was healthy ({pre['lat']:.0f} ms, {pre['loss'] or 0:.0f}% loss), then cut out suddenly.", ""]
+
+    lt = time.localtime(end)
+    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    today, week = report(midnight, end), report(end - 7 * 86400, end)
+    lines += ["📊 *Today*",
+              f"{_plural(today['outages'], 'outage')} · {fmt_duration(today['downtime_s'])} down"
+              + (f" · {today['uptime_pct']:.1f}% uptime" if today["uptime_pct"] is not None else ""),
+              "", "📈 *Last 7 days*",
+              f"{_plural(week['outages'], 'outage')} · {fmt_duration(week['downtime_s'])} down"
+              + (f" · {week['uptime_pct']:.2f}% uptime" if week["uptime_pct"] is not None else "")]
+    lo = week["longest_outage"]
+    if lo and lo["id"] != outage_id:
+        lines.append(f"Longest: {fmt_duration(lo['duration_s'])} on {time.strftime('%a %d %b', time.localtime(lo['start']))}")
+    if week["grade"]:
+        lines.append(f"Grade: *{week['grade']}*")
+    lines.append("")
+
+    longer = db.one("SELECT start FROM events WHERE kind='internet_down' AND id != ? AND end IS NOT NULL "
+                    "AND end - start > ? ORDER BY start DESC LIMIT 1", (outage_id, duration))
+    first = db.one("SELECT MIN(ts) AS t FROM checks")["t"] or start
+    if not longer:
+        lines.append(f"🏷️ Longest outage since monitoring began ({fmt_duration(end - first)} ago)")
+    elif start - longer["start"] > 2 * 86400:
+        lines.append(f"🏷️ Longest outage in {int((start - longer['start']) // 86400)} days")
+    prev = db.one("SELECT start, end FROM events WHERE kind='internet_down' AND id != ? AND end IS NOT NULL "
+                  "AND end <= ? ORDER BY end DESC LIMIT 1", (outage_id, start))
+    if prev:
+        lines.append(f"🕒 Previous outage ended {fmt_duration(start - prev['end'])} earlier "
+                     f"(lasted {fmt_duration(prev['end'] - prev['start'])})")
+    if row and row.get("external_ip"):
+        before = db.one("SELECT ip, isp FROM ip_log WHERE ts < ? ORDER BY ts DESC LIMIT 1", (row["ts"] - 1,))
+        if before and before["ip"] != row["external_ip"]:
+            lines.append(f"🔁 Public IP changed: {before['ip']} → {row['external_ip']}")
+        if before and row.get("isp") and before["isp"] != row["isp"]:
+            lines.append(f"🏢 ISP now shows as {row['isp']}")
+    return "\n".join(lines).rstrip()
 
 
 # ---------------------------------------------------------------- speedtest
@@ -847,6 +1150,161 @@ def weekly_report_text(now=None):
     return f"📊 Internet report {d0} – {d1}", ". ".join(parts) + "."
 
 
+# ----------------------------------------------------------- monthly report
+
+def month_bounds(year, month):
+    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+    return (time.mktime((year, month, 1, 0, 0, 0, 0, 0, -1)), time.mktime((ny, nm, 1, 0, 0, 0, 0, 0, -1)))
+
+
+def prev_month(year, month):
+    return (year - 1, 12) if month == 1 else (year, month - 1)
+
+
+def month_name(year, month):
+    return time.strftime("%B %Y", (year, month, 1, 0, 0, 0, 0, 1, -1))
+
+
+def month_stats(year, month):
+    """report() for a calendar month (to now if it's the current one), plus the worst day."""
+    lo, hi = month_bounds(year, month)
+    hi = min(hi, time.time())
+    r = report(lo, hi)
+    now = time.time()
+    downs = [e for e in events_in(lo, hi) if e["kind"] == "internet_down"]
+    worst, day = None, lo
+    while day < hi:
+        lt = time.localtime(day)
+        nxt = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + 1, 0, 0, 0, 0, 0, -1))
+        down = sum(overlap(e["start"], e["end"] or now, day, nxt) for e in downs)
+        n = sum(1 for e in downs if day <= e["start"] < nxt)
+        if down and (not worst or down > worst["downtime_s"]):
+            worst = {"day": day, "downtime_s": down, "outages": n}
+        day = nxt
+    first = db.one("SELECT MIN(ts) AS t FROM checks")["t"]
+    r.update(year=year, month=month, label=month_name(year, month), worst_day=worst,
+             days=(hi - lo) / 86400, monitored_days=max(0.0, hi - max(lo, first or hi)) / 86400)
+    return r
+
+
+def _delta(now, before, unit="%", digits=0):
+    d = now - before
+    arrow = "▲" if d > 0 else "▼" if d < 0 else "="
+    return f"{arrow} {abs(d):.{digits}f}{unit}"
+
+
+def monthly_report_text(year, month):
+    """WhatsApp-formatted ISP report card for one calendar month."""
+    r = month_stats(year, month)
+    lines = ["📅 *MONTHLY ISP REPORT*", f"_{r['label']} · Net Monitor_", ""]
+    if r["grade"]:
+        lines.append(f"🏅 Grade: *{r['grade']}*  ({r['score']:.0f}/100)")
+    if r["monitored_days"] < r["days"] - 1:
+        lines.append(f"_Monitored {r['monitored_days']:.0f} of {r['days']:.0f} days_")
+    lines += ["", "━━━━━━━━━━━━━━━", ""]
+
+    lines.append(f"💰 *You pay for {r['plan_down']:g} / {r['plan_up']:g} Mbps*")
+    if r["tests"]:
+        lines += [f"⬇️ Avg {r['avg_down']:.1f} Mbps  {_bar(r['avg_down_pct'])} {r['avg_down_pct']:.0f}%",
+                  f"⬆️ Avg {r['avg_up']:.1f} Mbps  {_bar(r['avg_up_pct'])} {r['avg_up_pct']:.0f}%",
+                  f"📶 Avg ping {r['avg_ping']:.0f} ms",
+                  f"🎯 {100 - r['below_80_pct']:.0f}% of tests got at least 80% of your plan",
+                  f"🐢 {r['below_50_pct']:.0f}% of tests got less than half",
+                  f"📉 Slowest test: {r['min_down']:.1f} Mbps · fastest: {r['max_down']:.1f} Mbps",
+                  f"_{_plural(r['tests'], 'speedtest')}_"]
+    else:
+        lines.append("_No speedtests this month._")
+    lines.append("")
+
+    lines.append("🌐 *Reliability*")
+    if r["uptime_pct"] is not None:
+        lines.append(f"Uptime *{r['uptime_pct']:.2f}%*")
+    lines.append(f"{_plural(r['outages'], 'outage')} · {fmt_duration(r['downtime_s'])} down in total")
+    if r["longest_outage"]:
+        lo = r["longest_outage"]
+        lines.append(f"Longest: {fmt_duration(lo['duration_s'])} on {time.strftime('%a %d %b', time.localtime(lo['start']))}")
+    if r["worst_day"]:
+        w = r["worst_day"]
+        lines.append(f"Worst day: {time.strftime('%a %d %b', time.localtime(w['day']))} "
+                     f"({_plural(w['outages'], 'outage')}, {fmt_duration(w['downtime_s'])} down)")
+    if r["planned_restarts"]:
+        lines.append(f"_{_plural(r['planned_restarts'], 'scheduled router restart')} not counted_")
+    lines.append("")
+
+    if r["fastest_hour"] and r["slowest_hour"]:
+        lines += ["⏰ *Best & worst times*",
+                  f"Fastest around {r['fastest_hour']['label']} ({r['fastest_hour']['avg_down']:.1f} Mbps)",
+                  f"Slowest around {r['slowest_hour']['label']} ({r['slowest_hour']['avg_down']:.1f} Mbps)", ""]
+
+    py, pm = prev_month(year, month)
+    p = month_stats(py, pm)
+    if p["tests"] and r["tests"] and p["uptime_pct"] is not None and r["uptime_pct"] is not None:
+        lines += [f"📊 *vs {month_name(py, pm).split()[0]}*",
+                  f"Speed {_delta(r['avg_down_pct'], p['avg_down_pct'])} of plan · "
+                  f"Uptime {_delta(r['uptime_pct'], p['uptime_pct'], ' pts', 2)}",
+                  f"Outages {r['outages']} vs {p['outages']}"
+                  + (f" · Grade {p['grade']} → {r['grade']}" if p["grade"] and r["grade"] else ""), ""]
+
+    price = float(OPTS["plan_price"] or 0)
+    if price > 0 and r["tests"] and r["uptime_pct"] is not None:
+        got = min(r["avg_down_pct"], 100) / 100 * r["uptime_pct"] / 100
+        cur = OPTS["plan_currency"]
+        lines += ["💸 *Value for money*",
+                  f"You paid {cur}{price:,.0f} · got about {cur}{price * got:,.0f} worth",
+                  f"_({got * 100:.0f}% of what you pay for: average speed vs plan × uptime)_"]
+    return "\n".join(lines).rstrip()
+
+
+def monthly_summary_line(year, month):
+    r = month_stats(year, month)
+    parts = [f"Grade {r['grade']}" if r["grade"] else r["label"]]
+    if r["uptime_pct"] is not None:
+        parts.append(f"uptime {r['uptime_pct']:.2f}%, {_plural(r['outages'], 'outage')}")
+    if r["tests"]:
+        parts.append(f"avg {r['avg_down']:.1f} Mbps ({r['avg_down_pct']:.0f}% of plan)")
+    return ". ".join(parts) + "."
+
+
+def monthly_report_loop():
+    """On the 1st (from monthly_report_hour on), sends last month's report once."""
+    while True:
+        time.sleep(60)
+        if not OPTS["monthly_report_enabled"]:
+            continue
+        lt = time.localtime()
+        if lt.tm_mday == 1 and lt.tm_hour < OPTS["monthly_report_hour"]:
+            continue
+        year, month = prev_month(lt.tm_year, lt.tm_mon)
+        stamp = f"{year}-{month:02d}"
+        if db.get_setting("monthly_report_sent") == stamp:
+            continue
+        db.set_setting("monthly_report_sent", stamp)
+        first = db.one("SELECT MIN(ts) AS t FROM checks")["t"]
+        if not first or first >= month_bounds(year, month)[1]:
+            continue  # wasn't monitoring yet
+        try:
+            ha_notify(f"📅 ISP report {month_name(year, month)}", monthly_summary_line(year, month))
+            whatsapp_send(monthly_report_text(year, month), f"netmon-monthly-{stamp}", give_up_after=6 * 3600)
+        except Exception:
+            log.exception("Monthly report failed")
+
+
+def months_payload():
+    """Per-month ISP report cards, newest first, back to the first month with data."""
+    first = db.one("SELECT MIN(ts) AS t FROM checks")["t"]
+    if not first:
+        return []
+    lt, ft = time.localtime(), time.localtime(first)
+    y, m, out = lt.tm_year, lt.tm_mon, []
+    while (y, m) >= (ft.tm_year, ft.tm_mon) and len(out) < 24:
+        r = month_stats(y, m)
+        out.append({k: r[k] for k in ("year", "month", "label", "grade", "score", "uptime_pct", "outages",
+                                      "downtime_s", "avg_down", "avg_up", "avg_down_pct", "tests",
+                                      "monitored_days", "days")})
+        y, m = prev_month(y, m)
+    return out
+
+
 # ------------------------------------------------------------------ queries
 
 def overlap(start, end, lo, hi):
@@ -1000,6 +1458,26 @@ def heatmap(days):
         for (w, h), v in sorted(cells.items())]}
 
 
+def latest_outage_report():
+    """Report for the most recent outage (or a made-up 27-minute one ending now), for
+    the dashboard preview and test messages."""
+    e = db.one("SELECT * FROM events WHERE kind='internet_down' AND end IS NOT NULL ORDER BY end DESC LIMIT 1")
+    if not e:
+        now = time.time()
+        return outage_report(-1, now - 27 * 60, now), False
+    row = db.one("SELECT * FROM speedtests WHERE id=?", (e["recovery_speedtest_id"],)) if e["recovery_speedtest_id"] else None
+    return outage_report(e["id"], e["start"], e["end"], row), True
+
+
+def alerts_payload():
+    text, real = latest_outage_report()
+    return {"alexa_entities": OPTS["alexa_entities"], "alexa_volume": OPTS["alexa_volume"],
+            "alexa_quiet_hours": OPTS["alexa_quiet_hours"], "offline_tts_service": OPTS["offline_tts_service"],
+            "whatsapp_configured": bool(OPTS["whatsapp_to"] and OPTS["whatsapp_api_token"]),
+            "down_message": announce_message("down"), "up_message": announce_message("up", 27 * 60),
+            "preview": text, "preview_is_real": real}
+
+
 def status_payload():
     last_test = db.one("SELECT * FROM speedtests WHERE status='ok' ORDER BY ts DESC LIMIT 1")
     spark = db.query("SELECT ts, up, latency_ms FROM checks ORDER BY ts DESC LIMIT 60")[::-1]
@@ -1093,6 +1571,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, timeline(lo, hi, max(10, min(180, int(qs.get("buckets", [60])[0])))))
             if path == "/api/heatmap":
                 return self._send(200, heatmap(max(1, min(365, int(qs.get("days", [30])[0])))))
+            if path == "/api/months":
+                return self._send(200, months_payload())
+            if path == "/api/monthly_report":
+                y, m = (int(x) for x in qs["month"][0].split("-"))
+                return self._send(200, {"text": monthly_report_text(y, m)})
+            if path == "/api/alerts":
+                return self._send(200, alerts_payload())
             if path == "/api/iplog":
                 return self._send(200, db.query("SELECT * FROM ip_log ORDER BY ts DESC LIMIT 50"))
             if path in ("/api/export/speedtests.csv", "/api/export/outages.csv"):
@@ -1116,6 +1601,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(409, {"error": "A speedtest is already running"})
             threading.Thread(target=run_speedtest, args=("manual",), daemon=True).start()
             return self._send(202, {"ok": True})
+        if path == "/api/test/announce":
+            kind, where = body.get("kind", "down"), body.get("device", "alexa")
+            text = announce_message(kind, 27 * 60)
+            if where == "phone":
+                if not OPTS["offline_tts_service"]:
+                    return self._send(400, {"error": "offline_tts_service is not set"})
+                threading.Thread(target=phone_say, args=(text,), daemon=True).start()
+            else:
+                if not OPTS["alexa_entities"]:
+                    return self._send(400, {"error": "alexa_entities is not set"})
+                threading.Thread(target=alexa_say, args=(text,), daemon=True).start()
+            return self._send(202, {"ok": True, "text": text})
+        if path == "/api/test/whatsapp":
+            if not (OPTS["whatsapp_to"] and OPTS["whatsapp_api_token"]):
+                return self._send(400, {"error": "whatsapp_to / whatsapp_api_token are not set"})
+            text, _ = latest_outage_report()
+            ok = whatsapp_send("🧪 _Test message_\n\n" + text, f"netmon-test-{int(time.time())}", give_up_after=0)
+            return self._send(200 if ok else 502, {"ok": ok} if ok else {"error": "Not sent, see the add-on log"})
+        if path == "/api/test/monthly":
+            if not (OPTS["whatsapp_to"] and OPTS["whatsapp_api_token"]):
+                return self._send(400, {"error": "whatsapp_to / whatsapp_api_token are not set"})
+            y, m = (int(x) for x in str(body.get("month", "")).split("-"))
+            ok = whatsapp_send(monthly_report_text(y, m), f"netmon-monthly-test-{int(time.time())}", give_up_after=0)
+            return self._send(200 if ok else 502, {"ok": ok} if ok else {"error": "Not sent, see the add-on log"})
         if path == "/api/pause":
             minutes = float(body.get("minutes", 0))
             until = -1 if minutes < 0 else (time.time() + minutes * 60 if minutes > 0 else 0)
@@ -1168,7 +1677,8 @@ def main():
     log.info("Net Monitor starting: checks every %ss to %s, speedtest every %s min via servers %s",
              OPTS["check_interval_seconds"], ", ".join(OPTS["check_targets"]),
              OPTS["speedtest_interval_minutes"], OPTS["server_ids"])
-    for target in (monitor_loop, scheduler_loop, retention_loop, weekly_report_loop, publish_loop):
+    for target in (monitor_loop, scheduler_loop, retention_loop, weekly_report_loop, publish_loop, announcer_loop,
+                   monthly_report_loop):
         threading.Thread(target=target, daemon=True, name=target.__name__).start()
     threading.Timer(45, publish_all).start()  # after the first checks have run
     server = ThreadingHTTPServer((os.environ.get("NETMON_BIND", "0.0.0.0"), HTTP_PORT), Handler)

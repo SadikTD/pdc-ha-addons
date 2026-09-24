@@ -26,6 +26,54 @@ Tracks your **international** internet connection (not BDIX / local caches).
 - **Power cuts.** Time when the add-on wasn't running shows as *Not monitored* and
   counts as neither uptime nor downtime.
 
+## Alexa announcements
+
+Set `alexa_entities` (e.g. `media_player.living_room_echo`, from the Alexa Media
+Player integration). When the internet drops, and again when it comes back, the
+Echo is raised to `alexa_volume` (60%), speaks, and is put back to its previous
+volume. The "back" message says how long the outage lasted.
+
+**Alexa can't talk without internet.** Every Alexa announcement goes through
+Amazon's servers, so during a full international outage nothing can make the Echo
+speak. The add-on checks whether Amazon is still reachable first:
+
+- reachable (partial outage): Alexa announces it as usual;
+- not reachable: the warning is spoken by the phone in `offline_tts_service`
+  instead (Home Assistant companion app text-to-speech, at full alarm volume, then
+  restored). The phone receives it over your home Wi-Fi without internet **only if**
+  the app's *Settings → Companion app → Persistent connection* is set to *Always*
+  or *Home Wi-Fi only*.
+
+Nothing is announced during `maintenance_windows` or `alexa_quiet_hours`.
+The dashboard's *Alexa announcements* card has test buttons.
+
+## WhatsApp outage report
+
+When the internet comes back (after outages of at least `notify_min_outage_minutes`),
+a formatted report is sent through the **PDC WhatsApp Bridge** add-on: when it went
+down and came back, how long it lasted, the speed it came back with (bars vs your
+plan), whether the line showed warning signs (loss / high ping) before it dropped,
+today's and this week's outages and uptime, how it ranks against earlier outages,
+the gap since the previous one, and a public IP / ISP change if there was one.
+
+Set `whatsapp_to` to the bridge's `recipient_number` and `whatsapp_api_token` to
+the bridge's `api_token`. The bridge is found automatically; set
+`whatsapp_bridge_url` only if that fails. If WhatsApp is still reconnecting after
+the outage, the report is retried for up to 30 minutes and never sent twice.
+The dashboard shows a live preview and has a *Send test* button.
+
+## Monthly ISP report
+
+On the 1st of each month (from `monthly_report_hour`), last month's ISP report card
+goes to WhatsApp: grade, average download / upload vs the plan you pay for, share of
+tests that reached 80% of it or fell below half, ping, uptime, outages and total
+downtime, the longest outage and worst day, fastest and slowest hour, and how it
+compares with the month before. Set `plan_price` (your monthly bill) to add a
+*value for money* line: price × (average speed vs plan) × uptime.
+
+The dashboard's *Monthly ISP report* card lists every month with its grade; click one
+to preview its report, or send it now.
+
 ## Dashboard
 
 Open **Net Monitor** in the Home Assistant sidebar (enable *Show in sidebar* on the
@@ -82,5 +130,15 @@ add-on page). It follows Home Assistant's light/dark theme.
 | `weekly_report_enabled` / `_day` / `_hour` | on / sun / 21 | |
 | `maintenance_windows` | none | Daily `HH:MM-HH:MM` windows for scheduled router restarts |
 | `retention_days` | 365 | |
+| `alexa_entities` | none | Echo `media_player` entities that announce outages |
+| `alexa_volume` | 60 | Volume (%) while announcing; restored afterwards |
+| `alexa_down_message` / `alexa_up_message` | | `{duration}` = spoken outage length |
+| `alexa_quiet_hours` | none | Daily `HH:MM-HH:MM` windows with no announcements |
+| `offline_tts_service` | empty | Phone that speaks the warning when Alexa can't, e.g. `notify.mobile_app_my_phone` |
+| `whatsapp_to` | empty | Your number, e.g. `+8801XXXXXXXXX` (must be the bridge's recipient) |
+| `whatsapp_api_token` | empty | The PDC WhatsApp Bridge `api_token` |
+| `whatsapp_bridge_url` | auto | Override, e.g. `http://172.30.33.6:8787` |
+| `monthly_report_enabled` / `_hour` | on / 10 | Monthly ISP report on the 1st |
+| `plan_price` / `plan_currency` | 0 / ৳ | Monthly bill for the value-for-money line (`0` = off) |
 
 Data use: roughly 100 MB per speedtest at 40 Mbit/s (~2.4 GB/day hourly).
