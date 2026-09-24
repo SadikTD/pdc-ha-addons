@@ -110,6 +110,11 @@ add-on page). It follows Home Assistant's light/dark theme.
 
 ## Options
 
+Change these on the dashboard's **Settings** page (gear button, top right), or on
+the add-on's *Configuration* tab; both stay in sync. Settings apply immediately,
+except `speedtest_interval_minutes` and `check_interval_seconds`, which restart the
+add-on automatically. The WhatsApp token is never shown; leave it blank to keep it.
+
 | Option | Default | |
 |---|---|---|
 | `plan_download_mbps` / `plan_upload_mbps` | 40 / 40 | Your ISP plan |

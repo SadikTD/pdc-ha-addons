@@ -27,6 +27,9 @@
           <button role="menuitem" data-min="0" id="menu-resume" hidden>Resume speedtests</button>
         </div>
       </div>
+      <button class="btn ghost" id="btn-settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span>
+      </button>
       <button class="btn primary" id="btn-run">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 13l4-4M4.9 19a9 9 0 1 1 14.2 0"/></svg><span>Run speedtest</span>
       </button>
@@ -246,6 +249,24 @@
 
   <footer class="foot" id="foot"></footer>
   <div class="tip" id="tip" role="tooltip" hidden></div>
+
+  <dialog class="settings" id="settings" aria-labelledby="settings-title">
+    <form method="dialog" id="settings-form" novalidate>
+      <header class="settings-head">
+        <h2 id="settings-title">Settings</h2>
+        <button class="btn ghost" type="button" id="settings-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+      <nav class="settings-nav" id="settings-nav"></nav>
+      <div class="settings-body" id="settings-body"><p class="muted">Loading…</p></div>
+      <footer class="settings-foot">
+        <span class="small" id="settings-status" aria-live="polite"></span>
+        <button class="btn ghost" type="button" id="settings-cancel">Cancel</button>
+        <button class="btn primary" type="submit" id="settings-save" disabled>Save</button>
+      </footer>
+    </form>
+  </dialog>
 </main>
 <script src="static/chart.umd.min.js"></script>
 <script src="static/app.js"></script>

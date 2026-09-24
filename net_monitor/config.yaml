@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.3.0"
+version: "1.4.0"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
@@ -18,7 +18,8 @@ panel_icon: mdi:speedometer
 panel_title: Net Monitor
 # Publishes sensors, sends notifications and drives Alexa announcements.
 homeassistant_api: true
-# Read-only: looks up the PDC WhatsApp Bridge add-on's internal IP for outage reports.
+# Looks up the PDC WhatsApp Bridge add-on's internal IP, and saves this add-on's own
+# options from the dashboard's Settings page.
 hassio_api: true
 options:
   speedtest_interval_minutes: 60

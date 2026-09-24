@@ -734,6 +734,224 @@
     $("btn-wa-test").disabled = false;
   });
 
+  // ----------------------------------------------------------------- settings
+  const hourLabel = (h) => hFmt.format(new Date(2000, 0, 1, h));
+  const HOURS = Array.from({ length: 24 }, (_, h) => [h, hourLabel(h)]);
+  const WEEKDAY_OPTS = [["mon", "Monday"], ["tue", "Tuesday"], ["wed", "Wednesday"], ["thu", "Thursday"], ["fri", "Friday"], ["sat", "Saturday"], ["sun", "Sunday"]];
+  const SETTINGS_UI = [
+    { id: "plan", title: "Your internet plan", note: "What you pay for. Grades, reports and slow-speed alerts compare against this.", fields: [
+      { key: "plan_download_mbps", label: "Download speed", type: "number", unit: "Mbps", step: "any" },
+      { key: "plan_upload_mbps", label: "Upload speed", type: "number", unit: "Mbps", step: "any" },
+      { key: "plan_price", label: "Monthly bill", type: "number", step: "any", unitKey: "plan_currency",
+        help: "Adds a value-for-money line to the monthly report. 0 leaves it out." },
+      { key: "plan_currency", label: "Currency symbol", type: "text", short: true },
+    ] },
+    { id: "alexa", title: "Alexa announcements", note: "Alexa speaks through Amazon's servers, so it can only warn you when Amazon is still reachable.", fields: [
+      { key: "alexa_entities", label: "Echo devices", type: "players", help: "None ticked = no announcements." },
+      { key: "alexa_volume", label: "Announcement volume", type: "range", help: "Set just for the announcement, then put back." },
+      { key: "alexa_down_message", label: "When the internet drops", type: "text" },
+      { key: "alexa_up_message", label: "When it's back", type: "text", help: "{duration} is replaced with e.g. “27 minutes”." },
+      { key: "alexa_quiet_hours", label: "Quiet hours", type: "windows", help: "No announcements during these times." },
+      { key: "offline_tts_service", label: "Phone fallback", type: "notify",
+        help: "Phone that speaks the warning when Alexa can't. Leave empty to never use the phone." },
+    ] },
+    { id: "whatsapp", title: "WhatsApp", note: "Sent through the PDC WhatsApp Bridge add-on.", fields: [
+      { key: "whatsapp_to", label: "Your number", type: "text", placeholder: "+8801XXXXXXXXX", help: "Must be the bridge's recipient number." },
+      { key: "whatsapp_api_token", label: "Bridge API token", type: "password", help: "The bridge's api_token." },
+      { key: "monthly_report_enabled", label: "Monthly ISP report", type: "bool", help: "Last month's report card, on the 1st." },
+      { key: "monthly_report_hour", label: "Send it at", type: "hour" },
+      { key: "whatsapp_bridge_url", label: "Bridge address", type: "text", placeholder: "Found automatically",
+        help: "Only if the bridge isn't found, e.g. http://172.30.33.6:8787" },
+    ] },
+    { id: "alerts", title: "Phone notifications", note: "Home Assistant app notifications.", fields: [
+      { key: "notify_service", label: "Notify service", type: "notify", help: "Empty = no phone notifications." },
+      { key: "notify_min_outage_minutes", label: "Ignore outages shorter than", type: "number", unit: "min",
+        help: "Also applies to the WhatsApp outage report." },
+      { key: "slow_alert_percent", label: "Slow-speed alert below", type: "number", unit: "% of plan", help: "0 turns slow-speed alerts off." },
+      { key: "slow_alert_consecutive_tests", label: "…for this many tests in a row", type: "number" },
+      { key: "weekly_report_enabled", label: "Weekly report", type: "bool" },
+      { key: "weekly_report_day", label: "Weekly report day", type: "select", options: WEEKDAY_OPTS },
+      { key: "weekly_report_hour", label: "Weekly report time", type: "hour" },
+    ] },
+    { id: "speedtest", title: "Speedtests", fields: [
+      { key: "speedtest_interval_minutes", label: "Run every", type: "number", unit: "min", help: "Aligned to midnight: 60 = on the hour. Restarts the add-on." },
+      { key: "server_ids", label: "Ookla server IDs", type: "ints", help: "Tried in order, comma-separated." },
+      { key: "recovery_speedtest_min_outage_minutes", label: "Test after outages of at least", type: "number", unit: "min" },
+      { key: "busy_threshold_mbps", label: "Line is busy above (download)", type: "number", unit: "Mbps", step: "any", help: "0 = ignore." },
+      { key: "busy_upload_mbps", label: "…or upload above", type: "number", unit: "Mbps", step: "any", help: "Catches gaming and calls. 0 = ignore." },
+      { key: "busy_packets_per_second", label: "…or outgoing packets above", type: "number", unit: "per second", help: "0 = ignore." },
+      { key: "busy_retry_minutes", label: "Retry a busy line after", type: "number", unit: "min" },
+      { key: "maintenance_windows", label: "Scheduled router restarts", type: "windows",
+        help: "Outages in these windows aren't counted, announced or reported." },
+    ] },
+    { id: "monitoring", title: "Monitoring", note: "Advanced.", fields: [
+      { key: "check_interval_seconds", label: "Check every", type: "number", unit: "seconds", help: "Restarts the add-on." },
+      { key: "check_targets", label: "Check targets", type: "lines", help: "One host:port per line. Online if any answers." },
+      { key: "quality_samples", label: "Handshakes per check", type: "number", help: "For jitter and packet loss." },
+      { key: "retention_days", label: "Keep history for", type: "number", unit: "days" },
+    ] },
+  ];
+  const FIELDS = SETTINGS_UI.flatMap((s) => s.fields);
+  let settingsData = null, settingsOriginal = {};
+
+  function fieldControl(f, v) {
+    const id = `set-${f.key}`, val = esc(v ?? "");
+    const opts = (list, cur) => list.map(([k, l]) => `<option value="${esc(k)}"${String(k) === String(cur) ? " selected" : ""}>${esc(l)}</option>`).join("");
+    switch (f.type) {
+      case "number": {
+        const unit = f.unitKey ? esc(settingsData.values[f.unitKey]) : esc(f.unit || "");
+        return `<div class="with-unit"><input type="number" id="${id}" value="${val}" step="${f.step || 1}">${unit ? `<span class="unit">${unit}</span>` : ""}</div>`;
+      }
+      case "text": return `<input type="text" id="${id}" value="${val}" placeholder="${esc(f.placeholder || "")}"${f.short ? ' style="max-width:120px"' : ""}>`;
+      case "password": return `<input type="password" id="${id}" value="" autocomplete="off" placeholder="${settingsData.secrets_set[f.key] ? "Saved. Type a new one to replace it" : "Not set"}">`;
+      case "bool": return `<label class="switch"><input type="checkbox" id="${id}"${v ? " checked" : ""}><span></span></label>`;
+      case "select": return `<select id="${id}">${opts(f.options, v)}</select>`;
+      case "hour": return `<select id="${id}">${opts(HOURS, v)}</select>`;
+      case "range": return `<div class="range"><input type="range" id="${id}" min="0" max="100" step="5" value="${val}"><output for="${id}">${val}%</output></div>`;
+      case "players": return `<div class="checks" id="${id}">${settingsData.media_players.map((p) =>
+        `<label><input type="checkbox" value="${esc(p.id)}"${(v || []).includes(p.id) ? " checked" : ""}> ${esc(p.name)} <span class="muted small">${esc(p.id)}</span></label>`).join("") || '<span class="muted">No media players found</span>'}</div>`;
+      case "notify": return `<input type="text" id="${id}" value="${val}" list="notify-list" placeholder="notify.mobile_app_…">`;
+      case "ints": return `<input type="text" id="${id}" value="${esc((v || []).join(", "))}">`;
+      case "lines": return `<textarea id="${id}" spellcheck="false">${esc((v || []).join("\n"))}</textarea>`;
+      case "windows": return `<div class="windows" id="${id}">${(v || []).map(winRow).join("")}<button type="button" class="btn ghost add">+ Add a time window</button></div>`;
+    }
+    return "";
+  }
+  function winRow(spec) {
+    const [a, b] = String(spec || "00:00-07:00").split("-").map((t) => t.trim().padStart(5, "0"));
+    return `<div class="win"><input type="time" value="${esc(a)}"> to <input type="time" value="${esc(b)}"><button type="button" class="btn ghost" aria-label="Remove">Remove</button></div>`;
+  }
+  function fieldValue(f) {
+    const el = $(`set-${f.key}`);
+    switch (f.type) {
+      case "number": return el.value === "" ? "" : Number(el.value);
+      case "bool": return el.checked;
+      case "hour": case "range": return Number(el.value);
+      case "players": return [...el.querySelectorAll("input:checked")].map((c) => c.value);
+      case "ints": return el.value.split(/[\s,]+/).filter(Boolean).map(Number);
+      case "lines": return el.value.split("\n").map((s) => s.trim()).filter(Boolean);
+      case "windows": return [...el.querySelectorAll(".win")].map((w) => {
+        const [a, b] = w.querySelectorAll("input");
+        return a.value && b.value ? `${a.value}-${b.value}` : "";
+      }).filter(Boolean);
+      default: return el.value.trim();
+    }
+  }
+  function settingsChanges() {
+    const out = {};
+    FIELDS.forEach((f) => {
+      const v = fieldValue(f);
+      if (f.type === "password" ? v !== "" : JSON.stringify(v) !== JSON.stringify(settingsOriginal[f.key])) out[f.key] = v;
+    });
+    return out;
+  }
+  function settingsDirty() {
+    const n = Object.keys(settingsChanges()).length;
+    $("settings-save").disabled = !n;
+    const st = $("settings-status");
+    if (!st.classList.contains("bad")) { st.className = "small"; st.textContent = n ? `${n} unsaved change${n > 1 ? "s" : ""}` : ""; }
+  }
+  function settingsStatus(text, cls) {
+    const st = $("settings-status");
+    st.className = `small ${cls || ""}`;
+    st.textContent = text;
+  }
+
+  async function openSettings() {
+    const dlg = $("settings");
+    settingsStatus("");
+    $("settings-body").innerHTML = '<p class="muted">Loading…</p>';
+    dlg.showModal();
+    try {
+      settingsData = await api("api/settings");
+    } catch (e) {
+      $("settings-body").innerHTML = '<p class="muted">Couldn\'t load the settings.</p>';
+      return;
+    }
+    settingsOriginal = JSON.parse(JSON.stringify(settingsData.values));
+    $("settings-nav").innerHTML = SETTINGS_UI.map((s) => `<a href="#sec-${s.id}">${esc(s.title)}</a>`).join("");
+    $("settings-body").innerHTML = `<datalist id="notify-list">${settingsData.notify_services.map((n) => `<option value="${esc(n)}">`).join("")}</datalist>`
+      + SETTINGS_UI.map((s) => `<fieldset id="sec-${s.id}"><legend>${esc(s.title)}</legend>${s.note ? `<p class="small muted section-note">${esc(s.note)}</p>` : ""}
+        ${s.fields.map((f) => `<div class="field" data-key="${f.key}">
+          ${["players", "windows", "bool"].includes(f.type) ? `<span class="label">${esc(f.label)}</span>` : `<label for="set-${f.key}">${esc(f.label)}</label>`}
+          <div>${fieldControl(f, settingsData.values[f.key])}</div>
+          ${f.help ? `<p class="help">${esc(f.help)}</p>` : ""}<p class="err" hidden></p></div>`).join("")}</fieldset>`).join("");
+    settingsDirty();
+  }
+  function closeSettings() {
+    if (Object.keys(settingsChanges()).length && !confirm("Discard unsaved changes?")) return;
+    $("settings").close();
+  }
+
+  $("btn-settings").addEventListener("click", () => openSettings());
+  $("settings-close").addEventListener("click", closeSettings);
+  $("settings-cancel").addEventListener("click", closeSettings);
+  $("settings").addEventListener("cancel", (e) => { e.preventDefault(); closeSettings(); });
+  $("settings-nav").addEventListener("click", (e) => {
+    const a = e.target.closest("a");
+    if (!a) return;
+    e.preventDefault();
+    document.querySelector(a.getAttribute("href")).scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+  });
+  $("settings-body").addEventListener("input", (e) => {
+    if (e.target.type === "range") e.target.nextElementSibling.textContent = `${e.target.value}%`;
+    if (e.target.id === "set-plan_currency") document.querySelector('[data-key="plan_price"] .unit').textContent = e.target.value;
+    const field = e.target.closest(".field");
+    if (field) { field.classList.remove("invalid"); field.querySelector(".err").hidden = true; }
+    $("settings-status").classList.remove("bad");
+    settingsDirty();
+  });
+  $("settings-body").addEventListener("change", settingsDirty);
+  $("settings-body").addEventListener("click", (e) => {
+    const b = e.target.closest(".windows button");
+    if (!b) return;
+    if (b.classList.contains("add")) b.insertAdjacentHTML("beforebegin", winRow());
+    else b.closest(".win").remove();
+    settingsDirty();
+  });
+  $("settings-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const changes = settingsChanges();
+    if (!Object.keys(changes).length) return;
+    $("settings-save").disabled = true;
+    settingsStatus("Saving…");
+    const r = await fetch("api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(changes) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      Object.entries(body.errors || {}).forEach(([k, msg]) => {
+        const field = document.querySelector(`.field[data-key="${k}"]`);
+        if (!field) return;
+        field.classList.add("invalid");
+        const err = field.querySelector(".err");
+        err.textContent = `This ${msg}.`.replace("This “", "“");
+        err.hidden = false;
+      });
+      const first = document.querySelector(".field.invalid");
+      if (first) first.scrollIntoView({ block: "center" });
+      settingsStatus(body.error || "Some settings need fixing.", "bad");
+      $("settings-save").disabled = false;
+      return;
+    }
+    if (body.restart) {
+      settingsStatus("Saved. Restarting the add-on…", "good");
+      await new Promise((res) => setTimeout(res, 6000));
+      for (let i = 0; i < 40; i++) {
+        try { await api("api/status"); break; } catch (err) { await new Promise((res) => setTimeout(res, 1500)); }
+      }
+      location.reload();
+      return;
+    }
+    Object.assign(settingsOriginal, changes);
+    if ("whatsapp_api_token" in changes) {
+      settingsData.secrets_set.whatsapp_api_token = true;
+      $("set-whatsapp_api_token").value = "";
+      $("set-whatsapp_api_token").placeholder = "Saved. Type a new one to replace it";
+    }
+    settingsDirty();
+    settingsStatus("Saved. Changes are live.", "good");
+    loadAll().catch(() => {});
+  });
+
   let selMonth = null;
   async function showMonth(key) {
     selMonth = key;

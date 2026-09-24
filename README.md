@@ -21,7 +21,7 @@ Tracks the **international** internet connection (not BDIX / in-country caches).
 
 - Checks every 30 s against Singapore hosts (latency, jitter, packet loss); records each outage as *from → to, duration* and the speed the line came back with.
 - Hourly Ookla speedtest to well-routed Singapore servers, with live progress. Waits while the router (read over UPnP) shows the line is busy; can be paused.
-- Dashboard in the Home Assistant sidebar: live status, uptime strip, A–F report card vs your plan, zoomable speed chart, best/worst-times heatmap, "what was my internet like at…" lookup, ISP/IP history, CSV export.
+- Dashboard in the Home Assistant sidebar, with a Settings page for every option: live status, uptime strip, A–F report card vs your plan, zoomable speed chart, best/worst-times heatmap, "what was my internet like at…" lookup, ISP/IP history, CSV export.
 - Sensors for speed, % of plan, uptime, jitter, loss and last outage; phone notifications for recovery, slow speed and a weekly report.
 - Alexa announces when the internet drops and returns (60% volume, then restored; phone fallback when Amazon is unreachable), and a detailed outage report arrives on WhatsApp via the PDC WhatsApp Bridge, plus a monthly ISP report card (speed vs what you pay for, uptime, outages).
 

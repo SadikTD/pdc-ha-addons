@@ -244,7 +244,10 @@ def _supervisor_call(method, path, payload=None, timeout=10):
                     return r.status, None
         except urllib.error.HTTPError as e:
             log.warning("HA API %s %s -> %s", method, path, e.code)
-            return e.code, None
+            try:
+                return e.code, json.loads(e.read() or b"null")
+            except (OSError, ValueError):
+                return e.code, None
         except OSError:
             continue  # try the next host name
     log.warning("HA API unreachable for %s", path)
@@ -1498,6 +1501,176 @@ def status_payload():
     }
 
 
+# ----------------------------------------------------------------- settings
+
+WINDOW_RE = r"^\d{1,2}:\d{2}-\d{1,2}:\d{2}$"
+# Mirrors the schema in config.yaml, so the dashboard can reject bad values before
+# the Supervisor does (it validates again when saving).
+SETTINGS = {
+    "speedtest_interval_minutes": ("int", 15, 1440),
+    "server_ids": ("ints",),
+    "check_interval_seconds": ("int", 10, 300),
+    "check_targets": ("texts", r"^[A-Za-z0-9.\-]+:\d{1,5}$", "host:port", 1),
+    "busy_threshold_mbps": ("float", 0, 10000),
+    "busy_upload_mbps": ("float", 0, 10000),
+    "busy_packets_per_second": ("int", 0, 100000),
+    "busy_retry_minutes": ("int", 1, 60),
+    "recovery_speedtest_min_outage_minutes": ("int", 0, 1440),
+    "notify_service": ("text", False, None),
+    "notify_min_outage_minutes": ("int", 0, 1440),
+    "retention_days": ("int", 7, 3650),
+    "plan_download_mbps": ("float", 1, 100000),
+    "plan_upload_mbps": ("float", 1, 100000),
+    "slow_alert_percent": ("int", 0, 100),
+    "slow_alert_consecutive_tests": ("int", 1, 24),
+    "weekly_report_enabled": ("bool",),
+    "weekly_report_day": ("choice", WEEKDAYS),
+    "weekly_report_hour": ("int", 0, 23),
+    "quality_samples": ("int", 1, 10),
+    "maintenance_windows": ("texts", WINDOW_RE, "HH:MM-HH:MM"),
+    "alexa_entities": ("texts", r"^media_player\.[a-z0-9_]+$", "media_player.xxx"),
+    "alexa_volume": ("int", 0, 100),
+    "alexa_down_message": ("text", True, None),
+    "alexa_up_message": ("text", True, None),
+    "alexa_quiet_hours": ("texts", WINDOW_RE, "HH:MM-HH:MM"),
+    "offline_tts_service": ("text", False, None),
+    "whatsapp_to": ("text", False, r"^\+[1-9]\d{7,14}$"),
+    "whatsapp_api_token": ("text", False, None),
+    "whatsapp_bridge_url": ("text", False, r"^https?://\S+$"),
+    "monthly_report_enabled": ("bool",),
+    "monthly_report_hour": ("int", 0, 23),
+    "plan_price": ("float", 0, 10000000),
+    "plan_currency": ("text", True, None),
+}
+RESTART_KEYS = {"speedtest_interval_minutes", "check_interval_seconds"}  # read once at startup
+SECRET_KEYS = {"whatsapp_api_token"}
+
+
+def _check(spec, value):
+    """Returns the cleaned value or raises ValueError with a readable reason."""
+    kind = spec[0]
+    if kind in ("int", "float"):
+        if isinstance(value, bool) or value is None or value == "":
+            raise ValueError("must be a number")
+        v = float(value)
+        if kind == "int":
+            if v != int(v):
+                raise ValueError("must be a whole number")
+            v = int(v)
+        if not spec[1] <= v <= spec[2]:
+            raise ValueError(f"must be between {spec[1]:g} and {spec[2]:g}")
+        return v
+    if kind == "bool":
+        if not isinstance(value, bool):
+            raise ValueError("must be on or off")
+        return value
+    if kind == "choice":
+        if value not in spec[1]:
+            raise ValueError("must be one of the options")
+        return value
+    if kind == "text":
+        v = str(value if value is not None else "").strip()
+        if spec[1] and not v:
+            raise ValueError("can't be empty")
+        if v and spec[2] and not re.match(spec[2], v):
+            raise ValueError("isn't in the right format")
+        return v
+    if kind == "ints":
+        if not isinstance(value, list) or not value:
+            raise ValueError("needs at least one entry")
+        try:
+            return [int(x) for x in value]
+        except (TypeError, ValueError):
+            raise ValueError("must be whole numbers") from None
+    if kind == "texts":
+        if not isinstance(value, list):
+            raise ValueError("must be a list")
+        v = [str(x).strip() for x in value if str(x).strip()]
+        bad = [x for x in v if not re.match(spec[1], x)]
+        if bad:
+            raise ValueError(f"“{bad[0]}” should look like {spec[2]}")
+        if len(v) < (spec[3] if len(spec) > 3 else 0):
+            raise ValueError("needs at least one entry")
+        return v
+    raise ValueError("unknown type")
+
+
+def validate_settings(changes):
+    clean, errors = {}, {}
+    for key, value in changes.items():
+        if key not in SETTINGS:
+            errors[key] = "unknown setting"
+            continue
+        if key in SECRET_KEYS and not value:
+            continue  # left blank = keep the saved secret
+        try:
+            clean[key] = _check(SETTINGS[key], value)
+        except ValueError as e:
+            errors[key] = str(e)
+    return clean, errors
+
+
+def save_settings(changes):
+    """Validates, stores via the Supervisor (so the add-on's Configuration tab matches)
+    and applies at once. Returns (http status, body)."""
+    clean, errors = validate_settings(changes)
+    if errors:
+        return 400, {"errors": errors}
+    clean = {k: v for k, v in clean.items() if v != OPTS.get(k)}
+    if not clean:
+        return 200, {"ok": True, "changed": [], "restart": False}
+    if os.environ.get("SUPERVISOR_TOKEN"):
+        status, info = _supervisor_call("GET", "/addons/self/info")
+        current = ((info or {}).get("data") or {}).get("options") if status == 200 else None
+        if current is None:
+            return 502, {"error": "Couldn't read the current settings from Home Assistant"}
+        status, body = _supervisor_call("POST", "/addons/self/options", {"options": {**current, **clean}})
+        if status != 200:
+            return 400 if status == 400 else 502, {
+                "error": (body or {}).get("message") or f"Home Assistant didn't accept the settings ({status})"}
+    else:  # local development: no Supervisor, write options.json directly
+        try:
+            with open(OPTIONS_PATH, encoding="utf-8") as f:
+                stored = json.load(f)
+        except (OSError, ValueError):
+            stored = {}
+        with open(OPTIONS_PATH + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({**stored, **clean}, f, indent=2, ensure_ascii=False)
+        os.replace(OPTIONS_PATH + ".tmp", OPTIONS_PATH)
+    restart = bool(RESTART_KEYS & clean.keys())
+    OPTS.update(clean)
+    log.info("Settings changed: %s", ", ".join(sorted(clean)))
+    threading.Thread(target=publish_all, daemon=True).start()  # plan changes affect sensors
+    if restart:
+        threading.Timer(1.5, restart_self).start()
+    return 200, {"ok": True, "changed": sorted(clean), "restart": restart}
+
+
+def restart_self():
+    if os.environ.get("SUPERVISOR_TOKEN"):
+        log.info("Restarting to apply new check intervals")
+        _supervisor_call("POST", "/addons/self/restart")
+    else:
+        log.info("New check intervals apply after a restart")
+
+
+def settings_payload():
+    values = {k: OPTS.get(k) for k in SETTINGS}
+    for k in SECRET_KEYS:
+        values[k] = ""
+    states = _supervisor_call("GET", "/core/api/states", timeout=20)[1] or []
+    players = {s["entity_id"]: (s.get("attributes") or {}).get("friendly_name") or s["entity_id"]
+               for s in states if s.get("entity_id", "").startswith("media_player.")}
+    for e in OPTS["alexa_entities"]:
+        players.setdefault(e, e)
+    services = _supervisor_call("GET", "/core/api/services", timeout=20)[1] or []
+    notify = sorted(f"notify.{name}" for d in services if d.get("domain") == "notify"
+                    for name in (d.get("services") or {}))
+    return {"values": values, "secrets_set": {k: bool(OPTS.get(k)) for k in SECRET_KEYS},
+            "media_players": [{"id": k, "name": v} for k, v in sorted(players.items(), key=lambda x: x[1].lower())],
+            "notify_services": notify, "restart_keys": sorted(RESTART_KEYS)}
+
+
 # --------------------------------------------------------------------- http
 
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
@@ -1571,6 +1744,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, timeline(lo, hi, max(10, min(180, int(qs.get("buckets", [60])[0])))))
             if path == "/api/heatmap":
                 return self._send(200, heatmap(max(1, min(365, int(qs.get("days", [30])[0])))))
+            if path == "/api/settings":
+                return self._send(200, settings_payload())
             if path == "/api/months":
                 return self._send(200, months_payload())
             if path == "/api/monthly_report":
@@ -1619,6 +1794,10 @@ class Handler(BaseHTTPRequestHandler):
             text, _ = latest_outage_report()
             ok = whatsapp_send("🧪 _Test message_\n\n" + text, f"netmon-test-{int(time.time())}", give_up_after=0)
             return self._send(200 if ok else 502, {"ok": ok} if ok else {"error": "Not sent, see the add-on log"})
+        if path == "/api/settings":
+            if not isinstance(body, dict):
+                return self._send(400, {"error": "invalid settings"})
+            return self._send(*save_settings(body))
         if path == "/api/test/monthly":
             if not (OPTS["whatsapp_to"] and OPTS["whatsapp_api_token"]):
                 return self._send(400, {"error": "whatsapp_to / whatsapp_api_token are not set"})
