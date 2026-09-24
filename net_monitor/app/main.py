@@ -38,7 +38,7 @@ if os.environ.get("NETMON_ALLOW_ALL") == "1":
 
 DEFAULT_OPTIONS = {
     "speedtest_interval_minutes": 60,
-    "server_ids": [13623, 5935, 7311, 31293],
+    "server_ids": [13058, 7556, 62530, 67827],
     "check_interval_seconds": 30,
     "check_targets": ["sgp-ping.vultr.com:443", "m1speedtest1.m1net.com.sg:8080",
                       "speedtest.singnet.com.sg:8080", "1.1.1.1:443"],
@@ -48,7 +48,16 @@ DEFAULT_OPTIONS = {
     "notify_service": "",
     "notify_min_outage_minutes": 1,
     "retention_days": 365,
+    "plan_download_mbps": 40.0,
+    "plan_upload_mbps": 40.0,
+    "slow_alert_percent": 50,
+    "slow_alert_consecutive_tests": 2,
+    "weekly_report_enabled": True,
+    "weekly_report_day": "sun",
+    "weekly_report_hour": 21,
+    "quality_samples": 5,
 }
+WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 log = logging.getLogger("net_monitor")
 
@@ -103,8 +112,14 @@ class DB:
             );
             CREATE INDEX IF NOT EXISTS idx_events_start ON events(start);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS ip_log (ts REAL NOT NULL, ip TEXT, isp TEXT);
             """
         )
+        # v1.1: connection-quality columns on existing databases.
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(checks)")}
+        for col in ("jitter_ms", "loss_pct"):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE checks ADD COLUMN {col} REAL")
         self.conn.commit()
 
     def execute(self, sql, params=()):
@@ -144,10 +159,17 @@ class State:
         self.online = None
         self.last_check_ts = None
         self.last_latency_ms = None
+        self.last_jitter_ms = None
+        self.last_loss_pct = None
         self.outage_id = None
         self.outage_start = None
         self.test_running = False
         self.test_started_ts = None
+        self.test_phase = None      # ping / download / upload
+        self.test_progress = 0.0    # 0..1 within the phase
+        self.test_live_mbps = None
+        self.slow_streak = 0
+        self.slow_alerted = False
         self.next_test_ts = None
         self.scheduler_note = ""
         self.router_upnp = None  # None unknown, True reachable, False not found
@@ -225,30 +247,72 @@ def ha_notify(title, message):
                         {"title": title, "message": message})
 
 
+def iso(ts):
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(ts)) if ts else None
+
+
 def publish_connectivity():
     ha_set_state("binary_sensor.net_monitor_internet", "on" if state.online else "off", {
         "friendly_name": "Internet",
         "device_class": "connectivity",
-        "latency_ms": state.last_latency_ms,
-        "offline_since": (time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(state.outage_start))
-                          if state.outage_start else None),
+        "latency_ms": round(state.last_latency_ms, 1) if state.last_latency_ms else None,
+        "jitter_ms": round(state.last_jitter_ms, 1) if state.last_jitter_ms is not None else None,
+        "packet_loss_pct": state.last_loss_pct,
+        "online_since": iso(online_since()) if state.online else None,
+        "offline_since": iso(state.outage_start),
     })
 
 
-def publish_speedtest(row):
-    if row.get("status") != "ok":
-        return
-    common = {"state_class": "measurement", "server": row.get("server_name"),
-              "tested_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(row["ts"]))}
-    ha_set_state("sensor.net_monitor_download", round(row["download_mbps"], 2), {
-        **common, "friendly_name": "Internet download (international)",
-        "unit_of_measurement": "Mbit/s", "device_class": "data_rate", "icon": "mdi:download"})
-    ha_set_state("sensor.net_monitor_upload", round(row["upload_mbps"], 2), {
-        **common, "friendly_name": "Internet upload (international)",
-        "unit_of_measurement": "Mbit/s", "device_class": "data_rate", "icon": "mdi:upload"})
-    ha_set_state("sensor.net_monitor_ping", round(row["ping_ms"], 1), {
-        **common, "friendly_name": "Internet ping (international)",
-        "unit_of_measurement": "ms", "device_class": "duration", "icon": "mdi:timer-outline"})
+def publish_all():
+    """(Re)publishes every sensor; states set via the REST API vanish on HA restart."""
+    publish_connectivity()
+    row = db.one("SELECT * FROM speedtests WHERE status='ok' ORDER BY ts DESC LIMIT 1")
+    if row:
+        common = {"state_class": "measurement", "server": row.get("server_name"),
+                  "tested_at": iso(row["ts"])}
+        ha_set_state("sensor.net_monitor_download", round(row["download_mbps"], 2), {
+            **common, "friendly_name": "Internet download (international)",
+            "unit_of_measurement": "Mbit/s", "device_class": "data_rate", "icon": "mdi:download"})
+        ha_set_state("sensor.net_monitor_upload", round(row["upload_mbps"], 2), {
+            **common, "friendly_name": "Internet upload (international)",
+            "unit_of_measurement": "Mbit/s", "device_class": "data_rate", "icon": "mdi:upload"})
+        ha_set_state("sensor.net_monitor_ping", round(row["ping_ms"], 1), {
+            **common, "friendly_name": "Internet ping (international)",
+            "unit_of_measurement": "ms", "device_class": "duration", "icon": "mdi:timer-outline"})
+        ha_set_state("sensor.net_monitor_download_plan", round(100 * row["download_mbps"] / plan_down()), {
+            **common, "friendly_name": "Internet speed vs plan", "unit_of_measurement": "%",
+            "plan_mbps": plan_down(), "icon": "mdi:gauge"})
+    now = time.time()
+    s = summary(now - 86400, now)
+    ha_set_state("sensor.net_monitor_uptime_24h",
+                 round(s["uptime_pct"], 2) if s["uptime_pct"] is not None else "unknown", {
+                     "friendly_name": "Internet uptime (24h)", "unit_of_measurement": "%",
+                     "state_class": "measurement", "outages": s["outages"],
+                     "downtime_min": round(s["downtime_s"] / 60, 1), "icon": "mdi:check-network-outline"})
+    if state.last_jitter_ms is not None:
+        ha_set_state("sensor.net_monitor_jitter", round(state.last_jitter_ms, 1), {
+            "friendly_name": "Internet jitter", "unit_of_measurement": "ms", "state_class": "measurement",
+            "device_class": "duration", "icon": "mdi:sine-wave"})
+    if state.last_loss_pct is not None:
+        ha_set_state("sensor.net_monitor_packet_loss", round(state.last_loss_pct, 1), {
+            "friendly_name": "Internet packet loss", "unit_of_measurement": "%",
+            "state_class": "measurement", "icon": "mdi:package-variant-remove"})
+    last = db.one("SELECT start, end FROM events WHERE kind='internet_down' AND end IS NOT NULL "
+                  "ORDER BY end DESC LIMIT 1")
+    ha_set_state("sensor.net_monitor_last_outage", iso(last["end"]) if last else "unknown", {
+        "friendly_name": "Last internet outage", "device_class": "timestamp", "icon": "mdi:lan-disconnect",
+        "started": iso(last["start"]) if last else None,
+        "duration_min": round((last["end"] - last["start"]) / 60, 1) if last else None,
+        "duration": fmt_duration(last["end"] - last["start"]) if last else None})
+
+
+def publish_loop():
+    while True:
+        time.sleep(300)
+        try:
+            publish_all()
+        except Exception:
+            log.exception("Publishing sensors failed")
 
 
 # -------------------------------------------------------------- router (UPnP)
@@ -339,11 +403,11 @@ router = RouterTraffic()
 
 # ------------------------------------------------------------- connectivity
 
-def _tcp_probe(target):
+def _tcp_probe(target, timeout=3.0):
     host, _, port = target.rpartition(":")
     t0 = time.perf_counter()
     try:
-        with socket.create_connection((host, int(port)), timeout=3):
+        with socket.create_connection((host, int(port)), timeout=timeout):
             return (time.perf_counter() - t0) * 1000
     except OSError:
         return None
@@ -353,8 +417,42 @@ probe_pool = ThreadPoolExecutor(max_workers=8)
 
 
 def check_once():
-    latencies = [x for x in probe_pool.map(_tcp_probe, OPTS["check_targets"]) if x is not None]
-    return (bool(latencies), min(latencies) if latencies else None)
+    """Returns (up, latency_ms, jitter_ms, loss_pct).
+
+    Up = any target answers. Quality comes from a few extra TCP handshakes to the
+    fastest target: a handshake that doesn't complete within 1.5 s counts as lost
+    (a real SYN loss would take >1 s to be retransmitted). Costs a few hundred bytes.
+    """
+    results = list(zip(OPTS["check_targets"], probe_pool.map(_tcp_probe, OPTS["check_targets"])))
+    ok = [(t, ms) for t, ms in results if ms is not None]
+    if not ok:
+        return False, None, None, None
+    target, first = min(ok, key=lambda x: x[1])
+    samples = [first]
+    for _ in range(max(0, OPTS["quality_samples"] - 1)):
+        time.sleep(0.2)
+        samples.append(_tcp_probe(target, timeout=1.5))
+    good = [s for s in samples if s is not None]
+    loss = 100.0 * (len(samples) - len(good)) / len(samples)
+    jitter = (sum(abs(a - b) for a, b in zip(good, good[1:])) / (len(good) - 1)) if len(good) > 1 else None
+    return True, sorted(good)[len(good) // 2], jitter, loss
+
+
+def plan_down():
+    return float(OPTS["plan_download_mbps"]) or 1.0
+
+
+def plan_up():
+    return float(OPTS["plan_upload_mbps"]) or 1.0
+
+
+def online_since():
+    """Start of the current online stretch: end of the last outage, or of a monitor gap
+    long enough (>10 min, e.g. a power cut) that we can't vouch for what happened."""
+    row = db.one("SELECT MAX(end) AS t FROM events WHERE end IS NOT NULL AND "
+                 "(kind = 'internet_down' OR end - start > 600)")
+    first = db.one("SELECT MIN(ts) AS t FROM checks")["t"]
+    return (row and row["t"]) or first
 
 
 def open_event(kind, start):
@@ -391,11 +489,13 @@ def monitor_loop():
         if prev_ts and t0 - prev_ts > 3 * interval:  # host was suspended/stalled
             eid = open_event("monitor_offline", prev_ts)
             close_event(eid, t0)
-        up, latency = check_once()
-        db.execute("INSERT INTO checks(ts, up, latency_ms) VALUES(?, ?, ?)", (t0, int(up), latency))
+        up, latency, jitter, loss = check_once()
+        db.execute("INSERT INTO checks(ts, up, latency_ms, jitter_ms, loss_pct) VALUES(?, ?, ?, ?, ?)",
+                   (t0, int(up), latency, jitter, loss))
         changed = False
         with state.lock:
             state.last_check_ts, state.last_latency_ms = t0, latency
+            state.last_jitter_ms, state.last_loss_pct = jitter, loss
             if up:
                 fails, first_fail_ts = 0, None
                 if state.outage_id:
@@ -442,36 +542,58 @@ def after_outage(outage_id, start, end):
 
 # ---------------------------------------------------------------- speedtest
 
-def _parse_ookla(stdout):
-    for line in reversed(stdout.strip().splitlines()):
-        try:
-            data = json.loads(line)
-        except ValueError:
-            continue
-        if data.get("type") == "result":
-            return data
-    return None
+def _run_ookla(sid):
+    """Runs the CLI in JSON-lines mode, updating live progress. Returns (result, error)."""
+    cmd = [SPEEDTEST_BIN, "--accept-license", "--accept-gdpr", "-f", "jsonl", "-p", "yes"]
+    if sid:
+        cmd += ["-s", str(sid)]
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except OSError as e:
+        return None, str(e)
+    killer = threading.Timer(180, p.kill)
+    killer.start()
+    result, last_msg = None, ""
+    try:
+        for line in p.stdout:
+            try:
+                data = json.loads(line)
+            except ValueError:
+                if line.strip():
+                    last_msg = line.strip()
+                continue
+            kind = data.get("type")
+            if kind == "result":
+                result = data
+            elif kind in ("ping", "download", "upload"):
+                part = data.get(kind) or {}
+                state.test_phase = kind
+                state.test_progress = float(part.get("progress") or 0)
+                bw = part.get("bandwidth")
+                state.test_live_mbps = bw * 8 / 1e6 if bw else (part.get("latency") if kind == "ping" else None)
+            elif kind == "log" and data.get("level") in ("error", "warning"):
+                last_msg = data.get("message", "")
+            elif data.get("error"):
+                last_msg = data["error"]
+        p.wait()
+    finally:
+        killer.cancel()
+    if result is None and p.returncode and p.returncode < 0:
+        last_msg = "timed out"
+    return result, (None if result else (last_msg or "no result"))
 
 
 def run_speedtest(trigger, busy_mbps=None):
     """Runs one Ookla test (trying each configured server), stores and returns the row."""
     with test_lock:
         state.test_running, state.test_started_ts = True, time.time()
+        state.test_phase, state.test_progress, state.test_live_mbps = "connecting", 0.0, None
         try:
             errors = []
             for sid in OPTS["server_ids"] or [None]:
-                cmd = [SPEEDTEST_BIN, "--accept-license", "--accept-gdpr", "-f", "json", "-p", "no"]
-                if sid:
-                    cmd += ["-s", str(sid)]
-                try:
-                    p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-                except (subprocess.TimeoutExpired, OSError) as e:
-                    errors.append(f"{sid}: {e}")
-                    continue
-                data = _parse_ookla(p.stdout)
+                data, err = _run_ookla(sid)
                 if not data:
-                    err = (p.stderr or p.stdout).strip().splitlines()
-                    errors.append(f"{sid}: {err[-1] if err else 'no result'}"[:300])
+                    errors.append(f"{sid}: {err}"[:300])
                     continue
                 server = data.get("server", {})
                 row = {
@@ -490,7 +612,7 @@ def run_speedtest(trigger, busy_mbps=None):
                 row["id"] = insert_speedtest(row)
                 log.info("Speedtest (%s): %.1f down / %.1f up / %.0f ms via %s", trigger,
                          row["download_mbps"], row["upload_mbps"], row["ping_ms"], row["server_name"])
-                publish_speedtest(row)
+                after_speedtest(row)
                 return row
             row = {"ts": time.time(), "status": "failed", "trigger": trigger,
                    "busy_mbps": busy_mbps, "error": "; ".join(errors)[:1000]}
@@ -499,6 +621,38 @@ def run_speedtest(trigger, busy_mbps=None):
             return row
         finally:
             state.test_running, state.test_started_ts = False, None
+            state.test_phase, state.test_progress, state.test_live_mbps = None, 0.0, None
+
+
+def after_speedtest(row):
+    """Sensors, ISP/IP change log and slow-speed alerts for a successful test."""
+    try:
+        publish_all()
+    except Exception:
+        log.exception("Publishing sensors failed")
+    last_ip = db.one("SELECT ip, isp FROM ip_log ORDER BY ts DESC LIMIT 1")
+    if row.get("external_ip") and (not last_ip or last_ip["ip"] != row["external_ip"]
+                                   or last_ip["isp"] != row.get("isp")):
+        db.execute("INSERT INTO ip_log(ts, ip, isp) VALUES(?, ?, ?)", (row["ts"], row["external_ip"], row.get("isp")))
+    if row["trigger"] == "after_outage":
+        return  # a line that just came back isn't representative
+    threshold = OPTS["slow_alert_percent"]
+    if not threshold:
+        return
+    pct = 100 * row["download_mbps"] / plan_down()
+    if pct < threshold:
+        state.slow_streak += 1
+        if state.slow_streak >= OPTS["slow_alert_consecutive_tests"] and not state.slow_alerted:
+            state.slow_alerted = True
+            ha_notify("🐢 Internet is slow",
+                      f"Last {state.slow_streak} speedtests were below {threshold}% of your "
+                      f"{plan_down():g} Mbps plan. Latest: {row['download_mbps']:.1f} Mbps down "
+                      f"({pct:.0f}%), {row['upload_mbps']:.1f} up, {row['ping_ms']:.0f} ms.")
+    else:
+        if state.slow_alerted:
+            ha_notify("✅ Internet speed is back",
+                      f"{row['download_mbps']:.1f} Mbps down ({pct:.0f}% of plan), {row['upload_mbps']:.1f} up.")
+        state.slow_streak, state.slow_alerted = 0, False
 
 
 def insert_speedtest(row):
@@ -575,7 +729,47 @@ def retention_loop():
         db.execute("DELETE FROM checks WHERE ts < ?", (cutoff,))
         db.execute("DELETE FROM speedtests WHERE ts < ?", (cutoff,))
         db.execute("DELETE FROM events WHERE end IS NOT NULL AND end < ?", (cutoff,))
+        db.execute("DELETE FROM ip_log WHERE ts < ?", (cutoff,))
         time.sleep(6 * 3600)
+
+
+def weekly_report_loop():
+    while True:
+        time.sleep(60)
+        if not OPTS["weekly_report_enabled"]:
+            continue
+        lt = time.localtime()
+        day = WEEKDAYS.index(OPTS["weekly_report_day"]) if OPTS["weekly_report_day"] in WEEKDAYS else 6
+        if lt.tm_wday != day or lt.tm_hour != OPTS["weekly_report_hour"]:
+            continue
+        stamp = time.strftime("%Y-%m-%d", lt)
+        if db.get_setting("weekly_report_sent") == stamp:
+            continue
+        db.set_setting("weekly_report_sent", stamp)
+        try:
+            title, msg = weekly_report_text()
+            ha_notify(title, msg)
+        except Exception:
+            log.exception("Weekly report failed")
+
+
+def weekly_report_text(now=None):
+    now = now or time.time()
+    r = report(now - 7 * 86400, now)
+    d0 = time.strftime("%d %b", time.localtime(now - 7 * 86400)).lstrip("0")
+    d1 = time.strftime("%d %b", time.localtime(now)).lstrip("0")
+    parts = [f"Grade {r['grade']}" if r["grade"] else "Not enough data for a grade"]
+    if r["uptime_pct"] is not None:
+        parts.append(f"Uptime {r['uptime_pct']:.2f}% ({r['outages']} outage{'s' if r['outages'] != 1 else ''}"
+                     f"{', ' + fmt_duration(r['downtime_s']) + ' down' if r['downtime_s'] else ''})")
+    if r["tests"]:
+        parts.append(f"Avg {r['avg_down']:.1f}↓ / {r['avg_up']:.1f}↑ Mbps ({r['avg_down_pct']:.0f}% of plan)")
+        if r["slowest_hour"]:
+            parts.append(f"Slowest around {r['slowest_hour']['label']} ({r['slowest_hour']['avg_down']:.1f} Mbps)")
+    if r["longest_outage"]:
+        lo = r["longest_outage"]
+        parts.append(f"Longest outage {fmt_duration(lo['duration_s'])} on {time.strftime('%a %d %b', time.localtime(lo['start']))}")
+    return f"📊 Internet report {d0} – {d1}", ". ".join(parts) + "."
 
 
 # ------------------------------------------------------------------ queries
@@ -638,20 +832,110 @@ def checks_series(lo, hi, max_points=1500):
     bucket = max(OPTS["check_interval_seconds"], (hi - lo) / max_points)
     return db.query(
         "SELECT CAST(ts / ? AS INTEGER) * ? AS ts, MIN(up) AS up, AVG(latency_ms) AS latency_ms, "
-        "MAX(latency_ms) AS max_latency_ms FROM checks WHERE ts BETWEEN ? AND ? "
+        "MAX(latency_ms) AS max_latency_ms, AVG(jitter_ms) AS jitter_ms, AVG(loss_pct) AS loss_pct "
+        "FROM checks WHERE ts BETWEEN ? AND ? "
         "GROUP BY CAST(ts / ? AS INTEGER) ORDER BY 1", (bucket, bucket, lo, hi, bucket))
+
+
+def hour_label(h):
+    return time.strftime("%I %p", (2000, 1, 1, h, 0, 0, 0, 1, -1)).lstrip("0")
+
+
+def grade(avg_pct, uptime):
+    """A-F from speed vs plan (60%) and uptime (40%; 99% -> 90 pts, 95% -> 50, 90% -> 0)."""
+    if avg_pct is None or uptime is None:
+        return None, None
+    score = 0.6 * min(avg_pct, 100) + 0.4 * max(0.0, 100 - (100 - uptime) * 10)
+    for letter, floor in (("A", 90), ("B", 80), ("C", 70), ("D", 60)):
+        if score >= floor:
+            return letter, score
+    return "F", score
+
+
+def report(lo, hi):
+    s = summary(lo, hi)
+    tests = db.query("SELECT ts, download_mbps, upload_mbps, ping_ms FROM speedtests "
+                     "WHERE status='ok' AND trigger != 'after_outage' AND ts BETWEEN ? AND ?", (lo, hi))
+    pd, pu = plan_down(), plan_up()
+    out = {**{k: s[k] for k in ("uptime_pct", "downtime_s", "outages", "monitor_offline_s", "observed_s")},
+           "plan_down": pd, "plan_up": pu, "tests": len(tests), "test_counts": s["test_counts"],
+           "data_mb": s["speed"]["data_mb"]}
+    if tests:
+        downs = [t["download_mbps"] for t in tests]
+        out.update(
+            avg_down=sum(downs) / len(downs), avg_up=sum(t["upload_mbps"] for t in tests) / len(tests),
+            avg_ping=sum(t["ping_ms"] for t in tests) / len(tests), min_down=min(downs), max_down=max(downs),
+            avg_down_pct=100 * sum(downs) / len(downs) / pd,
+            avg_up_pct=100 * sum(t["upload_mbps"] for t in tests) / len(tests) / pu,
+            below_50_pct=100 * sum(d < 0.5 * pd for d in downs) / len(downs),
+            below_80_pct=100 * sum(d < 0.8 * pd for d in downs) / len(downs))
+        by_hour = {}
+        for t in tests:
+            by_hour.setdefault(time.localtime(t["ts"]).tm_hour, []).append(t["download_mbps"])
+        hours = [{"hour": h, "label": hour_label(h), "avg_down": sum(v) / len(v), "n": len(v)}
+                 for h, v in by_hour.items()]
+        min_n = 2 if any(h["n"] >= 2 for h in hours) else 1
+        hours = [h for h in hours if h["n"] >= min_n]
+        out["slowest_hour"] = min(hours, key=lambda h: h["avg_down"]) if len(hours) > 1 else None
+        out["fastest_hour"] = max(hours, key=lambda h: h["avg_down"]) if len(hours) > 1 else None
+    else:
+        out.update(avg_down=None, avg_up=None, avg_ping=None, min_down=None, max_down=None, avg_down_pct=None,
+                   avg_up_pct=None, below_50_pct=None, below_80_pct=None, slowest_hour=None, fastest_hour=None)
+    downs = [e for e in events_in(lo, hi) if e["kind"] == "internet_down"]
+    out["longest_outage"] = max(downs, key=lambda e: e["duration_s"]) if downs else None
+    out["grade"], out["score"] = grade(out["avg_down_pct"], out["uptime_pct"])
+    return out
+
+
+def timeline(lo, hi, buckets):
+    """Per-bucket uptime for the status strip."""
+    now = time.time()
+    first = db.one("SELECT MIN(ts) AS t FROM checks")["t"]
+    evs = events_in(lo, hi)
+    step = (hi - lo) / buckets
+    out = []
+    for i in range(buckets):
+        a, b = lo + i * step, lo + (i + 1) * step
+        a_eff, b_eff = max(a, first or b), min(b, now)
+        span = max(0.0, b_eff - a_eff)
+        down = sum(overlap(e["start"], e["end"] or now, a_eff, b_eff) for e in evs if e["kind"] == "internet_down")
+        off = sum(overlap(e["start"], e["end"] or now, a_eff, b_eff) for e in evs if e["kind"] == "monitor_offline")
+        observed = span - off
+        n_out = sum(1 for e in evs if e["kind"] == "internet_down" and e["start"] < b and (e["end"] or now) > a)
+        out.append({"from": a, "to": b, "observed_s": observed, "downtime_s": down, "offline_s": off,
+                    "outages": n_out,
+                    "uptime_pct": (100 * (observed - down) / observed) if observed >= 30 else None})
+    return out
+
+
+def heatmap(days):
+    since = time.time() - days * 86400
+    cells = {}
+    for t in db.query("SELECT ts, download_mbps FROM speedtests WHERE status='ok' "
+                      "AND trigger != 'after_outage' AND ts >= ?", (since,)):
+        lt = time.localtime(t["ts"])
+        cells.setdefault((lt.tm_wday, lt.tm_hour), []).append(t["download_mbps"])
+    return {"days": days, "plan_down": plan_down(), "cells": [
+        {"wday": w, "hour": h, "avg_down": sum(v) / len(v), "n": len(v), "pct": 100 * sum(v) / len(v) / plan_down()}
+        for (w, h), v in sorted(cells.items())]}
 
 
 def status_payload():
     last_test = db.one("SELECT * FROM speedtests WHERE status='ok' ORDER BY ts DESC LIMIT 1")
+    spark = db.query("SELECT ts, up, latency_ms FROM checks ORDER BY ts DESC LIMIT 60")[::-1]
     return {
         "now": time.time(), "online": state.online, "last_check_ts": state.last_check_ts,
-        "latency_ms": state.last_latency_ms, "outage_start": state.outage_start,
+        "latency_ms": state.last_latency_ms, "jitter_ms": state.last_jitter_ms, "loss_pct": state.last_loss_pct,
+        "online_since": online_since() if state.online else None, "outage_start": state.outage_start,
+        "sparkline": spark,
         "test_running": state.test_running, "test_started_ts": state.test_started_ts,
+        "test_phase": state.test_phase, "test_progress": state.test_progress, "test_live_mbps": state.test_live_mbps,
         "next_test_ts": state.next_test_ts, "scheduler_note": state.scheduler_note,
         "paused_until": paused_until(), "router_upnp": state.router_upnp, "last_test": last_test,
+        "plan_down": plan_down(), "plan_up": plan_up(),
         "options": {k: OPTS[k] for k in ("speedtest_interval_minutes", "check_interval_seconds",
-                                         "check_targets", "server_ids", "busy_threshold_mbps")},
+                                         "check_targets", "server_ids", "busy_threshold_mbps",
+                                         "slow_alert_percent", "weekly_report_enabled")},
     }
 
 
@@ -720,6 +1004,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, summary(lo, hi))
             if path == "/api/at":
                 return self._send(200, lookup_at(float(qs["ts"][0])))
+            if path == "/api/report":
+                lo, hi = self._range(qs)
+                return self._send(200, report(lo, hi))
+            if path == "/api/timeline":
+                lo, hi = self._range(qs)
+                return self._send(200, timeline(lo, hi, max(10, min(180, int(qs.get("buckets", [60])[0])))))
+            if path == "/api/heatmap":
+                return self._send(200, heatmap(max(1, min(365, int(qs.get("days", [30])[0])))))
+            if path == "/api/iplog":
+                return self._send(200, db.query("SELECT * FROM ip_log ORDER BY ts DESC LIMIT 50"))
             if path in ("/api/export/speedtests.csv", "/api/export/outages.csv"):
                 lo, hi = self._range(qs)
                 return self._csv(path, lo, hi)
@@ -793,8 +1087,9 @@ def main():
     log.info("Net Monitor starting: checks every %ss to %s, speedtest every %s min via servers %s",
              OPTS["check_interval_seconds"], ", ".join(OPTS["check_targets"]),
              OPTS["speedtest_interval_minutes"], OPTS["server_ids"])
-    for target in (monitor_loop, scheduler_loop, retention_loop):
+    for target in (monitor_loop, scheduler_loop, retention_loop, weekly_report_loop, publish_loop):
         threading.Thread(target=target, daemon=True, name=target.__name__).start()
+    threading.Timer(45, publish_all).start()  # after the first checks have run
     server = ThreadingHTTPServer((os.environ.get("NETMON_BIND", "0.0.0.0"), HTTP_PORT), Handler)
     log.info("Dashboard listening on port %s (Ingress)", HTTP_PORT)
     server.serve_forever()

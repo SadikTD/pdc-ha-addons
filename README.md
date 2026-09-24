@@ -19,9 +19,9 @@ Tests: `node --test bridge.test.mjs` (no dependencies) and, after `npm install`,
 
 Tracks the **international** internet connection (not BDIX / in-country caches).
 
-- Checks every 30 s against Singapore hosts; records each outage as *from → to, duration* and the speed the line came back with.
-- Hourly Ookla speedtest to a Singapore server, on the hour. Waits while the router (read over UPnP) shows the line is busy, and can be paused from the dashboard.
-- Dashboard in the Home Assistant sidebar: speed chart with outages shaded, "what was my internet like at…" lookup, outage and speedtest tables, CSV export.
-- Publishes `binary_sensor.net_monitor_internet` and download / upload / ping sensors; optional phone notification when the internet comes back.
+- Checks every 30 s against Singapore hosts (latency, jitter, packet loss); records each outage as *from → to, duration* and the speed the line came back with.
+- Hourly Ookla speedtest to well-routed Singapore servers, with live progress. Waits while the router (read over UPnP) shows the line is busy; can be paused.
+- Dashboard in the Home Assistant sidebar: live status, uptime strip, A–F report card vs your plan, zoomable speed chart, best/worst-times heatmap, "what was my internet like at…" lookup, ISP/IP history, CSV export.
+- Sensors for speed, % of plan, uptime, jitter, loss and last outage; phone notifications for recovery, slow speed and a weekly report.
 
 See [net_monitor/DOCS.md](net_monitor/DOCS.md) for options.

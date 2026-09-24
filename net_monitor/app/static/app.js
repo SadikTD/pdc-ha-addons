@@ -8,11 +8,14 @@
     if (!r.ok) throw new Error(`${path}: ${r.status}`);
     return r.json();
   };
-  const css = (name) => getComputedStyle(document.querySelector(".viz-root")).getPropertyValue(name).trim();
+  const root = $("root");
+  const css = (name) => getComputedStyle(root).getPropertyValue(name).trim();
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // ---------------------------------------------------------------- formatting
   const tFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+  const hFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric" });
   const dFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" });
   const dShort = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
   const fullFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
@@ -24,19 +27,19 @@
     if (sameDay(ts, now - 86400)) return `Yesterday ${time(ts)}`;
     return `${dFmt.format(ts * 1000)}, ${time(ts)}`;
   };
-  const dur = (s) => {
-    s = Math.round(s);
+  const dur = (s, precise) => {
+    s = Math.max(0, Math.round(s));
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
     if (d) return `${d}d ${h}h ${m}m`;
-    if (h) return `${h}h ${m}m`;
-    if (m) return m < 10 && sec ? `${m}m ${sec}s` : `${m}m`;
+    if (h) return precise ? `${h}h ${m}m ${sec}s` : `${h}h ${m}m`;
+    if (m) return precise || (m < 10 && sec) ? `${m}m ${sec}s` : `${m}m`;
     return `${sec}s`;
   };
   const mbps = (v) => (v == null ? "—" : v >= 100 ? v.toFixed(0) : v.toFixed(1));
   const ms = (v) => (v == null ? "—" : v.toFixed(v < 10 ? 1 : 0));
+  const pct = (v, d = 0) => (v == null ? "—" : `${v.toFixed(d)}%`);
   const relative = (ts) => {
-    const diff = ts - Date.now() / 1000;
-    const a = Math.abs(diff);
+    const diff = ts - Date.now() / 1000, a = Math.abs(diff);
     const txt = a < 60 ? "less than a minute" : dur(a);
     return diff >= 0 ? `in ${txt}` : `${txt} ago`;
   };
@@ -46,20 +49,63 @@
     return d.toISOString().slice(0, 16);
   };
   const fromLocalInput = (v) => new Date(v).getTime() / 1000;
-
   const TRIGGER = { scheduled: "Hourly", manual: "Manual", after_outage: "After outage" };
-  const STATUS = {
-    ok: ["ok", ""], failed: ["down", "Failed"],
-    skipped_busy: ["warn", "Skipped — line busy"], skipped_paused: ["", "Skipped — paused"],
-  };
+  const SKIP = { failed: ["down", "Failed"], skipped_busy: ["warn", "Skipped — line busy"], skipped_paused: ["", "Skipped — paused"] };
 
-  // --------------------------------------------------------------------- state
+  // -------------------------------------------------------------------- theme
+  // Follow Home Assistant's own light/dark setting (Ingress runs same-origin),
+  // falling back to the OS preference when opened outside HA.
+  const osDark = matchMedia("(prefers-color-scheme: dark)");
+  function detectDark() {
+    try {
+      const ha = window.parent !== window && window.parent.document.querySelector("home-assistant");
+      if (ha && ha.hass && ha.hass.themes && typeof ha.hass.themes.darkMode === "boolean") return ha.hass.themes.darkMode;
+    } catch (e) { /* not embedded in HA */ }
+    return osDark.matches;
+  }
+  function applyTheme(force) {
+    const theme = detectDark() ? "dark" : "light";
+    if (!force && document.documentElement.dataset.theme === theme) return;
+    document.documentElement.dataset.theme = theme;
+    if (data.loaded) renderCharts();
+  }
+
+  // ----------------------------------------------------------------- animation
+  function countUp(el, to, format) {
+    if (to == null || Number.isNaN(to)) { el.textContent = format(null); el.dataset.v = ""; return; }
+    const from = el.dataset.v === undefined || el.dataset.v === "" ? 0 : Number(el.dataset.v);
+    el.dataset.v = to;
+    if (reduceMotion || from === to) { el.textContent = format(to); return; }
+    const t0 = performance.now(), D = 700;
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / D), e = 1 - Math.pow(1 - k, 3);
+      el.textContent = format(from + (to - from) * e);
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // ------------------------------------------------------------------ tooltip
+  const tip = $("tip");
+  function showTip(ev, html) {
+    tip.innerHTML = html;
+    tip.hidden = false;
+    const r = tip.getBoundingClientRect();
+    let x = ev.clientX + 12, y = ev.clientY + 12;
+    if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - 12;
+    if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - 12;
+    tip.style.left = `${x}px`;
+    tip.style.top = `${y}px`;
+  }
+  const hideTip = () => { tip.hidden = true; };
+
+  // -------------------------------------------------------------------- state
   let range = { preset: 86400, lo: 0, hi: 0 };
-  let data = { status: null, tests: [], checks: [], events: [], summary: null };
+  let lastPreset = 86400;
+  const data = { status: null, tests: [], checks: [], events: [], report: null, timeline: [], heat: null, ips: [], loaded: false };
   let showAllTests = false;
-  let charts = {};
-  let lastTestSeen = null;
-  let wasRunning = false;
+  const charts = {};
+  let lastTestSeen = null, wasRunning = false, statusTimer = null;
 
   function computeRange() {
     if (range.preset !== "custom") {
@@ -72,90 +118,208 @@
   async function loadStatus() {
     const s = await api("api/status");
     data.status = s;
-    renderStatus();
-    const newest = s.last_test && s.last_test.id;
-    if ((wasRunning && !s.test_running) || (lastTestSeen !== null && newest !== lastTestSeen)) {
-      loadAll();
-    }
+    renderHero();
+    const newest = s.last_test ? s.last_test.id : null;
+    if ((wasRunning && !s.test_running) || (lastTestSeen !== null && newest !== lastTestSeen)) loadAll();
     wasRunning = s.test_running;
-    lastTestSeen = newest ?? null;
+    lastTestSeen = newest;
+    scheduleStatus(s.test_running ? 1000 : 10000);
+  }
+  function scheduleStatus(ms) {
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => loadStatus().catch(() => scheduleStatus(10000)), ms);
   }
 
   async function loadAll() {
     computeRange();
     const q = `from=${range.lo}&to=${range.hi}`;
-    const [status, tests, checks, events, summary] = await Promise.all([
-      api("api/status"), api(`api/speedtests?${q}`), api(`api/checks?${q}`), api(`api/events?${q}`), api(`api/summary?${q}`),
+    const buckets = innerWidth < 560 ? 45 : 90;
+    const [status, tests, checks, events, report, tl, heat, ips] = await Promise.all([
+      api("api/status"), api(`api/speedtests?${q}`), api(`api/checks?${q}`), api(`api/events?${q}`),
+      api(`api/report?${q}`), api(`api/timeline?${q}&buckets=${buckets}`), api("api/heatmap?days=30"), api("api/iplog"),
     ]);
-    Object.assign(data, { status, tests, checks, events, summary });
+    Object.assign(data, { status, tests, checks, events, report, timeline: tl, heat, ips, loaded: true });
     lastTestSeen = status.last_test ? status.last_test.id : null;
-    renderStatus();
-    renderSummary();
-    renderSpeedChart();
-    renderLatencyChart();
+    root.classList.remove("skeleton");
+    renderHero();
+    renderRangeLabel();
+    renderStrip();
+    renderReport();
+    renderCharts();
+    renderHeatmap();
+    renderIps();
     renderOutages();
     renderTests();
     $("export-tests").href = `api/export/speedtests.csv?${q}`;
     $("export-outages").href = `api/export/outages.csv?${q}`;
   }
 
-  // ------------------------------------------------------------------- status
-  function renderStatus() {
+  // --------------------------------------------------------------------- hero
+  function renderHero() {
     const s = data.status;
-    const pill = $("status-pill");
-    pill.className = "status-pill " + (s.online === true ? "up" : s.online === false ? "down" : "");
-    $("status-label").textContent = s.online === true ? "Online" : s.online === false ? "Internet down" : "Checking…";
-    const detail = [];
-    if (s.online === false && s.outage_start) detail.push(`since ${when(s.outage_start)} (${dur(s.now - s.outage_start)})`);
-    if (s.online && s.latency_ms != null) detail.push(`${ms(s.latency_ms)} ms latency`);
-    if (s.last_check_ts) detail.push(`checked ${relative(s.last_check_ts)}`);
-    $("status-detail").textContent = detail.join(" · ");
+    if (!s) return;
+    const card = $("conn-card");
+    card.classList.toggle("up", s.online === true);
+    card.classList.toggle("down", s.online === false);
+    $("conn-state").classList.remove("loading");
+    $("conn-state").textContent = s.online === true ? "Online" : s.online === false ? "Internet down" : "Checking…";
+    tickSince();
+    countUp($("q-latency"), s.online ? s.latency_ms : null, (v) => (v == null ? "—" : `${ms(v)} ms`));
+    countUp($("q-jitter"), s.online ? s.jitter_ms : null, (v) => (v == null ? "—" : `${ms(v)} ms`));
+    countUp($("q-loss"), s.online ? s.loss_pct : null, (v) => (v == null ? "—" : `${v.toFixed(0)}%`));
+    drawSpark();
+
+    const lt = s.last_test;
+    countUp($("sp-down"), lt ? lt.download_mbps : null, mbps);
+    countUp($("sp-up"), lt ? lt.upload_mbps : null, mbps);
+    const dp = lt ? (100 * lt.download_mbps) / s.plan_down : null, up = lt ? (100 * lt.upload_mbps) / s.plan_up : null;
+    $("sp-down-bar").style.width = `${Math.min(100, dp || 0)}%`;
+    $("sp-up-bar").style.width = `${Math.min(100, up || 0)}%`;
+    $("sp-down-pct").textContent = lt ? `${dp.toFixed(0)}% of ${s.plan_down} Mbps plan` : "No test yet";
+    $("sp-up-pct").textContent = lt ? `${up.toFixed(0)}% of ${s.plan_up} Mbps plan` : "";
+
+    const paused = s.paused_until === -1 || s.paused_until > s.now;
+    let next;
+    if (paused) next = s.paused_until === -1 ? "Scheduled tests paused" : `Paused until ${when(s.paused_until)}`;
+    else if (s.next_test_ts) next = `Next ${time(s.next_test_ts)} (${relative(s.next_test_ts)})`;
+    else next = "";
+    const note = s.scheduler_note ? ` · ${s.scheduler_note}` : "";
+    $("speed-foot").innerHTML = lt
+      ? `${esc(when(lt.ts))} · ${ms(lt.ping_ms)} ms ping · ${esc(lt.server_name || "")} · ${esc(next)}${esc(note)}`
+      : esc(next + note);
+    $("pause-label").textContent = paused ? "Paused" : "Pause";
+    $("menu-resume").hidden = !paused;
 
     const run = $("btn-run");
     run.disabled = s.test_running;
-    run.textContent = s.test_running ? "Speedtest running…" : "Run speedtest now";
-
-    const paused = s.paused_until === -1 || s.paused_until > s.now;
-    $("pause-select").hidden = paused;
-    $("btn-resume").hidden = !paused;
-
-    const lt = s.last_test;
-    let next;
-    if (paused) next = s.paused_until === -1 ? "Paused until you resume" : `Paused until ${when(s.paused_until)}`;
-    else if (s.test_running) next = "Running now…";
-    else if (s.next_test_ts) next = `${when(s.next_test_ts)} (${relative(s.next_test_ts)})`;
-    else next = "—";
-    const tile = (label, value, sub, swatch) =>
-      `<div class="tile"><div class="label">${swatch ? `<span class="swatch" style="background:${swatch}"></span>` : ""}${label}</div>` +
-      `<div class="value">${value}</div><div class="sub">${sub}</div></div>`;
-    $("now-cards").innerHTML = [
-      tile("Last download", lt ? `${mbps(lt.download_mbps)} <small>Mbit/s</small>` : "—", lt ? when(lt.ts) : "No test yet", css("--series-1")),
-      tile("Last upload", lt ? `${mbps(lt.upload_mbps)} <small>Mbit/s</small>` : "—", lt ? esc(lt.server_name || "") : "", css("--series-2")),
-      tile("Last ping", lt ? `${ms(lt.ping_ms)} <small>ms</small>` : "—", lt ? `jitter ${ms(lt.jitter_ms)} ms` : ""),
-      tile("Next speedtest", `<span style="font-size:16px">${next}</span>`, esc(s.scheduler_note ||
-        (s.router_upnp === false ? "Busy-line check unavailable (router UPnP)" : "Waits if the line is busy"))),
-    ].join("");
-
-    $("foot").textContent =
-      `Checks every ${s.options.check_interval_seconds}s to ${s.options.check_targets.join(", ")} · ` +
-      `speedtest every ${s.options.speedtest_interval_minutes} min · servers ${s.options.server_ids.join(", ")}`;
+    run.querySelector("span").textContent = s.test_running ? "Testing…" : "Run speedtest";
+    renderLive();
   }
 
-  // ------------------------------------------------------------------ summary
-  function renderSummary() {
-    const s = data.summary, sp = s.speed || {}, c = s.test_counts || {};
-    const tile = (label, value, sub) =>
-      `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub || ""}</div></div>`;
+  function tickSince() {
+    const s = data.status;
+    if (!s) return;
+    const now = Date.now() / 1000;
+    let text = "";
+    if (s.online === true && s.online_since) text = `Online for ${dur(now - s.online_since, true)}`;
+    else if (s.online === false && s.outage_start) text = `Down since ${when(s.outage_start)} · ${dur(now - s.outage_start, true)}`;
+    if (s.last_check_ts) text += `${text ? " · " : ""}checked ${relative(s.last_check_ts)}`;
+    $("conn-since").textContent = text || " ";
+  }
+
+  function renderLive() {
+    const s = data.status;
+    const live = $("live");
+    live.hidden = !s.test_running;
+    if (!s.test_running) return;
+    const order = ["ping", "download", "upload"];
+    const idx = order.indexOf(s.test_phase);
+    const labels = { connecting: "Connecting to server…", ping: "Measuring latency…", download: "Testing download…", upload: "Testing upload…" };
+    $("live-phase").textContent = labels[s.test_phase] || "Starting…";
+    $("live-value").textContent = s.test_live_mbps == null ? "" : s.test_phase === "ping" ? `${ms(s.test_live_mbps)} ms` : `${mbps(s.test_live_mbps)} Mbit/s`;
+    live.querySelectorAll("[data-step]").forEach((el) => {
+      const i = order.indexOf(el.dataset.step);
+      el.className = i < idx ? "done" : i === idx ? "active" : "";
+    });
+    const overall = idx < 0 ? 0.02 : (idx + Math.min(1, s.test_progress || 0)) / 3;
+    $("live-bar").style.width = `${(overall * 100).toFixed(1)}%`;
+  }
+
+  function drawSpark() {
+    const c = $("spark"), s = data.status;
+    const w = c.clientWidth, h = c.clientHeight, dpr = devicePixelRatio || 1;
+    c.width = w * dpr; c.height = h * dpr;
+    const ctx = c.getContext("2d");
+    ctx.scale(dpr, dpr);
+    const pts = (s.sparkline || []).filter((p) => p.up && p.latency_ms != null);
+    if (pts.length < 2) return;
+    const t0 = s.sparkline[0].ts, t1 = s.sparkline[s.sparkline.length - 1].ts || t0 + 1;
+    const vals = pts.map((p) => p.latency_ms);
+    const lo = Math.min(...vals) * 0.9, hi = Math.max(...vals) * 1.1 || 1;
+    const X = (t) => ((t - t0) / (t1 - t0 || 1)) * (w - 4) + 2, Y = (v) => h - 4 - ((v - lo) / (hi - lo || 1)) * (h - 14);
+    const color = css("--series-lat");
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, color + "40");
+    grad.addColorStop(1, color + "00");
+    ctx.beginPath();
+    pts.forEach((p, i) => (i ? ctx.lineTo(X(p.ts), Y(p.latency_ms)) : ctx.moveTo(X(p.ts), Y(p.latency_ms))));
+    ctx.lineTo(X(pts[pts.length - 1].ts), h);
+    ctx.lineTo(X(pts[0].ts), h);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.beginPath();
+    pts.forEach((p, i) => (i ? ctx.lineTo(X(p.ts), Y(p.latency_ms)) : ctx.moveTo(X(p.ts), Y(p.latency_ms))));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    // failures as small red ticks along the bottom
+    ctx.fillStyle = css("--critical");
+    (s.sparkline || []).filter((p) => !p.up).forEach((p) => ctx.fillRect(X(p.ts) - 1, h - 3, 2, 3));
+  }
+
+  // -------------------------------------------------------------- range label
+  function renderRangeLabel() {
+    $("range-label").textContent = `${fullFmt.format(range.lo * 1000)} → ${range.preset === "custom" ? fullFmt.format(range.hi * 1000) : "now"}`;
+  }
+
+  // ------------------------------------------------------------- uptime strip
+  function renderStrip() {
+    const tl = data.timeline;
+    const r = data.report;
+    $("uptime-headline").textContent = r.uptime_pct == null ? "—" : pct(r.uptime_pct, r.uptime_pct >= 99.95 || r.uptime_pct < 10 ? 1 : 2);
+    const strip = $("strip");
+    strip.innerHTML = tl.map((b, i) => {
+      let cls = "";
+      if (b.uptime_pct != null) cls = b.downtime_s <= 0 ? "good" : b.uptime_pct >= 95 ? "warn" : "bad";
+      return `<span class="${cls}" data-i="${i}"></span>`;
+    }).join("");
+    if (tl.length) {
+      const span = range.hi - range.lo;
+      const f = (t) => (span <= 2 * 86400 ? time(t) : dShort.format(t * 1000));
+      $("strip-start").textContent = f(tl[0].from);
+      $("strip-end").textContent = range.preset === "custom" ? f(tl[tl.length - 1].to) : "Now";
+    }
+  }
+  $("strip").addEventListener("mousemove", (ev) => {
+    const i = ev.target.dataset && ev.target.dataset.i;
+    if (i === undefined) return hideTip();
+    const b = data.timeline[Number(i)];
+    const span = b.to - b.from;
+    const head = span >= 86400 * 0.99 ? dFmt.format(b.from * 1000) : `${when(b.from)} – ${time(b.to)}`;
+    const body = b.uptime_pct == null
+      ? "<span>Not monitored</span>"
+      : `<span>${pct(b.uptime_pct, 2)} uptime</span>${b.downtime_s ? `<span>${dur(b.downtime_s)} down · ${b.outages} outage${b.outages === 1 ? "" : "s"}</span>` : ""}` +
+        (b.offline_s > 30 ? `<span>${dur(b.offline_s)} not monitored</span>` : "");
+    showTip(ev, `<b>${esc(head)}</b>${body}`);
+  });
+  $("strip").addEventListener("mouseleave", hideTip);
+
+  // ---------------------------------------------------------------- report
+  function renderReport() {
+    const r = data.report;
+    const g = $("grade");
+    g.className = `grade${r.grade ? ` g-${r.grade}` : ""}`;
+    $("grade-letter").textContent = r.grade || "–";
+    $("grade-caption").textContent = r.grade
+      ? `Speed ${r.avg_down_pct.toFixed(0)}% of plan · ${pct(r.uptime_pct, 1)} uptime`
+      : "Needs speedtests and uptime data";
+    const c = r.test_counts || {};
     const skipped = (c.skipped_busy || 0) + (c.skipped_paused || 0);
-    $("summary-tiles").innerHTML = [
-      tile("Uptime", s.uptime_pct == null ? "—" : `${s.uptime_pct.toFixed(s.uptime_pct >= 99.95 || s.uptime_pct < 10 ? 1 : 2)}%`,
-        s.monitor_offline_s > 60 ? `${dur(s.monitor_offline_s)} not monitored` : "of monitored time"),
-      tile("Outages", String(s.outages), s.downtime_s ? `${dur(s.downtime_s)} down in total` : "no downtime"),
-      tile("Avg download", sp.n ? `${mbps(sp.avg_down)} <small>Mbit/s</small>` : "—", sp.n ? `${mbps(sp.min_down)} – ${mbps(sp.max_down)}` : ""),
-      tile("Avg upload", sp.n ? `${mbps(sp.avg_up)} <small>Mbit/s</small>` : "—", sp.n ? `${mbps(sp.min_up)} – ${mbps(sp.max_up)}` : ""),
-      tile("Avg ping", sp.n ? `${ms(sp.avg_ping)} <small>ms</small>` : "—", "to Singapore server"),
-      tile("Speedtests", String(sp.n || 0), [c.failed ? `${c.failed} failed` : "", skipped ? `${skipped} skipped` : "",
-        sp.data_mb ? `${(sp.data_mb / 1000).toFixed(1)} GB used` : ""].filter(Boolean).join(" · ")),
+    $("report-sub").textContent = `${r.tests} speedtest${r.tests === 1 ? "" : "s"}${c.failed ? ` · ${c.failed} failed` : ""}${skipped ? ` · ${skipped} skipped` : ""}${r.data_mb ? ` · ${(r.data_mb / 1000).toFixed(1)} GB used` : ""}`;
+    const tile = (label, value, sub) =>
+      `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub || "&nbsp;"}</div></div>`;
+    const lo = r.longest_outage;
+    $("report-tiles").innerHTML = [
+      tile("Avg download", r.avg_down == null ? "—" : `${mbps(r.avg_down)}<small>Mbit/s</small>`, r.avg_down == null ? "" : `${r.avg_down_pct.toFixed(0)}% of plan · ${mbps(r.min_down)}–${mbps(r.max_down)}`),
+      tile("Avg upload", r.avg_up == null ? "—" : `${mbps(r.avg_up)}<small>Mbit/s</small>`, r.avg_up == null ? "" : `${r.avg_up_pct.toFixed(0)}% of plan`),
+      tile("Avg ping", r.avg_ping == null ? "—" : `${ms(r.avg_ping)}<small>ms</small>`, "to Singapore"),
+      tile("Below half of plan", r.below_50_pct == null ? "—" : pct(r.below_50_pct), r.below_80_pct == null ? "" : `${pct(r.below_80_pct)} below 80%`),
+      tile("Outages", String(r.outages), r.downtime_s ? `${dur(r.downtime_s)} down in total` : "no downtime"),
+      tile("Longest outage", lo ? dur(lo.duration_s) : "—", lo ? when(lo.start) : ""),
+      tile("Slowest hour", r.slowest_hour ? esc(r.slowest_hour.label) : "—", r.slowest_hour ? `avg ${mbps(r.slowest_hour.avg_down)} Mbit/s` : "needs more data"),
+      tile("Fastest hour", r.fastest_hour ? esc(r.fastest_hour.label) : "—", r.fastest_hour ? `avg ${mbps(r.fastest_hour.avg_down)} Mbit/s` : ""),
     ].join("");
   }
 
@@ -191,6 +355,29 @@
       ctx.restore();
     },
   };
+  const planPlugin = {
+    id: "plan",
+    beforeDatasetsDraw(chart) {
+      const plan = data.status && data.status.plan_down;
+      const { ctx, chartArea: a, scales: { y } } = chart;
+      if (!plan || plan > y.max) return;
+      const py = y.getPixelForValue(plan);
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = css("--text-muted");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(a.left, py);
+      ctx.lineTo(a.right, py);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = css("--text-muted");
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(`Plan ${plan}`, a.right - 4, py - 4);
+      ctx.restore();
+    },
+  };
 
   function xAxis() {
     const span = range.hi - range.lo;
@@ -199,46 +386,49 @@
       grid: { color: css("--grid"), drawTicks: false },
       border: { color: css("--axis") },
       ticks: {
-        color: css("--text-muted"), maxRotation: 0, autoSkipPadding: 24, padding: 6,
-        callback: (v) => (span <= 2 * 86400 ? tFmt.format(v) : dShort.format(v)),
+        color: css("--text-muted"), maxRotation: 0, autoSkipPadding: 28, padding: 6,
+        callback: (v) => (span <= 36 * 3600 ? (span <= 6 * 3600 ? tFmt.format(v) : hFmt.format(v)) : dShort.format(v)),
       },
     };
   }
-  function yAxis(title) {
+  function baseOptions() {
     return {
-      beginAtZero: true,
-      grid: { color: css("--grid"), drawTicks: false },
-      border: { display: false },
-      ticks: { color: css("--text-muted"), padding: 6, maxTicksLimit: 6 },
-      title: { display: false, text: title },
-    };
-  }
-  function baseOptions(yTitle) {
-    return {
-      responsive: true, maintainAspectRatio: false, animation: false, normalized: true,
+      responsive: true, maintainAspectRatio: false, animation: reduceMotion ? false : { duration: 500 }, normalized: true,
       interaction: { mode: "nearest", axis: "x", intersect: false },
-      scales: { x: xAxis(), y: yAxis(yTitle) },
+      scales: {
+        x: xAxis(),
+        y: { beginAtZero: true, grid: { color: css("--grid"), drawTicks: false }, border: { display: false },
+          ticks: { color: css("--text-muted"), padding: 6, maxTicksLimit: 5 } },
+      },
       plugins: {
         legend: { display: false },
         tooltip: {
           backgroundColor: css("--surface-1"), titleColor: css("--text-primary"), bodyColor: css("--text-secondary"),
-          footerColor: css("--text-muted"), borderColor: css("--border"), borderWidth: 1, padding: 10,
+          footerColor: css("--text-muted"), borderColor: css("--border"), borderWidth: 1, padding: 10, cornerRadius: 10,
           usePointStyle: true, boxPadding: 4,
           callbacks: { title: (items) => fullFmt.format(items[0].parsed.x) },
         },
       },
     };
   }
-
   function withBreaks(points) {
-    // Insert nulls inside outages so lines don't bridge across them.
     const breaks = data.events.map((e) => ({ x: ((e.start + (e.end ?? Date.now() / 1000)) / 2) * 1000, y: null }));
     return [...points, ...breaks].sort((a, b) => a.x - b.x);
   }
-
   function legend(el, items) {
-    el.innerHTML = items.map(([label, color, band]) =>
-      `<span><i class="${band ? "band" : ""}" style="background:${color}"></i>${label}</span>`).join("");
+    el.innerHTML = items.map(([label, color, kind]) =>
+      `<span><i class="${kind || ""}" style="${kind === "dash" ? "" : `background:${color}`}"></i>${label}</span>`).join("");
+  }
+  function mount(key, canvas, cfg) {
+    if (charts[key]) charts[key].destroy();
+    charts[key] = new Chart(canvas, cfg);
+  }
+
+  function renderCharts() {
+    renderSpeedChart();
+    renderQualityCharts();
+    renderHeatmap();
+    if (data.status) drawSpark();
   }
 
   function renderSpeedChart() {
@@ -246,44 +436,142 @@
     $("speed-empty").hidden = ok.length > 0;
     const radius = ok.length > 200 ? 0 : 3;
     const byX = new Map(ok.map((t) => [t.ts * 1000, t]));
+    const plan = data.status.plan_down;
     const ds = (label, key, color) => ({
       label, data: withBreaks(ok.map((t) => ({ x: t.ts * 1000, y: t[key] }))),
       borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: radius, pointHoverRadius: 5,
-      pointBorderColor: css("--surface-1"), pointBorderWidth: radius ? 1.5 : 0, tension: 0, spanGaps: false,
+      pointBorderColor: css("--surface-1"), pointBorderWidth: radius ? 1.5 : 0, tension: 0.25, spanGaps: false,
     });
-    const opts = baseOptions("Mbit/s");
+    const opts = baseOptions();
+    opts.scales.y.suggestedMax = plan * 1.1;
     opts.plugins.tooltip.callbacks.label = (item) => ` ${item.dataset.label}: ${mbps(item.parsed.y)} Mbit/s`;
     opts.plugins.tooltip.callbacks.footer = (items) => {
       const t = byX.get(items[0].parsed.x);
-      return t ? [`Ping ${ms(t.ping_ms)} ms · jitter ${ms(t.jitter_ms)} ms`, `${t.server_name || ""} · ${TRIGGER[t.trigger] || t.trigger}`] : [];
+      return t ? [`${((100 * t.download_mbps) / plan).toFixed(0)}% of plan · ping ${ms(t.ping_ms)} ms`, `${t.server_name || ""} · ${TRIGGER[t.trigger] || t.trigger}`] : [];
     };
-    const cfg = {
+    mount("speed", $("speed-chart"), {
       type: "line",
       data: { datasets: [ds("Download", "download_mbps", css("--series-1")), ds("Upload", "upload_mbps", css("--series-2"))] },
-      options: opts, plugins: [bandsPlugin, crosshairPlugin],
-    };
-    if (charts.speed) charts.speed.destroy();
-    charts.speed = new Chart($("speed-chart"), cfg);
-    legend($("speed-legend"), [["Download", css("--series-1")], ["Upload", css("--series-2")],
-      ["Internet down", css("--band-down"), true], ["Not monitored", css("--band-offline"), true]]);
+      options: opts, plugins: [bandsPlugin, planPlugin, crosshairPlugin],
+    });
+    legend($("speed-legend"), [["Download", css("--series-1")], ["Upload", css("--series-2")], ["Plan", "", "dash"],
+      ["Internet down", css("--band-down"), "band"], ["Not monitored", css("--band-offline"), "band"]]);
   }
 
-  function renderLatencyChart() {
-    const pts = data.checks.map((c) => ({ x: c.ts * 1000, y: c.up ? c.latency_ms : null }));
-    const opts = baseOptions("ms");
-    opts.plugins.tooltip.callbacks.label = (item) => ` Latency: ${ms(item.parsed.y)} ms`;
-    const cfg = {
+  function renderQualityCharts() {
+    const lat = data.checks.map((c) => ({ x: c.ts * 1000, y: c.up ? c.latency_ms : null }));
+    const jit = data.checks.map((c) => ({ x: c.ts * 1000, y: c.up ? c.jitter_ms : null }));
+    const opts = baseOptions();
+    opts.plugins.tooltip.callbacks.label = (item) => ` ${item.dataset.label}: ${ms(item.parsed.y)} ms`;
+    const line = (label, pts, color) => ({ label, data: pts, borderColor: color, backgroundColor: color, borderWidth: 2,
+      pointRadius: 0, pointHoverRadius: 4, tension: 0.2, spanGaps: false });
+    mount("latency", $("latency-chart"), {
       type: "line",
-      data: { datasets: [{ label: "Latency", data: pts, borderColor: css("--series-lat"), backgroundColor: css("--series-lat"),
-        borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0, spanGaps: false }] },
+      data: { datasets: [line("Latency", lat, css("--series-lat")), line("Jitter", jit, css("--series-jit"))] },
       options: opts, plugins: [bandsPlugin, crosshairPlugin],
+    });
+    const loss = data.checks.map((c) => ({ x: c.ts * 1000, y: c.up ? c.loss_pct || 0 : null }));
+    const lopts = baseOptions();
+    lopts.scales.y.suggestedMax = 10;
+    lopts.scales.y.ticks.maxTicksLimit = 2;
+    lopts.scales.y.ticks.callback = (v) => `${v}%`;
+    lopts.scales.x.ticks.display = false;
+    lopts.plugins.tooltip.callbacks.label = (item) => ` Packet loss: ${item.parsed.y.toFixed(0)}%`;
+    mount("loss", $("loss-chart"), {
+      type: "bar",
+      data: { datasets: [{ label: "Packet loss", data: loss, backgroundColor: css("--critical"), borderRadius: 2, barPercentage: 1, categoryPercentage: 1, minBarLength: 0 }] },
+      options: lopts, plugins: [bandsPlugin],
+    });
+    legend($("quality-legend"), [["Latency", css("--series-lat")], ["Jitter", css("--series-jit")], ["Packet loss", css("--critical"), "band"]]);
+  }
+
+  // Drag-to-zoom on the speed chart; double-click returns to the last preset.
+  (() => {
+    const wrap = $("speed-wrap"), box = $("zoom-box");
+    let startX = null;
+    const localX = (ev) => ev.clientX - wrap.getBoundingClientRect().left;
+    wrap.addEventListener("mousedown", (ev) => {
+      const a = charts.speed && charts.speed.chartArea;
+      const x = localX(ev);
+      if (!a || x < a.left || x > a.right) return;
+      startX = x;
+      box.style.left = `${x}px`;
+      box.style.width = "0px";
+      box.hidden = false;
+    });
+    addEventListener("mousemove", (ev) => {
+      if (startX === null) return;
+      const a = charts.speed.chartArea;
+      const x = Math.max(a.left, Math.min(a.right, localX(ev)));
+      box.style.left = `${Math.min(x, startX)}px`;
+      box.style.width = `${Math.abs(x - startX)}px`;
+    });
+    addEventListener("mouseup", (ev) => {
+      if (startX === null) return;
+      const a = charts.speed.chartArea, sx = charts.speed.scales.x;
+      const x = Math.max(a.left, Math.min(a.right, localX(ev)));
+      box.hidden = true;
+      if (Math.abs(x - startX) > 8) {
+        const lo = sx.getValueForPixel(Math.min(x, startX)) / 1000, hi = sx.getValueForPixel(Math.max(x, startX)) / 1000;
+        if (range.preset !== "custom") lastPreset = range.preset;
+        Object.assign(range, { preset: "custom", lo, hi });
+        selectChip("custom", false);
+        loadAll();
+      }
+      startX = null;
+    });
+    wrap.addEventListener("dblclick", () => {
+      if (range.preset !== "custom") return;
+      range.preset = lastPreset;
+      selectChip(lastPreset);
+      loadAll();
+    });
+  })();
+
+  // ------------------------------------------------------------------ heatmap
+  const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const HEAT_STEPS = [25, 50, 70, 85, 95];
+  function heatClass(p) {
+    let i = 0;
+    while (i < HEAT_STEPS.length && p >= HEAT_STEPS[i]) i++;
+    return i;
+  }
+  function renderHeatmap() {
+    const h = data.heat;
+    if (!h) return;
+    const cells = new Map(h.cells.map((c) => [`${c.wday}-${c.hour}`, c]));
+    let html = "<span></span>";
+    for (let hr = 0; hr < 24; hr++) html += `<span class="cl">${hr % 6 === 0 ? hFmt.format(new Date(2000, 0, 1, hr)).replace(/\s/g, "") : ""}</span>`;
+    DAYS.forEach((d, w) => {
+      html += `<span class="rl">${d}</span>`;
+      for (let hr = 0; hr < 24; hr++) {
+        const c = cells.get(`${w}-${hr}`);
+        html += c
+          ? `<span class="cell" data-k="${w}-${hr}" style="background:var(--heat-${heatClass(c.pct)})"></span>`
+          : `<span class="cell" data-k="${w}-${hr}"></span>`;
+      }
+    });
+    const el = $("heatmap");
+    el.innerHTML = html;
+    el.onmousemove = (ev) => {
+      const k = ev.target.dataset && ev.target.dataset.k;
+      if (!k) return hideTip();
+      const [w, hr] = k.split("-").map(Number);
+      const c = cells.get(k);
+      const label = `${DAYS[w]} ${hFmt.format(new Date(2000, 0, 1, hr))}`;
+      showTip(ev, c ? `<b>${label}</b><span>avg ${mbps(c.avg_down)} Mbit/s · ${c.pct.toFixed(0)}% of plan</span><span>${c.n} test${c.n === 1 ? "" : "s"}</span>` : `<b>${label}</b><span>No tests yet</span>`);
     };
-    if (charts.latency) charts.latency.destroy();
-    charts.latency = new Chart($("latency-chart"), cfg);
-    legend($("latency-legend"), [["Latency (lowest of the check targets)", css("--series-lat")], ["Internet down", css("--band-down"), true]]);
+    el.onmouseleave = hideTip;
+    const labels = ["<25%", "25–50%", "50–70%", "70–85%", "85–95%", "≥95%"];
+    $("heat-legend").innerHTML = `<span>Slower</span>${labels.map((l, i) => `<i title="${l} of plan" style="background:var(--heat-${i})"></i>`).join("")}<span>Faster (of plan)</span>`;
   }
 
   // ------------------------------------------------------------------- tables
+  function pbar(v, plan) {
+    const p = (100 * v) / plan;
+    const cls = p < 50 ? "low" : p < 80 ? "mid" : "";
+    return `<span class="pbar"><i><b class="${cls}" style="width:${Math.min(100, p).toFixed(0)}%"></b></i>${p.toFixed(0)}%</span>`;
+  }
   function recoveryText(e) {
     if (e.kind !== "internet_down") return '<span class="muted">—</span>';
     if (e.ongoing) return '<span class="muted">still down</span>';
@@ -291,39 +579,39 @@
     if (e.rec_status === "failed") return '<span class="muted">test failed</span>';
     return '<span class="muted">too short to test</span>';
   }
-
   function renderOutages() {
     const rows = data.events;
     $("outage-rows").innerHTML = rows.length ? rows.map((e) => `<tr>
-      <td>${when(e.start)}</td>
-      <td>${e.ongoing ? "<strong>ongoing</strong>" : when(e.end)}</td>
+      <td>${when(e.start)}</td><td>${e.ongoing ? "<strong>ongoing</strong>" : when(e.end)}</td>
       <td class="num">${dur(e.duration_s)}</td>
-      <td>${e.kind === "internet_down" ? '<span class="tag down">Internet down</span>' : '<span class="tag">Monitor offline (Pi off / no data)</span>'}</td>
+      <td>${e.kind === "internet_down" ? '<span class="tag down">Internet down</span>' : '<span class="tag">Not monitored (Pi off)</span>'}</td>
       <td>${recoveryText(e)}</td></tr>`).join("")
-      : '<tr><td colspan="5" class="muted">No outages in this range 🎉</td></tr>';
+      : '<tr><td colspan="5" class="muted">No outages in this range.</td></tr>';
   }
-
   function renderTests() {
+    const plan = data.status.plan_down;
     const rows = [...data.tests].reverse();
-    const shown = showAllTests ? rows : rows.slice(0, 50);
-    $("btn-more-tests").hidden = showAllTests || rows.length <= 50;
+    const shown = showAllTests ? rows : rows.slice(0, 25);
+    $("btn-more-tests").hidden = showAllTests || rows.length <= 25;
     $("btn-more-tests").textContent = `Show all ${rows.length}`;
     $("test-rows").innerHTML = shown.length ? shown.map((t) => {
-      const [cls, label] = STATUS[t.status] || ["", t.status];
       if (t.status !== "ok") {
+        const [cls, label] = SKIP[t.status] || ["", t.status];
         const why = label + (t.busy_mbps ? ` (${mbps(t.busy_mbps)} Mbit/s in use)` : "");
-        return `<tr><td>${when(t.ts)}</td><td colspan="6"><span class="tag ${cls}">${esc(why)}</span>
-          ${t.error ? `<span class="muted" title="${esc(t.error)}"> ${esc(t.error.slice(0, 80))}</span>` : ""}</td>
-          <td>${TRIGGER[t.trigger] || esc(t.trigger)}</td><td></td></tr>`;
+        return `<tr><td>${when(t.ts)}</td><td colspan="7"><span class="tag ${cls}">${esc(why)}</span>${t.error ? ` <span class="muted" title="${esc(t.error)}">${esc(t.error.slice(0, 70))}</span>` : ""}</td><td>${TRIGGER[t.trigger] || esc(t.trigger)}</td><td></td></tr>`;
       }
       return `<tr><td>${when(t.ts)}</td>
-        <td class="num">${mbps(t.download_mbps)}</td><td class="num">${mbps(t.upload_mbps)}</td>
-        <td class="num">${ms(t.ping_ms)} ms</td><td class="num">${ms(t.jitter_ms)} ms</td>
-        <td class="num">${t.packet_loss == null ? "—" : t.packet_loss.toFixed(1) + "%"}</td>
-        <td>${esc(t.server_name)}${t.server_location ? ` <span class="muted">${esc(t.server_location)}</span>` : ""}</td>
-        <td>${TRIGGER[t.trigger] || esc(t.trigger)}</td>
+        <td class="num"><strong>${mbps(t.download_mbps)}</strong></td><td>${pbar(t.download_mbps, plan)}</td>
+        <td class="num">${mbps(t.upload_mbps)}</td><td class="num">${ms(t.ping_ms)} ms</td><td class="num">${ms(t.jitter_ms)} ms</td>
+        <td class="num">${t.packet_loss == null ? "—" : `${t.packet_loss.toFixed(1)}%`}</td>
+        <td>${esc(t.server_name)}</td><td>${TRIGGER[t.trigger] || esc(t.trigger)}</td>
         <td>${t.result_url ? `<a class="link" href="${esc(t.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ""}</td></tr>`;
-    }).join("") : '<tr><td colspan="9" class="muted">No speedtests in this range.</td></tr>';
+    }).join("") : '<tr><td colspan="10" class="muted">No speedtests in this range.</td></tr>';
+  }
+  function renderIps() {
+    $("ip-rows").innerHTML = data.ips.length
+      ? data.ips.map((r, i) => `<tr><td>${when(r.ts)}${i === 0 ? ' <span class="tag ok">current</span>' : ""}</td><td>${esc(r.ip)}</td><td>${esc(r.isp)}</td></tr>`).join("")
+      : '<tr><td colspan="3" class="muted">Recorded after the next speedtest.</td></tr>';
   }
 
   // ------------------------------------------------------------------- lookup
@@ -335,23 +623,24 @@
     } else if (r.event) {
       lines.push(`<div><span class="tag">Not monitored</span> — the monitor was off from ${when(r.event.start)} to ${when(r.event.end)}</div>`);
     } else if (r.check) {
-      lines.push(`<div>${r.check.up ? `<span class="tag ok">Online</span> · latency ${ms(r.check.latency_ms)} ms` : '<span class="tag down">No response</span>'}</div>`);
+      lines.push(r.check.up
+        ? `<div><span class="tag ok">Online</span> · latency ${ms(r.check.latency_ms)} ms${r.check.jitter_ms != null ? ` · jitter ${ms(r.check.jitter_ms)} ms` : ""}${r.check.loss_pct ? ` · ${r.check.loss_pct.toFixed(0)}% loss` : ""}</div>`
+        : '<div><span class="tag down">No response</span></div>');
     } else {
       lines.push('<div class="muted">No connectivity data at that time.</div>');
     }
     const t = (x, label) => x
-      ? `<div>${label}: <strong>${mbps(x.download_mbps)} ↓ / ${mbps(x.upload_mbps)} ↑ Mbit/s</strong>, ${ms(x.ping_ms)} ms — at ${when(x.ts)} (${dur(Math.abs(x.ts - ts))} ${x.ts <= ts ? "before" : "after"})</div>`
+      ? `<div>${label}: <strong>${mbps(x.download_mbps)} ↓ / ${mbps(x.upload_mbps)} ↑ Mbit/s</strong>, ${ms(x.ping_ms)} ms — ${when(x.ts)} (${dur(Math.abs(x.ts - ts))} ${x.ts <= ts ? "before" : "after"})</div>`
       : `<div class="muted">${label}: none</div>`;
     lines.push(t(r.before, "Speedtest before"), t(r.after, "Speedtest after"));
     $("lookup-result").innerHTML = lines.join("");
   }
 
   // ------------------------------------------------------------------- wiring
-  function selectChip(value) {
+  function selectChip(value, hideCustom = true) {
     for (const c of document.querySelectorAll(".chip")) c.setAttribute("aria-checked", String(c.dataset.range === String(value)));
-    $("custom-range").hidden = value !== "custom";
+    $("custom-range").hidden = hideCustom ? value !== "custom" : true;
   }
-
   document.querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => {
     const v = c.dataset.range;
     selectChip(v);
@@ -361,6 +650,7 @@
       return;
     }
     range.preset = Number(v);
+    lastPreset = range.preset;
     showAllTests = false;
     loadAll();
   }));
@@ -373,26 +663,34 @@
   $("btn-run").addEventListener("click", async () => {
     $("btn-run").disabled = true;
     await fetch("api/speedtest/run", { method: "POST" });
+    wasRunning = true;
     loadStatus();
   });
-  $("pause-select").addEventListener("change", async (e) => {
-    if (!e.target.value) return;
-    await api("api/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: Number(e.target.value) }) });
-    e.target.value = "";
-    loadStatus();
+  const menu = $("pause-menu"), menuList = menu.querySelector(".menu-list");
+  $("btn-pause").addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    menuList.hidden = !menuList.hidden;
+    $("btn-pause").setAttribute("aria-expanded", String(!menuList.hidden));
   });
-  $("btn-resume").addEventListener("click", async () => {
-    await api("api/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: 0 }) });
+  addEventListener("click", () => { menuList.hidden = true; });
+  menuList.querySelectorAll("[data-min]").forEach((b) => b.addEventListener("click", async () => {
+    await api("api/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: Number(b.dataset.min) }) });
     loadStatus();
-  });
+  }));
   $("btn-more-tests").addEventListener("click", () => { showAllTests = true; renderTests(); });
   $("lookup-form").addEventListener("submit", (e) => { e.preventDefault(); lookup(fromLocalInput($("lookup-at").value)); });
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { renderSpeedChart(); renderLatencyChart(); renderStatus(); });
+  osDark.addEventListener("change", () => applyTheme());
+  addEventListener("focus", () => applyTheme());
+  setInterval(() => applyTheme(), 5000);
+  let resizeT;
+  addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => data.loaded && (drawSpark(), renderStrip()), 200); });
 
-  // Default the lookup box to "yesterday, this time".
+  root.classList.add("skeleton");
+  $("conn-state").classList.add("loading");
+  applyTheme(true);
   $("lookup-at").value = toLocalInput(Date.now() / 1000 - 86400);
   selectChip(86400);
-  loadAll();
-  setInterval(() => loadStatus().catch(() => {}), 15000);
+  loadAll().then(() => scheduleStatus(10000)).catch((e) => { console.error(e); scheduleStatus(10000); });
+  setInterval(tickSince, 1000);
   setInterval(() => { if (range.preset !== "custom") loadAll().catch(() => {}); }, 300000);
 })();

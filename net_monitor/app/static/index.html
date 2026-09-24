@@ -7,101 +7,203 @@
   <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
-<main class="viz-root">
-  <header class="top">
-    <div class="status" id="status" role="status" aria-live="polite">
-      <span class="status-pill" id="status-pill"><span class="dot" aria-hidden="true"></span><span id="status-label">Checking…</span></span>
-      <span class="status-detail" id="status-detail"></span>
+<main class="viz-root" id="root">
+
+  <header class="brand reveal">
+    <div>
+      <h1>Net Monitor</h1>
+      <p class="sub">International connection · Singapore</p>
     </div>
     <div class="actions">
-      <button id="btn-run" class="btn primary">Run speedtest now</button>
-      <div class="pause">
-        <select id="pause-select" aria-label="Pause scheduled speedtests">
-          <option value="">Pause speedtests…</option>
-          <option value="60">for 1 hour</option>
-          <option value="180">for 3 hours</option>
-          <option value="480">for 8 hours</option>
-          <option value="-1">until I resume</option>
-        </select>
-        <button id="btn-resume" class="btn" hidden>Resume speedtests</button>
+      <div class="menu" id="pause-menu">
+        <button class="btn ghost" id="btn-pause" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span id="pause-label">Pause</span>
+        </button>
+        <div class="menu-list" role="menu" hidden>
+          <button role="menuitem" data-min="60">Pause for 1 hour</button>
+          <button role="menuitem" data-min="180">Pause for 3 hours</button>
+          <button role="menuitem" data-min="480">Pause for 8 hours</button>
+          <button role="menuitem" data-min="-1">Pause until I resume</button>
+          <button role="menuitem" data-min="0" id="menu-resume" hidden>Resume speedtests</button>
+        </div>
       </div>
+      <button class="btn primary" id="btn-run">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 13l4-4M4.9 19a9 9 0 1 1 14.2 0"/></svg><span>Run speedtest</span>
+      </button>
     </div>
   </header>
 
-  <section class="now" id="now-cards" aria-label="Latest speedtest"></section>
+  <section class="hero">
+    <article class="card conn reveal" id="conn-card" aria-live="polite">
+      <div class="conn-top">
+        <span class="pulse" aria-hidden="true"></span>
+        <div>
+          <div class="conn-state skeleton-text" id="conn-state">Checking</div>
+          <div class="conn-since" id="conn-since">&nbsp;</div>
+        </div>
+      </div>
+      <div class="mini-stats">
+        <div><span class="k">Latency</span><span class="v" id="q-latency">—</span></div>
+        <div><span class="k">Jitter</span><span class="v" id="q-jitter">—</span></div>
+        <div><span class="k">Packet loss</span><span class="v" id="q-loss">—</span></div>
+      </div>
+      <div class="spark-wrap">
+        <canvas id="spark" aria-label="Latency, last 30 minutes"></canvas>
+        <span class="spark-label">Latency · last 30 min</span>
+      </div>
+    </article>
 
-  <section class="filters" aria-label="Time range">
-    <div class="chips" id="range-chips" role="radiogroup" aria-label="Range">
-      <button class="chip" data-range="86400" role="radio">24 hours</button>
-      <button class="chip" data-range="604800" role="radio">7 days</button>
-      <button class="chip" data-range="2592000" role="radio">30 days</button>
-      <button class="chip" data-range="7776000" role="radio">90 days</button>
-      <button class="chip" data-range="31536000" role="radio">1 year</button>
+    <article class="card speed reveal" id="speed-card">
+      <div class="speed-grid">
+        <div class="speed-metric">
+          <span class="k"><i class="sw s1"></i>Download</span>
+          <span class="big"><span id="sp-down">—</span><small>Mbit/s</small></span>
+          <div class="plan-bar"><span id="sp-down-bar"></span></div>
+          <span class="muted small" id="sp-down-pct">&nbsp;</span>
+        </div>
+        <div class="speed-metric">
+          <span class="k"><i class="sw s2"></i>Upload</span>
+          <span class="big"><span id="sp-up">—</span><small>Mbit/s</small></span>
+          <div class="plan-bar up"><span id="sp-up-bar"></span></div>
+          <span class="muted small" id="sp-up-pct">&nbsp;</span>
+        </div>
+      </div>
+      <div class="speed-foot" id="speed-foot">&nbsp;</div>
+      <div class="live" id="live" hidden>
+        <div class="live-head"><span id="live-phase">Connecting…</span><span id="live-value"></span></div>
+        <div class="live-steps">
+          <span data-step="ping">Ping</span><span data-step="download">Download</span><span data-step="upload">Upload</span>
+        </div>
+        <div class="live-bar"><span id="live-bar"></span></div>
+      </div>
+    </article>
+  </section>
+
+  <nav class="toolbar reveal" aria-label="Time range">
+    <div class="chips" role="radiogroup" aria-label="Range">
+      <button class="chip" data-range="86400" role="radio">24h</button>
+      <button class="chip" data-range="604800" role="radio">7d</button>
+      <button class="chip" data-range="2592000" role="radio">30d</button>
+      <button class="chip" data-range="7776000" role="radio">90d</button>
+      <button class="chip" data-range="31536000" role="radio">1y</button>
       <button class="chip" data-range="custom" role="radio">Custom</button>
     </div>
     <div class="custom" id="custom-range" hidden>
-      <label>From <input type="datetime-local" id="custom-from"></label>
-      <label>To <input type="datetime-local" id="custom-to"></label>
+      <input type="datetime-local" id="custom-from" aria-label="From">
+      <span class="muted">→</span>
+      <input type="datetime-local" id="custom-to" aria-label="To">
       <button class="btn" id="btn-apply-range">Apply</button>
     </div>
+    <span class="range-label muted" id="range-label"></span>
+  </nav>
+
+  <section class="card reveal">
+    <div class="card-head">
+      <h2>Uptime</h2>
+      <span class="head-value" id="uptime-headline">—</span>
+    </div>
+    <div class="strip" id="strip" role="img" aria-label="Uptime per period"></div>
+    <div class="strip-axis"><span id="strip-start"></span><span id="strip-end"></span></div>
+    <div class="legend">
+      <span><i class="dotk good"></i>No downtime</span>
+      <span><i class="dotk warn"></i>Some downtime</span>
+      <span><i class="dotk bad"></i>Major downtime (&gt;5%)</span>
+      <span><i class="dotk none"></i>Not monitored</span>
+    </div>
   </section>
 
-  <section class="tiles" id="summary-tiles" aria-label="Summary for selected range"></section>
-
-  <section class="card">
+  <section class="card report reveal">
     <div class="card-head">
-      <h2>Speed (international, Mbit/s)</h2>
+      <h2>Report card</h2>
+      <span class="muted small" id="report-sub"></span>
+    </div>
+    <div class="report-grid">
+      <div class="grade" id="grade">
+        <span class="grade-letter" id="grade-letter">–</span>
+        <span class="grade-caption" id="grade-caption">Not enough data yet</span>
+      </div>
+      <div class="tiles" id="report-tiles"></div>
+    </div>
+  </section>
+
+  <section class="card reveal">
+    <div class="card-head">
+      <h2>Speed</h2>
       <div class="legend" id="speed-legend"></div>
     </div>
-    <div class="chart-wrap"><canvas id="speed-chart" aria-label="Download and upload speed over time"></canvas></div>
-    <p class="empty" id="speed-empty" hidden>No speedtests in this range yet. The first scheduled test runs at the top of the hour — or press “Run speedtest now”.</p>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <h2>Latency to the internet (ms)</h2>
-      <div class="legend" id="latency-legend"></div>
+    <div class="chart-wrap" id="speed-wrap">
+      <canvas id="speed-chart" aria-label="Download and upload speed over time"></canvas>
+      <div class="zoom-box" id="zoom-box" hidden></div>
     </div>
-    <div class="chart-wrap small"><canvas id="latency-chart" aria-label="Connection latency over time"></canvas></div>
+    <p class="hint muted small" id="speed-hint">Drag across the chart to zoom · double-click to reset</p>
+    <p class="empty" id="speed-empty" hidden>No speedtests in this range yet.</p>
   </section>
 
-  <section class="card">
-    <div class="card-head"><h2>What was my internet like at…</h2></div>
-    <form class="lookup" id="lookup-form">
-      <input type="datetime-local" id="lookup-at" required aria-label="Date and time">
-      <button class="btn primary" type="submit">Look up</button>
-    </form>
-    <div id="lookup-result" class="lookup-result"></div>
+  <section class="grid-2">
+    <article class="card reveal">
+      <div class="card-head">
+        <h2>Connection quality</h2>
+        <div class="legend" id="quality-legend"></div>
+      </div>
+      <div class="chart-wrap small"><canvas id="latency-chart" aria-label="Latency and jitter over time"></canvas></div>
+      <div class="chart-wrap tiny"><canvas id="loss-chart" aria-label="Packet loss over time"></canvas></div>
+    </article>
+    <article class="card reveal">
+      <div class="card-head">
+        <h2>Best &amp; worst times</h2>
+        <span class="muted small">Avg download · last 30 days</span>
+      </div>
+      <div class="heatmap" id="heatmap"></div>
+      <div class="heat-legend" id="heat-legend"></div>
+    </article>
   </section>
 
-  <section class="card">
+  <section class="grid-2">
+    <article class="card reveal">
+      <div class="card-head"><h2>What was my internet like at…</h2></div>
+      <form class="lookup" id="lookup-form">
+        <input type="datetime-local" id="lookup-at" required aria-label="Date and time">
+        <button class="btn primary" type="submit">Look up</button>
+      </form>
+      <div id="lookup-result" class="lookup-result"></div>
+    </article>
+    <article class="card reveal">
+      <div class="card-head"><h2>ISP &amp; public IP</h2></div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Since</th><th>Public IP</th><th>ISP</th></tr></thead><tbody id="ip-rows"></tbody></table>
+      </div>
+    </article>
+  </section>
+
+  <section class="card reveal">
     <div class="card-head">
       <h2>Outages</h2>
-      <a class="link" id="export-outages" href="#">Download CSV</a>
+      <a class="link" id="export-outages" href="#">Export CSV</a>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>From</th><th>To</th><th class="num">Duration</th><th>What happened</th><th>Came back with</th></tr></thead>
+        <thead><tr><th>From</th><th>To</th><th class="num">Duration</th><th>Type</th><th>Came back with</th></tr></thead>
         <tbody id="outage-rows"></tbody>
       </table>
     </div>
   </section>
 
-  <section class="card">
+  <section class="card reveal">
     <div class="card-head">
       <h2>Speedtests</h2>
-      <a class="link" id="export-tests" href="#">Download CSV</a>
+      <a class="link" id="export-tests" href="#">Export CSV</a>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Time</th><th class="num">Download</th><th class="num">Upload</th><th class="num">Ping</th><th class="num">Jitter</th><th class="num">Loss</th><th>Server</th><th>Why</th><th></th></tr></thead>
+        <thead><tr><th>Time</th><th class="num">Download</th><th>vs plan</th><th class="num">Upload</th><th class="num">Ping</th><th class="num">Jitter</th><th class="num">Loss</th><th>Server</th><th>Trigger</th><th></th></tr></thead>
         <tbody id="test-rows"></tbody>
       </table>
     </div>
-    <button class="btn more" id="btn-more-tests" hidden>Show all</button>
+    <button class="btn ghost more" id="btn-more-tests" hidden>Show all</button>
   </section>
 
   <footer class="foot" id="foot"></footer>
+  <div class="tip" id="tip" role="tooltip" hidden></div>
 </main>
 <script src="static/chart.umd.min.js"></script>
 <script src="static/app.js"></script>

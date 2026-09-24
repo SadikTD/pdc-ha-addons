@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.0.0"
+version: "1.1.0"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
@@ -20,11 +20,13 @@ panel_title: Net Monitor
 homeassistant_api: true
 options:
   speedtest_interval_minutes: 60
+  # Best-routed Singapore Ookla servers from Bangladesh (Indosat, Firstmedia,
+  # Symphony, FPT). Singtel/M1 routes were heavily congested in testing.
   server_ids:
-    - 13623
-    - 5935
-    - 7311
-    - 31293
+    - 13058
+    - 7556
+    - 62530
+    - 67827
   check_interval_seconds: 30
   # International hosts only (Singapore + Cloudflare). 8.8.8.8 / 9.9.9.9 are
   # served from in-country caches and would hide an international outage.
@@ -39,6 +41,14 @@ options:
   notify_service: ""
   notify_min_outage_minutes: 1
   retention_days: 365
+  plan_download_mbps: 40
+  plan_upload_mbps: 40
+  slow_alert_percent: 50
+  slow_alert_consecutive_tests: 2
+  weekly_report_enabled: true
+  weekly_report_day: sun
+  weekly_report_hour: 21
+  quality_samples: 5
 schema:
   speedtest_interval_minutes: int(15,1440)
   server_ids:
@@ -52,3 +62,11 @@ schema:
   notify_service: str?
   notify_min_outage_minutes: int(0,1440)
   retention_days: int(7,3650)
+  plan_download_mbps: float(1,100000)
+  plan_upload_mbps: float(1,100000)
+  slow_alert_percent: int(0,100)
+  slow_alert_consecutive_tests: int(1,24)
+  weekly_report_enabled: bool
+  weekly_report_day: list(mon|tue|wed|thu|fri|sat|sun)
+  weekly_report_hour: int(0,23)
+  quality_samples: int(1,10)
