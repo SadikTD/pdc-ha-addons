@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PDC Monitor</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css?v=__V__">
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <div class="shell">
+    <nav class="rail" aria-label="Sections">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span></div>
+        <div class="brand-text"><b>PDC Monitor</b><small>Pitch duplicate checker</small></div>
+      </div>
+      <a href="#overview" data-page="overview"><svg><use href="#i-grid"/></svg><span>Overview</span></a>
+      <a href="#pitches" data-page="pitches"><svg><use href="#i-layers"/></svg><span>Pitches</span><em class="badge" id="nav-flagged" hidden></em></a>
+      <a href="#messages" data-page="messages"><svg><use href="#i-chat"/></svg><span>Messages</span></a>
+      <a href="#activity" data-page="activity"><svg><use href="#i-pulse"/></svg><span>Activity</span></a>
+      <a href="#settings" data-page="settings"><svg><use href="#i-gear"/></svg><span>Settings</span></a>
+      <div class="rail-foot" id="rail-foot"></div>
+    </nav>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">Overview</h1>
+          <p id="page-sub" class="muted">Everything the pitch monitor checked and sent</p>
+        </div>
+        <div class="pills" id="pills"></div>
+      </header>
+      <div id="banner"></div>
+
+      <!-- ============================== OVERVIEW ============================== -->
+      <section class="page" id="page-overview" data-title="Overview" data-sub="Everything the pitch monitor checked and sent">
+        <div class="tiles" id="tiles"></div>
+
+        <div class="grid g-2-1">
+          <div class="card" id="card-daily">
+            <div class="card-head"><h2>Checks per day</h2><div class="seg" id="daily-range" role="group" aria-label="Range">
+              <button data-days="14" class="on">14d</button><button data-days="30">30d</button><button data-days="90">90d</button></div></div>
+            <div class="legend" id="daily-legend"></div>
+            <div class="chart" id="chart-daily"></div>
+          </div>
+          <div class="card pulse-card" id="card-pulse"></div>
+        </div>
+
+        <div class="grid g-1-1">
+          <div class="card">
+            <div class="card-head"><h2>Latest pitches</h2><a class="link" href="#pitches">View all</a></div>
+            <div class="feed" id="feed"></div>
+          </div>
+          <div class="stack">
+            <div class="card">
+              <div class="card-head"><h2>Verdict mix</h2><span class="muted small" id="mix-total"></span></div>
+              <div id="mix"></div>
+            </div>
+            <div class="card">
+              <div class="card-head"><h2>System health</h2></div>
+              <ul class="health" id="health"></ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid g-1-1">
+          <div class="card">
+            <div class="card-head"><h2>Scans, last 24 hours</h2><span class="muted small" id="scan-sum"></span></div>
+            <div class="chart" id="chart-scans"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>When pitches are created</h2><span class="muted small">local time</span></div>
+            <div id="heatmap"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================== PITCHES ============================== -->
+      <section class="page" id="page-pitches" data-title="Pitches" data-sub="Every pitch the monitor checked, and what it found">
+        <div class="toolbar">
+          <label class="search"><svg><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search titles, writers, lists…" autocomplete="off"></label>
+          <div class="seg scroll" id="filters" role="group" aria-label="Filter"></div>
+        </div>
+        <div class="card flush"><div class="table" id="pitch-list"></div></div>
+        <button class="btn ghost more" id="more" hidden>Show more</button>
+      </section>
+
+      <!-- ============================== MESSAGES ============================== -->
+      <section class="page" id="page-messages" data-title="Messages" data-sub="Every WhatsApp message this bridge sent">
+        <div class="toolbar">
+          <div class="seg" id="msg-filters" role="group" aria-label="Source"></div>
+          <button class="btn" id="btn-test-2"><svg><use href="#i-send"/></svg>Send test message</button>
+        </div>
+        <div class="chat" id="chat"></div>
+      </section>
+
+      <!-- ============================== ACTIVITY ============================== -->
+      <section class="page" id="page-activity" data-title="Activity" data-sub="Scans, connection events and changes">
+        <div class="card">
+          <div class="card-head"><h2>Scan history</h2><div class="seg" id="scan-range" role="group" aria-label="Range">
+            <button data-hours="24" class="on">24h</button><button data-hours="72">3d</button><button data-hours="336">14d</button></div></div>
+          <div class="legend" id="scan-legend"></div>
+          <div class="chart tall" id="chart-scan-history"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Event log</h2><span class="muted small" id="event-count"></span></div>
+          <ol class="timeline" id="events"></ol>
+        </div>
+      </section>
+
+      <!-- ============================== SETTINGS ============================== -->
+      <section class="page" id="page-settings" data-title="Settings" data-sub="Configure the monitor, alerts and the WhatsApp bridge">
+        <div class="settings" id="settings"></div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="tabbar" aria-label="Sections">
+    <a href="#overview" data-page="overview"><svg><use href="#i-grid"/></svg><span>Overview</span></a>
+    <a href="#pitches" data-page="pitches"><svg><use href="#i-layers"/></svg><span>Pitches</span></a>
+    <a href="#messages" data-page="messages"><svg><use href="#i-chat"/></svg><span>Messages</span></a>
+    <a href="#activity" data-page="activity"><svg><use href="#i-pulse"/></svg><span>Activity</span></a>
+    <a href="#settings" data-page="settings"><svg><use href="#i-gear"/></svg><span>Settings</span></a>
+  </nav>
+
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-scrim" data-close></div>
+    <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <button class="icon-btn drawer-x" data-close aria-label="Close"><svg><use href="#i-x"/></svg></button>
+      <div id="drawer-body"></div>
+    </div>
+  </aside>
+
+  <div class="tooltip" id="tip" role="tooltip"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3 2.5 8 12 13l9.5-5L12 3Z"/><path d="m2.5 12.5 9.5 5 9.5-5"/><path d="m2.5 17 9.5 5 9.5-5"/></symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20.5 11.6a8.4 8.4 0 0 1-12.4 7.4L3.5 20.5 5 16.1A8.4 8.4 0 1 1 20.5 11.6Z"/></symbol>
+      <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4 18-7Z"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+      <symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.5L3 9"/><path d="M3 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.5L21 15"/><path d="M21 20v-5h-5"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></symbol>
+      <!-- verdict icons: shape differs per verdict so colour is never the only cue -->
+      <symbol id="v-duplicate" viewBox="0 0 16 16"><path d="M8 1.5 14.5 8 8 14.5 1.5 8Z"/><path d="M8 5v3.5M8 10.8v.2" stroke="var(--on-status)" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="v-same_story" viewBox="0 0 16 16"><path d="M8 1.8 14.6 13.6H1.4Z"/><path d="M8 6.4v3M8 11.4v.1" stroke="var(--on-status)" stroke-width="1.7" stroke-linecap="round"/></symbol>
+      <symbol id="v-near_miss" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.8v3.6M8 10.8v.1" stroke="var(--on-status)" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="v-clear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--on-status)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="v-waiting" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2.2"/></symbol>
+      <symbol id="v-baseline" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="2"/></symbol>
+    </defs>
+  </svg>
+
+  <script src="app.js?v=__V__" type="module"></script>
+</body>
+</html>

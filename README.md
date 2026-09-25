@@ -11,9 +11,16 @@ Self-hosted [Baileys](https://github.com/WhiskeySockets/Baileys) sender used by 
 - Session files are written atomically (temp file, fsync, rename), so a power cut can't corrupt the login.
 - Raises a Home Assistant notification if WhatsApp is unlinked, restricted, or offline for 10+ minutes.
 
-Configure `api_token` (32+ random characters), `sender_number` and `recipient_number` in the add-on options before starting.
+- **PDC Monitor** in the Home Assistant sidebar (Ingress):
+  - **Overview:** live scan heartbeat, checks per day by verdict, verdict mix, system health, scan history and when pitches are created.
+  - **Pitches:** every checked pitch, searchable and filterable (duplicate, similar story, possible overlap, clear, waiting, problems). Each one opens a side-by-side comparison with its match, confidence, the AI's reason, a timeline, and the exact WhatsApp message. You can recheck a pitch or resend its alert.
+  - **Messages:** everything the bridge sent (pitch alerts, monitor health, Net Monitor, tests) in a WhatsApp-style view.
+  - **Activity:** scan history and a log of connection events, pairing codes and setting changes.
+  - **Settings:** the WhatsApp link (pairing code shown in the UI, test message, relink); monitor on/off, live vs dry run, watched lists, which verdicts alert, minimum confidence, quiet hours, health alerts and reference window; and this add-on's options.
 
-Tests: `node --test bridge.test.mjs` (no dependencies) and, after `npm install`, `node --test auth-state.test.mjs`.
+Configure `api_token` (32+ random characters), `sender_number` and `recipient_number` in the add-on options before starting. For the dashboard, set `worker_url` to the pitch-checker Worker's address. The dashboard reads the Worker's token-protected `/bridge/*` API with the same `api_token`, so the Worker's `BAILEYS_TOKEN` must equal it (as it already does for sending). Pitch checks and monitor settings live in the Worker's D1 database; message history and the event log stay in this add-on's `/data`.
+
+Tests: `node --test bridge.test.mjs ui.test.mjs` (no dependencies) and, after `npm install`, `node --test auth-state.test.mjs`.
 
 ## Net Monitor
 
