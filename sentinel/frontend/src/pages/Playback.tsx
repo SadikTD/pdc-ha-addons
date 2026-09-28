@@ -1,19 +1,49 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
-import { Columns2, Expand, Maximize2, Minimize2, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
+import { Columns2, Expand, ImageOff, Loader2, Maximize2, Minimize2, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Volume2, VolumeX, ZoomIn, ZoomOut } from "lucide-react";
 import { SyncPlayer } from "../components/SyncPlayer";
-import { Timeline } from "../components/Timeline";
+import { Scrubber, MIN_RANGE, MAX_RANGE } from "../components/Scrubber";
 import { JumpTo } from "../components/JumpTo";
-import { Card, Empty, IconButton, PageHeader } from "../components/ui";
+import { Empty, IconButton } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { useTimeline } from "../lib/useTimeline";
-import { api, type SentinelEvent } from "../lib/api";
-import { HOUR, fmtDay, fmtTimeSec } from "../lib/format";
+import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
+import { api, type SentinelEvent, type Span } from "../lib/api";
+import { DAY, HOUR, fmtDay, fmtTimeSec } from "../lib/format";
 
 const RATES = [1, 2, 4, 8];
+const ZOOMS: [string, number][] = [["5m", 5 * 60_000], ["30m", 30 * 60_000], ["1h", HOUR], ["6h", 6 * HOUR], ["24h", DAY]];
+const GAP = 8;
+const MIN_TILE = 300; // px: below this the grid scrolls instead of shrinking further
+
+// The biggest 16:9 tiles that fit n cameras into w×h (never smaller than MIN_TILE wide).
+function layout(n: number, w: number, h: number) {
+  let best = { cols: 1, tile: 0 };
+  for (let cols = 1; cols <= Math.max(1, n); cols++) {
+    const rows = Math.ceil(n / cols);
+    const tile = Math.min((w - GAP * (cols - 1)) / cols, ((h - GAP * (rows - 1)) / rows) * (16 / 9));
+    if (tile > best.tile) best = { cols, tile };
+  }
+  if (best.tile < MIN_TILE) {
+    const cols = Math.max(1, Math.floor((w + GAP) / (MIN_TILE + GAP)));
+    best = { cols, tile: (w - GAP * (cols - 1)) / cols };
+  }
+  return best;
+}
+
+function mergeSpans(lists: Span[][]): Span[] {
+  const all = lists.flat().sort((a, b) => a.s - b.s);
+  const out: Span[] = [];
+  for (const s of all) {
+    const last = out.at(-1);
+    if (last && s.s <= last.e + 3000) last.e = Math.max(last.e, s.e);
+    else out.push({ ...s });
+  }
+  return out;
+}
 
 // Every camera playing the same moment side by side, on one clock.
 export function PlaybackPage() {
@@ -29,7 +59,7 @@ export function PlaybackPage() {
     [status?.cameras.map((c) => c.id + c.name).join()],
   );
   const [hidden, setHidden] = useState<string[]>(() => JSON.parse(localStorage.getItem("sentinel.playback.hidden") ?? "[]"));
-  const cams = all.filter((c) => !hidden.includes(c.id));
+  const cams = useMemo(() => all.filter((c) => !hidden.includes(c.id)), [all, hidden]);
 
   // Shared clock: base time at a performance.now() instant, advancing at `rate` while playing.
   const clock = useRef({ base: initial, at: performance.now(), rate: 1, playing: true });
@@ -41,12 +71,23 @@ export function PlaybackPage() {
   const [epoch, setEpoch] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [rate, setRate] = useState(1);
+  const [range, setRange] = useState(HOUR);
+  const [scrubT, setScrubT] = useState<number | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [audio, setAudio] = useState<string | null>(null);
   const [jumpOpen, setJumpOpen] = useState(false);
-  const [view, setView] = useState({ start: initial - HOUR / 2, end: initial + HOUR / 2 });
   const [events, setEvents] = useState<SentinelEvent[]>([]);
+  const [now, setNow] = useState(Date.now());
+  const wasPlaying = useRef(true);
   const stage = useRef<HTMLDivElement>(null);
+  const page = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 1000, h: 560 });
+
+  useEffect(() => {
+    const ro = new ResizeObserver(([e]) => setSize({ w: e.contentRect.width, h: e.contentRect.height }));
+    if (stage.current) ro.observe(stage.current);
+    return () => ro.disconnect();
+  }, []);
 
   const rebase = (patch: Partial<typeof clock.current>) => {
     clock.current = { ...clock.current, base: master(), at: performance.now(), ...patch };
@@ -71,33 +112,30 @@ export function PlaybackPage() {
         toast("Caught up with the present", "info");
       }
       setT(master());
+      setNow(Date.now());
     }, 250);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Follow the playhead while playing and after a jump (when paused, the timeline can be
-  // panned freely).
-  const lastEpoch = useRef(epoch);
   useEffect(() => {
-    const jumped = lastEpoch.current !== epoch;
-    lastEpoch.current = epoch;
-    if (!playing && !jumped) return;
-    const span = view.end - view.start;
-    if (t < view.start + span * 0.05 || t > view.end - span * 0.1) setView({ start: t - span / 2, end: t + span / 2 });
+    for (const c of cams) prefetchPreviews(c.id, initial, HOUR, 16);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [t, epoch]);
+  }, [cams.map((c) => c.id).join()]);
 
-  const lanes = useTimeline(cams, view.start, view.end);
+  const center = scrubT ?? t;
+  const lanes = useTimeline(cams, center - range / 2, center + range / 2);
+  const spans = useMemo(() => mergeSpans(lanes.map((l) => l.spans)), [lanes]);
+  const activity = useMemo(() => lanes.flatMap((l) => l.activity), [lanes]);
 
-  const hourBucket = Math.floor(t / HOUR);
+  const hourBucket = Math.floor(center / HOUR);
   useEffect(() => {
     api
-      .events({ cameras: cams.map((c) => c.id), from: t - 12 * HOUR, to: t + 12 * HOUR, limit: 2000 })
+      .events({ cameras: cams.map((c) => c.id), from: center - 12 * HOUR, to: center + 12 * HOUR, limit: 3000 })
       .then(setEvents)
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hourBucket, cams.map((c) => c.id).join()]);
+  }, [hourBucket, cams.map((c) => c.id).join(), Math.floor(now / 30_000)]);
 
   const jumpEvent = (dir: -1 | 1) => {
     const sorted = [...events].sort((a, b) => a.start - b.start);
@@ -115,6 +153,18 @@ export function PlaybackPage() {
     const next = hidden.includes(id) ? hidden.filter((x) => x !== id) : [...hidden, id];
     setHidden(next);
     localStorage.setItem("sentinel.playback.hidden", JSON.stringify(next));
+    if (focus === id) setFocus(null);
+  };
+
+  // Scrubbing: every tile shows preview frames; letting go moves every camera there.
+  const onScrubStart = () => {
+    wasPlaying.current = clock.current.playing;
+    if (clock.current.playing) setPlay(false);
+  };
+  const onScrubEnd = (to: number) => {
+    setScrubT(null);
+    seek(to);
+    if (wasPlaying.current) setPlay(true);
   };
 
   useEffect(() => {
@@ -126,123 +176,222 @@ export function PlaybackPage() {
       else if (e.key === "[") jumpEvent(-1);
       else if (e.key === "]") jumpEvent(1);
       else if (e.key === "g" || e.key === "G") (e.preventDefault(), setJumpOpen(true));
+      else if (e.key === "f" || e.key === "F") fullscreen();
       else if (e.key === "Escape") setFocus(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const shown = focus ? [cams.find((c) => c.id === focus)!, ...cams.filter((c) => c.id !== focus)].filter(Boolean) : cams;
-  const n = cams.length;
-  const cols = n <= 1 ? 1 : n <= 4 ? 2 : n <= 9 ? 3 : 4;
+  const fullscreen = () => (document.fullscreenElement ? document.exitFullscreen() : page.current?.requestFullscreen?.());
   const oldest = Math.min(...(status?.cameras ?? []).filter((c) => c.storage.oldest).map((c) => c.storage.oldest));
 
+  // Focus: one big camera with the others in a strip underneath.
+  const focused = focus ? cams.find((c) => c.id === focus) : undefined;
+  const others = focused ? cams.filter((c) => c.id !== focused.id) : cams;
+  const stripH = focused && others.length ? Math.min(120, Math.max(72, size.h * 0.18)) : 0;
+  const grid = focused ? layout(1, size.w, size.h - stripH - (stripH ? GAP : 0)) : layout(cams.length, size.w, size.h);
+
+  const tile = (c: { id: string; name: string }, style: React.CSSProperties, small = false) => (
+    <Tile
+      key={c.id}
+      id={c.id}
+      name={c.name}
+      style={style}
+      small={small}
+      master={master}
+      playing={playing}
+      rate={rate}
+      epoch={epoch}
+      muted={audio !== c.id}
+      scrubT={scrubT}
+      focused={focus === c.id}
+      onAudio={() => setAudio(audio === c.id ? null : c.id)}
+      onFocus={() => setFocus(focus === c.id ? null : c.id)}
+      onOpen={() => nav(`/camera/${c.id}?t=${Math.round(master())}`)}
+    />
+  );
+
   return (
-    <>
-      <PageHeader
-        title="Playback"
-        sub="All cameras at the same moment — follow someone from one camera to the next."
-        actions={<JumpTo onJump={seek} oldest={Number.isFinite(oldest) ? oldest : undefined} open={jumpOpen} setOpen={setJumpOpen} />}
-      />
+    <div ref={page} className="flex flex-col gap-3 bg-ink-950 md:h-[calc(100dvh-4.5rem)]">
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="mr-2 text-2xl font-semibold tracking-tight text-white">Playback</h1>
+        {all.map((c) => {
+          const on = !hidden.includes(c.id);
+          return (
+            <button
+              key={c.id}
+              onClick={() => toggleHidden(c.id)}
+              title={on ? "Hide this camera" : "Show this camera"}
+              className={clsx("rounded-full border px-3 py-1 text-xs font-medium transition", on ? "border-violet-400/40 bg-violet-500/15 text-violet-100" : "border-white/5 text-slate-500 hover:text-slate-300")}
+            >
+              {c.name}
+            </button>
+          );
+        })}
+        <div className="ml-auto">
+          <JumpTo onJump={seek} oldest={Number.isFinite(oldest) ? oldest : undefined} open={jumpOpen} setOpen={setJumpOpen} />
+        </div>
+      </div>
+
       {status && all.length === 0 ? (
         <Empty icon={<Columns2 className="size-6" />} title="No cameras yet" />
       ) : (
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {all.map((c) => {
-              const on = !hidden.includes(c.id);
-              return (
-                <button
-                  key={c.id}
-                  onClick={() => toggleHidden(c.id)}
-                  className={clsx("rounded-full border px-3 py-1.5 text-xs font-medium transition", on ? "border-violet-400/40 bg-violet-500/15 text-violet-100" : "border-white/5 text-slate-500 hover:text-slate-300")}
-                >
-                  {c.name}
-                </button>
-              );
-            })}
+        <>
+          <div ref={stage} className="relative min-h-[50vh] flex-1 overflow-y-auto md:min-h-0">
+            {focused ? (
+              <div className="flex h-full flex-col items-center gap-2">
+                {tile(focused, { width: grid.tile })}
+                {others.length > 0 && (
+                  <div className="flex max-w-full gap-2 overflow-x-auto" style={{ height: stripH }}>
+                    {others.map((c) => tile(c, { height: stripH, width: (stripH * 16) / 9, flex: "none" }, true))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex min-h-full items-center justify-center">
+                <div className="grid" style={{ gap: GAP, gridTemplateColumns: `repeat(${grid.cols}, ${Math.floor(grid.tile)}px)` }}>
+                  {cams.map((c) => tile(c, {}))}
+                </div>
+              </div>
+            )}
           </div>
 
-          <div ref={stage} className={clsx("grid gap-2 rounded-2xl bg-black/40", focus ? "grid-cols-4" : "")} style={focus ? undefined : { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-            {shown.map((c, i) => {
-              const big = focus === c.id;
-              return (
-                <motion.div
-                  layout
-                  key={c.id}
-                  transition={{ type: "spring", stiffness: 400, damping: 40 }}
-                  className={clsx("group relative aspect-video overflow-hidden rounded-xl border border-white/[0.07] bg-black", big && "col-span-4", focus && !big && i > 4 && "hidden")}
-                  onDoubleClick={() => nav(`/camera/${c.id}?t=${Math.round(master())}`)}
-                >
-                  <SyncPlayer camera={c.id} master={master} playing={playing} rate={rate} epoch={epoch} muted={audio !== c.id} />
-                  <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent p-2.5">
-                    <span className="text-sm font-semibold text-white drop-shadow">{c.name}</span>
-                  </div>
-                  <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
-                    <IconButton title={audio === c.id ? "Mute" : "Listen to this camera"} onClick={() => setAudio(audio === c.id ? null : c.id)} className="size-8 bg-black/50">
-                      {audio === c.id ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
-                    </IconButton>
-                    <IconButton title={big ? "Back to grid (Esc)" : "Enlarge"} onClick={() => setFocus(big ? null : c.id)} className="size-8 bg-black/50">
-                      {big ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-                    </IconButton>
-                  </div>
-                </motion.div>
-              );
-            })}
-          </div>
-
-          <Card className="flex flex-wrap items-center gap-1 p-2">
-            <IconButton title="Previous motion on any camera ( [ )" onClick={() => jumpEvent(-1)}>
-              <SkipBack className="size-4" />
-            </IconButton>
-            <IconButton title="Back 10 s (←)" onClick={() => seek(master() - 10_000)}>
-              <RotateCcw className="size-4" />
-            </IconButton>
-            <IconButton title={playing ? "Pause (space)" : "Play (space)"} onClick={() => setPlay(!playing)} className="size-11 bg-white/5">
-              {playing ? <Pause className="size-5 fill-current" /> : <Play className="size-5 fill-current" />}
-            </IconButton>
-            <IconButton title="Forward 10 s (→)" onClick={() => seek(master() + 10_000)}>
-              <RotateCw className="size-4" />
-            </IconButton>
-            <IconButton title="Next motion on any camera ( ] )" onClick={() => jumpEvent(1)}>
-              <SkipForward className="size-4" />
-            </IconButton>
-            <div className="mx-1 flex rounded-xl bg-white/5 p-0.5">
-              {RATES.map((r) => (
-                <button key={r} onClick={() => setRateTo(r)} className={clsx("rounded-lg px-2 py-1 text-xs font-semibold tabular-nums transition", rate === r ? "bg-violet-500 text-white" : "text-slate-400 hover:text-white")}>
-                  {r}×
-                </button>
-              ))}
+          <div className="glass shrink-0 rounded-2xl px-3 pb-2 pt-2">
+            <div className="mb-5 flex flex-wrap items-center gap-1">
+              <IconButton title="Previous motion on any camera ( [ )" onClick={() => jumpEvent(-1)}>
+                <SkipBack className="size-4" />
+              </IconButton>
+              <IconButton title="Back 10 s (←)" onClick={() => seek(master() - 10_000)}>
+                <RotateCcw className="size-4" />
+              </IconButton>
+              <IconButton title={playing ? "Pause (space)" : "Play (space)"} onClick={() => setPlay(!playing)} className="size-10 bg-white/5">
+                {playing ? <Pause className="size-5 fill-current" /> : <Play className="size-5 fill-current" />}
+              </IconButton>
+              <IconButton title="Forward 10 s (→)" onClick={() => seek(master() + 10_000)}>
+                <RotateCw className="size-4" />
+              </IconButton>
+              <IconButton title="Next motion on any camera ( ] )" onClick={() => jumpEvent(1)}>
+                <SkipForward className="size-4" />
+              </IconButton>
+              <div className="mx-1 flex rounded-xl bg-white/5 p-0.5">
+                {RATES.map((r) => (
+                  <button key={r} onClick={() => setRateTo(r)} className={clsx("rounded-lg px-2 py-1 text-xs font-semibold tabular-nums transition", rate === r ? "bg-violet-500 text-white" : "text-slate-400 hover:text-white")}>
+                    {r}×
+                  </button>
+                ))}
+              </div>
+              <span className="ml-1 hidden font-mono text-sm font-semibold text-white sm:inline">
+                {fmtDay(center)} · {fmtTimeSec(center)}
+              </span>
+              <div className="ml-auto flex items-center gap-0.5">
+                {ZOOMS.map(([l, r]) => (
+                  <button
+                    key={l}
+                    onClick={() => setRange(r)}
+                    className={clsx("hidden rounded-lg px-2 py-1 text-xs font-medium transition md:block", Math.abs(range - r) < 1000 ? "bg-white/10 text-white" : "text-slate-400 hover:bg-white/5 hover:text-white")}
+                  >
+                    {l}
+                  </button>
+                ))}
+                <IconButton title="Zoom in" onClick={() => setRange((r) => Math.max(MIN_RANGE, r / 2))} className="size-8">
+                  <ZoomIn className="size-4" />
+                </IconButton>
+                <IconButton title="Zoom out" onClick={() => setRange((r) => Math.min(MAX_RANGE, r * 2))} className="size-8">
+                  <ZoomOut className="size-4" />
+                </IconButton>
+                <IconButton title="Fullscreen (F)" onClick={fullscreen} className="size-8">
+                  <Expand className="size-4" />
+                </IconButton>
+              </div>
             </div>
-            <div className="ml-2 font-mono text-sm font-semibold text-white">
-              {fmtDay(t)} · {fmtTimeSec(t)}
-            </div>
-            <IconButton
-              title="Fullscreen"
-              className="ml-auto"
-              onClick={() => (document.fullscreenElement ? document.exitFullscreen() : stage.current?.requestFullscreen?.())}
-            >
-              <Expand className="size-4" />
-            </IconButton>
-          </Card>
-
-          <Card className="p-3">
-            <Timeline
-              lanes={lanes}
-              start={view.start}
-              end={view.end}
-              now={Date.now()}
-              cursor={t}
-              onView={(s, e) => setView({ start: s, end: e })}
-              onSeek={(to) => seek(to)}
-              laneHeight={30}
+            <Scrubber
+              camera={focus ?? cams[0]?.id ?? ""}
+              spans={spans}
+              activity={activity}
+              events={events}
+              now={now}
+              center={center}
+              range={range}
+              live={false}
+              onScrubStart={onScrubStart}
+              onScrub={setScrubT}
+              onScrubEnd={onScrubEnd}
+              onRange={setRange}
             />
-            <div className="mt-2 text-[11px] text-slate-500">
-              Click the timeline to move every camera there · drag to pan · scroll to zoom · double-click a video to open that camera · <kbd>G</kbd> go to a time
-            </div>
-          </Card>
-        </div>
+          </div>
+        </>
       )}
-    </>
+    </div>
   );
 }
+
+const Tile = memo(function Tile({
+  id,
+  name,
+  style,
+  small,
+  master,
+  playing,
+  rate,
+  epoch,
+  muted,
+  scrubT,
+  focused,
+  onAudio,
+  onFocus,
+  onOpen,
+}: {
+  id: string;
+  name: string;
+  style: React.CSSProperties;
+  small: boolean;
+  master: () => number;
+  playing: boolean;
+  rate: number;
+  epoch: number;
+  muted: boolean;
+  scrubT: number | null;
+  focused: boolean;
+  onAudio: () => void;
+  onFocus: () => void;
+  onOpen: () => void;
+}) {
+  const preview = usePreviewFrame(scrubT !== null ? id : null, scrubT);
+  return (
+    <motion.div
+      layout
+      transition={{ type: "spring", stiffness: 420, damping: 40 }}
+      style={style}
+      className={clsx("group relative aspect-video overflow-hidden rounded-xl border bg-black", focused ? "border-violet-400/40" : "border-white/[0.07]", small && "cursor-pointer")}
+      onClick={small ? onFocus : undefined}
+      onDoubleClick={small ? undefined : onOpen}
+    >
+      <SyncPlayer camera={id} master={master} playing={playing} rate={rate} epoch={epoch} muted={muted} />
+      <AnimatePresence>
+        {scrubT !== null && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.3 } }} transition={{ duration: 0.1 }} className="absolute inset-0 bg-black">
+            {preview?.url ? (
+              <img src={preview.url} className="h-full w-full object-contain" draggable={false} />
+            ) : (
+              <div className="flex h-full items-center justify-center text-xs text-slate-500">{preview ? <ImageOff className="size-5" /> : <Loader2 className="size-5 animate-spin" />}</div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 to-transparent p-2">
+        <span className={clsx("font-semibold text-white drop-shadow", small ? "text-[11px]" : "text-sm")}>{name}</span>
+      </div>
+      {!small && (
+        <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
+          <IconButton title={muted ? "Listen to this camera" : "Mute"} onClick={onAudio} className="size-8 bg-black/50">
+            {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
+          </IconButton>
+          <IconButton title={focused ? "Back to all cameras (Esc)" : "Enlarge"} onClick={onFocus} className="size-8 bg-black/50">
+            {focused ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+          </IconButton>
+        </div>
+      )}
+    </motion.div>
+  );
+});

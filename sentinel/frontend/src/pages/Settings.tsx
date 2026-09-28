@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
 import { Bell, Camera as CamIcon, CheckCircle2, Eye, EyeOff, HardDrive, Loader2, Pencil, Plus, Trash2, X, XCircle, Moon } from "lucide-react";
 import { Button, Card, Field, IconButton, PageHeader, SectionTitle, StatePill, Toggle, inputCls, recState } from "../components/ui";
-import { MaskEditor } from "../components/MaskEditor";
+import { ZoneSummary, rectToZone } from "../components/ZoneEditor";
 import { DriveCard, NightAlertsCard } from "../components/AlertsSettings";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
@@ -22,6 +22,7 @@ const blankCamera = (): Camera => ({
   motion_retain_days: 7,
   motion_sensitivity: 50,
   motion_masks: [],
+  motion_zones: [],
 });
 
 export function SettingsPage() {
@@ -131,7 +132,7 @@ export function SettingsPage() {
 
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <NightAlertsCard draft={draft} set={set} cameras={saved.cameras} />
-        <DriveCard draft={draft} set={set} />
+        <DriveCard draft={draft} set={set} cameras={saved.cameras} />
       </div>
 
       <AnimatePresence>
@@ -194,7 +195,7 @@ function CameraRow({ cam, onEdit }: { cam: Camera; onEdit: () => void }) {
         <div className="truncate text-xs text-slate-500">
           Keep {cam.retain_days}d{cam.motion_retain_days > cam.retain_days ? ` (motion ${cam.motion_retain_days}d)` : ""} · {cam.record ? "24/7 recording" : "live only"}
           {cam.audio && cam.record ? " · audio" : ""} · {cam.motion ? `motion ${cam.motion_sensitivity}%` : "no motion"}
-          {cam.motion_masks.length ? ` · ${cam.motion_masks.length} zone${cam.motion_masks.length > 1 ? "s" : ""}` : ""}
+          {cam.motion_masks.length + cam.motion_zones.length ? ` · ${cam.motion_masks.length + cam.motion_zones.length} ignore zone${cam.motion_masks.length + cam.motion_zones.length > 1 ? "s" : ""}` : ""}
         </div>
       </div>
       <StatePill state={recState(cam.enabled, cam.record, st?.recorder ?? null)} />
@@ -364,13 +365,18 @@ function CameraEditor({ initial, isNew, saving, onClose, onSave, onDelete }: { i
                   <span className="w-10 text-right text-sm tabular-nums text-white">{cam.motion_sensitivity}</span>
                 </div>
               </Field>
-              <Field label="Ignore zones">
+              <div>
+                <span className="mb-1.5 block text-xs font-medium text-slate-400">Ignore zones</span>
                 {isNew ? (
                   <p className="text-xs text-slate-500">Save the camera first, then come back to draw zones on its picture.</p>
                 ) : (
-                  <MaskEditor camera={cam.id} masks={cam.motion_masks} onChange={(m) => set("motion_masks", m)} />
+                  <ZoneSummary
+                    camera={cam.id}
+                    zones={[...cam.motion_zones, ...cam.motion_masks.map((r, i) => rectToZone(r, cam.motion_zones.length + i))]}
+                    onChange={(z) => setCam((c) => ({ ...c, motion_zones: z, motion_masks: [] }))}
+                  />
                 )}
-              </Field>
+              </div>
             </>
           )}
 

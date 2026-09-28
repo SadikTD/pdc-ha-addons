@@ -38,15 +38,24 @@ type Alerter struct {
 	path    string
 	mu      sync.Mutex
 	samples map[string][]alertSample
-	last    map[string]time.Time
-	busy    map[string]bool
+	cams    map[string]*camAlerts
 	log     []AlertRecord // newest last
+}
+
+// camAlerts is one camera's alert state.
+type camAlerts struct {
+	busy    bool        // an alert (and its follow-ups) is being handled
+	last    time.Time   // last picture sent
+	sent    []time.Time // pictures sent in the last hour
+	pending *Event      // motion that started during the gap: sent when the gap ends
+	timer   *time.Timer
+	limited bool // hourly limit reached (reported once)
 }
 
 const alertLogLimit = 300
 
 func newAlerter(app *App, path string) *Alerter {
-	al := &Alerter{app: app, wa: newWhatsAppClient(app), path: path, samples: map[string][]alertSample{}, last: map[string]time.Time{}, busy: map[string]bool{}}
+	al := &Alerter{app: app, wa: newWhatsAppClient(app), path: path, samples: map[string][]alertSample{}, cams: map[string]*camAlerts{}}
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &al.log)
 	}
@@ -72,7 +81,7 @@ func (al *Alerter) Sample(cam string, t time.Time, score float64, box Rect) {
 	al.mu.Lock()
 	defer al.mu.Unlock()
 	list := append(al.samples[cam], alertSample{t, score, box})
-	cut := t.Add(-30 * time.Second)
+	cut := t.Add(-5 * time.Minute)
 	i := 0
 	for i < len(list) && list[i].t.Before(cut) {
 		i++
@@ -80,10 +89,32 @@ func (al *Alerter) Sample(cam string, t time.Time, score float64, box Rect) {
 	al.samples[cam] = list[i:]
 }
 
+// best returns the moment with the most movement in [from, to] (unix ms).
+func (al *Alerter) best(cam string, from, to int64) alertSample {
+	al.mu.Lock()
+	defer al.mu.Unlock()
+	b := alertSample{t: time.UnixMilli(from + 1000)}
+	for _, x := range al.samples[cam] {
+		if ms := x.t.UnixMilli(); ms >= from && ms <= to && x.score > b.score {
+			b = x
+		}
+	}
+	return b
+}
+
 // Active reports whether alerts would be sent right now (for the UI).
 func (al *Alerter) Active() bool {
 	s := al.app.settings.Get()
 	return s.NightAlerts.Enabled && inWindow(s.NightAlerts.From, s.NightAlerts.To, time.Now())
+}
+
+func (al *Alerter) state(cam string) *camAlerts {
+	st := al.cams[cam]
+	if st == nil {
+		st = &camAlerts{}
+		al.cams[cam] = st
+	}
+	return st
 }
 
 func (al *Alerter) MotionStart(cam string, e Event) {
@@ -96,47 +127,104 @@ func (al *Alerter) MotionStart(cam string, e Event) {
 		return
 	}
 	al.mu.Lock()
-	if al.busy[cam] || time.Since(al.last[cam]) < time.Duration(n.CooldownMinutes)*time.Minute {
-		al.mu.Unlock()
+	defer al.mu.Unlock()
+	st := al.state(cam)
+	if st.busy {
+		st.pending = &e // handled right after the current alert
 		return
 	}
-	al.busy[cam] = true
-	al.mu.Unlock()
-	go al.fire(cam, e, s)
+	if wait := time.Duration(n.CooldownSeconds)*time.Second - time.Since(st.last); wait > 0 {
+		st.pending = &e
+		al.scheduleLocked(cam, st, wait)
+		return
+	}
+	st.busy = true
+	go al.fire(cam, e)
 }
 
-func (al *Alerter) fire(cam string, e Event, s Settings) {
+func (al *Alerter) scheduleLocked(cam string, st *camAlerts, wait time.Duration) {
+	if st.timer != nil {
+		return
+	}
+	st.timer = time.AfterFunc(max(wait, 0), func() {
+		al.mu.Lock()
+		defer al.mu.Unlock()
+		st.timer = nil
+		if st.busy || st.pending == nil {
+			return
+		}
+		e := *st.pending
+		st.pending = nil
+		st.busy = true
+		go al.fire(cam, e)
+	})
+}
+
+// allowLocked applies the hourly limit. It returns false when a picture must be skipped,
+// and a caption note when this is the last picture before the limit.
+func (al *Alerter) allowLocked(cam string, st *camAlerts, limit int) (bool, string) {
+	now := time.Now()
+	i := 0
+	for i < len(st.sent) && now.Sub(st.sent[i]) > time.Hour {
+		i++
+	}
+	st.sent = st.sent[i:]
+	if limit > 0 && len(st.sent) >= limit {
+		if !st.limited {
+			st.limited = true
+			al.app.incidents.Add("warn", cam, "Night alerts paused: %d pictures in the last hour (limit)", limit)
+		}
+		return false, ""
+	}
+	st.limited = false
+	st.sent = append(st.sent, now)
+	st.last = now
+	if limit > 0 && len(st.sent) == limit {
+		return true, fmt.Sprintf("\n_Alert limit reached: more from this camera after %s_", st.sent[0].Add(time.Hour).In(time.Local).Format("15:04"))
+	}
+	return true, ""
+}
+
+func (al *Alerter) fire(cam string, e Event) {
 	defer func() {
 		if p := recover(); p != nil {
 			al.app.incidents.Add("error", cam, "night alert crashed: %v", p)
 		}
+		s := al.app.settings.Get()
 		al.mu.Lock()
-		al.busy[cam] = false
+		st := al.state(cam)
+		st.busy = false
+		if st.pending != nil {
+			al.scheduleLocked(cam, st, time.Duration(s.NightAlerts.CooldownSeconds)*time.Second-time.Since(st.last))
+		}
 		al.mu.Unlock()
 	}()
+	s := al.app.settings.Get()
 	n := s.NightAlerts
 	// Let the motion develop: short blips (insects, rain, IR flicker) end before this.
-	if !sleepCtx(al.app.ctx, time.Duration(max(n.MinSeconds, 2))*time.Second) {
+	if wait := time.UnixMilli(e.Start).Add(time.Duration(max(n.MinSeconds, 2)) * time.Second); time.Until(wait) > 0 && !sleepCtx(al.app.ctx, time.Until(wait)) {
 		return
 	}
 	ev, ok := al.app.events.Get(cam, e.ID)
 	if !ok || ev.End != 0 && ev.End-ev.Start < int64(n.MinSeconds)*1000 {
 		return
 	}
-	al.mu.Lock()
-	al.last[cam] = time.Now()
-	best := alertSample{t: time.UnixMilli(ev.Start)}
-	for _, x := range al.samples[cam] {
-		if x.t.UnixMilli() >= ev.Start-1000 && x.score > best.score {
-			best = x
-		}
-	}
-	al.mu.Unlock()
-
 	name := cameraName(s, cam)
+	end := ev.End
+	if end == 0 {
+		end = time.Now().UnixMilli()
+	}
+	best := al.best(cam, ev.Start-1000, end)
+
+	al.mu.Lock()
+	ok, note := al.allowLocked(cam, al.state(cam), n.MaxPerHour)
+	al.mu.Unlock()
+	if !ok {
+		return
+	}
 	rec := AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: best.t.UnixMilli(), Event: e.ID, Status: "sending"}
 	al.put(rec)
-	err := al.deliver(cam, name, best.t, best.box, n.CloseUp, s.WhatsApp.To, e.ID, 15*time.Minute)
+	err := al.deliver(cam, name, best.t, best.box, n.CloseUp, s.WhatsApp.To, e.ID, "", note, 15*time.Minute)
 	al.finish(rec.ID, err)
 	if err != nil {
 		al.app.incidents.Add("error", cam, "Night alert not sent to WhatsApp: %v", err)
@@ -146,13 +234,37 @@ func (al *Alerter) fire(cam string, e Event, s Settings) {
 		notifyHA("", "", "", "whatsapp", true)
 	}
 	if n.SaveClip {
-		al.saveClip(cam, name, ev, rec.ID)
+		go al.saveClip(cam, name, ev, rec.ID)
+	}
+
+	// Follow-ups: while the same motion goes on, a new picture every FollowupSeconds.
+	for i := 2; err == nil && n.FollowupSeconds > 0; i++ {
+		from := time.Now()
+		if !sleepCtx(al.app.ctx, time.Duration(n.FollowupSeconds)*time.Second) {
+			return
+		}
+		cur, ok := al.app.events.Get(cam, e.ID)
+		if !ok || cur.End != 0 && cur.End < from.UnixMilli()+2000 {
+			return // the motion stopped; the next motion is a new alert
+		}
+		b := al.best(cam, from.UnixMilli(), time.Now().UnixMilli())
+		al.mu.Lock()
+		ok, note = al.allowLocked(cam, al.state(cam), n.MaxPerHour)
+		al.mu.Unlock()
+		if !ok {
+			return
+		}
+		id := fmt.Sprintf("%s-f%d", e.ID, i)
+		al.put(AlertRecord{ID: id, Camera: cam, CameraName: name, At: b.t.UnixMilli(), Event: e.ID, Status: "sending"})
+		err = al.deliver(cam, name, b.t, b.box, n.CloseUp, s.WhatsApp.To, id, "Still moving", note, 5*time.Minute)
+		al.finish(id, err)
+		n = al.app.settings.Get().NightAlerts
 	}
 }
 
 // deliver renders the pictures and sends them, retrying while the bridge or WhatsApp is
 // down (e.g. during a router restart) for up to `patience`.
-func (al *Alerter) deliver(cam, name string, t time.Time, box Rect, closeUp bool, to, key string, patience time.Duration) error {
+func (al *Alerter) deliver(cam, name string, t time.Time, box Rect, closeUp bool, to, key, label, note string, patience time.Duration) error {
 	full, crop, err := al.pictures(cam, t, box, closeUp)
 	if err != nil {
 		return err
@@ -162,9 +274,13 @@ func (al *Alerter) deliver(cam, name string, t time.Time, box Rect, closeUp bool
 		img     []byte
 		caption string
 	}
-	msgs := []msg{{full, fmt.Sprintf("🚨 *Motion · %s*\n%s", name, when)}}
+	if label == "" {
+		label = "Motion"
+	}
+	caption := fmt.Sprintf("🚨 *%s · %s*\n%s%s", label, name, when, note)
+	msgs := []msg{{full, caption}}
 	if crop != nil {
-		msgs = []msg{{crop, fmt.Sprintf("🚨 *Motion · %s*\n%s", name, when)}, {full, "Full view · " + name}}
+		msgs = []msg{{crop, caption}, {full, "Full view · " + name}}
 	}
 	deadline := time.Now().Add(patience)
 	for i, m := range msgs {
@@ -255,7 +371,7 @@ func (al *Alerter) saveClip(cam, name string, ev Event, alertID string) {
 		return
 	}
 	cam0 := Camera{ID: cam, Name: name}
-	c, err := al.app.clips.create(cam0, from, to, fmt.Sprintf("Night alert · %s · %s", name, from.In(time.Local).Format("Jan 2 15.04")), true)
+	c, err := al.app.clips.create(cam0, from, to, fmt.Sprintf("Night alert · %s · %s", name, from.In(time.Local).Format("Jan 2 15.04")), true, false)
 	if err != nil {
 		al.app.incidents.Add("warn", cam, "Could not save the night alert clip: %v", err)
 		return
@@ -281,7 +397,7 @@ func (al *Alerter) Test(cam string) error {
 	id := fmt.Sprintf("test-%d", time.Now().UnixMilli())
 	rec := AlertRecord{ID: id, Camera: cam, CameraName: name, At: t.UnixMilli(), Status: "sending", Test: true}
 	al.put(rec)
-	err := al.deliver(cam, name+" (test)", t, Rect{}, false, s.WhatsApp.To, id, 0)
+	err := al.deliver(cam, name, t, Rect{}, false, s.WhatsApp.To, id, "Test", "", 0)
 	al.finish(id, err)
 	return err
 }

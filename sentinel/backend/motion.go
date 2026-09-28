@@ -44,6 +44,7 @@ type MotionDetector struct {
 
 	mu        sync.Mutex
 	status    MotionStatus
+	grid      []byte // last frame: 0 still, 1 motion, 2 motion inside an ignore zone
 	heartbeat atomic.Int64
 	cancel    context.CancelFunc
 	done      chan struct{}
@@ -113,6 +114,15 @@ func (m *MotionDetector) buildMask() []bool {
 		for y := max(0, y0); y < min(motionH, y1); y++ {
 			for x := max(0, x0); x < min(motionW, x1); x++ {
 				mask[y*motionW+x] = true
+			}
+		}
+	}
+	for _, z := range m.cam.MotionZones {
+		for y := 0; y < motionH; y++ {
+			for x := 0; x < motionW; x++ {
+				if inPolygon(z.Points, (float64(x)+0.5)/motionW, (float64(y)+0.5)/motionH) {
+					mask[y*motionW+x] = true
+				}
 			}
 		}
 	}
@@ -225,15 +235,24 @@ func (m *MotionDetector) run(ctx context.Context) {
 				changed := 0
 				var cols [motionW]int
 				var rows [motionH]int
+				grid := make([]byte, len(f))
 				for i, v := range f {
 					d := float32(v) - bg[i]
-					if !mask[i] && (d > pixelThreshold || d < -pixelThreshold) {
-						changed++
-						cols[i%motionW]++
-						rows[i/motionW]++
+					if d > pixelThreshold || d < -pixelThreshold {
+						if mask[i] {
+							grid[i] = 2
+						} else {
+							grid[i] = 1
+							changed++
+							cols[i%motionW]++
+							rows[i/motionW]++
+						}
 					}
 					bg[i] += d * 0.08
 				}
+				m.mu.Lock()
+				m.grid = grid
+				m.mu.Unlock()
 				score := float64(changed) * 100 / float64(active)
 				if score > 70 {
 					// Whole-scene change (IR switching, lights, camera adjusting): re-learn.
@@ -312,4 +331,23 @@ func trimmedSpan(h []int, trim int) (int, int) {
 		hi--
 	}
 	return lo, hi
+}
+
+// Grid returns the latest motion map (motionW x motionH), for the zone editor.
+func (m *MotionDetector) Grid() []byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.grid
+}
+
+// inPolygon is the even-odd rule point-in-polygon test.
+func inPolygon(pts [][2]float64, x, y float64) bool {
+	in := false
+	for i, j := 0, len(pts)-1; i < len(pts); j, i = i, i+1 {
+		xi, yi, xj, yj := pts[i][0], pts[i][1], pts[j][0], pts[j][1]
+		if (yi > y) != (yj > y) && x < (xj-xi)*(y-yi)/(yj-yi)+xi {
+			in = !in
+		}
+	}
+	return in
 }

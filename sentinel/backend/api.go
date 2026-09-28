@@ -77,7 +77,25 @@ func (a *App) Routes(www string) http.Handler {
 	})
 	mux.HandleFunc("GET /api/vod.m3u8", a.handleVOD)
 	mux.HandleFunc("GET /api/seg/{cam}/{id}", a.handleSegment)
-	mux.HandleFunc("GET /api/clips", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, a.clips.List()) })
+	mux.HandleFunc("GET /api/clips", func(w http.ResponseWriter, r *http.Request) {
+		out := []Clip{}
+		for _, c := range a.clips.List() {
+			if !c.Auto {
+				out = append(out, c)
+			}
+		}
+		writeJSON(w, 200, out)
+	})
+	mux.HandleFunc("GET /api/cameras/{id}/motion-grid", func(w http.ResponseWriter, r *http.Request) {
+		a.mu.Lock()
+		m := a.motion[r.PathValue("id")]
+		a.mu.Unlock()
+		if m == nil {
+			writeErr(w, 404, "motion detection is off for this camera")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"w": motionW, "h": motionH, "grid": m.Grid()})
+	})
 	mux.HandleFunc("POST /api/clips", a.handleCreateClip)
 	mux.HandleFunc("PATCH /api/clips/{id}", a.handlePatchClip)
 	mux.HandleFunc("DELETE /api/clips/{id}", func(w http.ResponseWriter, r *http.Request) {

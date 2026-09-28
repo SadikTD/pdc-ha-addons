@@ -129,7 +129,7 @@ func sameRecording(a, b Camera) bool {
 
 func sameMotion(a, b Camera) bool {
 	return a.SubURL == b.SubURL && a.Motion == b.Motion && a.MotionSensitivity == b.MotionSensitivity &&
-		strings.TrimSpace(jsonString(a.MotionMasks)) == strings.TrimSpace(jsonString(b.MotionMasks)) && a.Name == b.Name
+		jsonString(a.MotionMasks) == jsonString(b.MotionMasks) && jsonString(a.MotionZones) == jsonString(b.MotionZones) && a.Name == b.Name
 }
 
 // ---- MotionListener ----
@@ -139,12 +139,15 @@ func (a *App) MotionStart(cam string, score float64) {
 	a.mqtt.Motion(cam, true)
 	go a.captureThumb(cam, e.ID)
 	a.alerts.MotionStart(cam, *e)
+	a.drive.MotionStart(cam, e.Start)
 }
 
 func (a *App) MotionUpdate(cam string, score float64) { a.events.Update(cam, score) }
 
 func (a *App) MotionEnd(cam string) {
-	a.events.End(cam, a.clock.Now())
+	if e := a.events.End(cam, a.clock.Now()); e != nil {
+		a.drive.MotionEnd(cam, e.End)
+	}
 	a.mqtt.Motion(cam, false)
 }
 

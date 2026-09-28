@@ -15,7 +15,10 @@ export type Camera = {
   motion_retain_days: number;
   motion_sensitivity: number;
   motion_masks: Rect[];
+  motion_zones: Zone[];
 };
+
+export type Zone = { name: string; points: [number, number][] };
 
 export type Settings = {
   cameras: Camera[];
@@ -30,13 +33,22 @@ export type Settings = {
     from: string;
     to: string;
     cameras: string[];
-    cooldown_minutes: number;
+    cooldown_seconds: number;
+    followup_seconds: number;
+    max_per_hour: number;
     min_seconds: number;
     close_up: boolean;
     save_clip: boolean;
   };
   whatsapp: { to: string; to_name: string; bridge_url: string };
-  drive: { mode: "off" | "alerts" | "all"; retention_days: number };
+  drive: {
+    backup_alerts: boolean;
+    backup_saved: boolean;
+    backup_motion: boolean;
+    motion_cameras: string[];
+    quota_gb: number;
+    retention_days: number;
+  };
 };
 
 export type WhatsAppInfo = {
@@ -66,6 +78,7 @@ export type DriveStatus = {
   auth?: { user_code: string; url: string; expires: number; error?: string };
   last_error?: string;
   last_ok?: number;
+  usage: { used: number; files: number; free: number; measured: number };
   pending: number;
   uploading: number;
   failed: number;
@@ -181,6 +194,7 @@ export const api = {
     return request<SentinelEvent[]>("GET", `api/events?${q}`);
   },
   incidents: (limit = 200) => request<Incident[]>("GET", `api/incidents?limit=${limit}`),
+  motionGrid: (id: string) => request<{ w: number; h: number; grid: string | null }>("GET", `api/cameras/${id}/motion-grid`),
   restartCamera: (id: string) => request<{ ok: boolean }>("POST", `api/cameras/${id}/restart`),
   clips: () => request<Clip[]>("GET", "api/clips"),
   createClip: (camera: string, from: number, to: number, name: string) => request<Clip>("POST", "api/clips", { camera, from: Math.round(from), to: Math.round(to), name }),

@@ -45,10 +45,26 @@ type Drive struct {
 	lastErr   string
 	lastOK    int64
 	wake      chan struct{}
+	days      map[string]string // "2026-09-28" -> day folder id
+	usage     driveUsage
+	// Motion backup: the event window being collected per camera.
+	motion map[string]*motionWindow
+}
+
+type driveUsage struct {
+	Used     int64 `json:"used"`     // bytes Sentinel has on Drive
+	Files    int   `json:"files"`    // files Sentinel has on Drive
+	Free     int64 `json:"free"`     // free space on the Google account (-1 = unlimited)
+	Measured int64 `json:"measured"` // unix ms
+}
+
+type motionWindow struct {
+	from, to int64 // unix ms
+	open     bool  // motion is going on
 }
 
 func newDrive(app *App) *Drive {
-	return &Drive{app: app, client: &http.Client{Timeout: 5 * time.Minute}, wake: make(chan struct{}, 1)}
+	return &Drive{app: app, client: &http.Client{Timeout: 5 * time.Minute}, wake: make(chan struct{}, 1), days: map[string]string{}, motion: map[string]*motionWindow{}}
 }
 
 func (d *Drive) poke() {
@@ -297,7 +313,46 @@ func (d *Drive) folder() (string, error) {
 		return "", err
 	}
 	_ = d.app.secrets.Update(func(s *Secrets) { s.DriveFolderID = f.ID })
+	d.mu.Lock()
+	d.days = map[string]string{}
+	d.mu.Unlock()
 	return f.ID, nil
+}
+
+// dayFolder returns the folder for one day ("2026-09-28") inside the Sentinel folder.
+func (d *Drive) dayFolder(root, day string) (string, error) {
+	d.mu.Lock()
+	id, ok := d.days[day]
+	d.mu.Unlock()
+	if ok {
+		return id, nil
+	}
+	q := url.QueryEscape(fmt.Sprintf("name = '%s' and '%s' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false", day, root))
+	var r struct {
+		Files []struct {
+			ID string `json:"id"`
+		} `json:"files"`
+	}
+	if _, err := d.api("GET", "https://www.googleapis.com/drive/v3/files?fields=files(id)&q="+q, nil, &r); err != nil {
+		return "", err
+	}
+	if len(r.Files) > 0 {
+		id = r.Files[0].ID
+	} else {
+		var f struct {
+			ID string `json:"id"`
+		}
+		if _, err := d.api("POST", "https://www.googleapis.com/drive/v3/files?fields=id", map[string]any{
+			"name": day, "mimeType": "application/vnd.google-apps.folder", "parents": []string{root},
+		}, &f); err != nil {
+			return "", err
+		}
+		id = f.ID
+	}
+	d.mu.Lock()
+	d.days[day] = id
+	d.mu.Unlock()
+	return id, nil
 }
 
 func (d *Drive) Disconnect() {
@@ -308,6 +363,7 @@ func (d *Drive) Disconnect() {
 	_ = d.app.secrets.Update(func(s *Secrets) { s.DriveRefreshToken, s.DriveAccount, s.DriveFolderID = "", "", "" })
 	d.mu.Lock()
 	d.access, d.auth, d.lastErr = "", nil, ""
+	d.days, d.usage = map[string]string{}, driveUsage{}
 	d.authSeq++
 	d.mu.Unlock()
 }
@@ -316,12 +372,91 @@ func (d *Drive) Disconnect() {
 
 // ClipReady is called when a clip finishes saving: queue it if the backup mode wants it.
 func (d *Drive) ClipReady(id string) {
-	mode := d.app.settings.Get().Drive.Mode
+	b := d.app.settings.Get().Drive
 	c, ok := d.app.clips.Get(id)
-	if !ok || !d.Connected() || mode == "off" || mode == "alerts" && !c.Alert {
+	if !ok {
 		return
 	}
-	d.Queue(id)
+	if !d.Connected() {
+		if c.Auto {
+			d.app.clips.Delete(id)
+		}
+		return
+	}
+	if c.Auto || c.Alert && b.Alerts || !c.Alert && b.Saved {
+		d.Queue(id)
+	}
+}
+
+// ---- motion backup ----
+
+// Motion events are collected per camera into one window (10 s before the first motion
+// to 10 s after the last, merging motion less than 20 s apart, at most 5 minutes) and
+// saved as a hidden clip for upload.
+const (
+	motionPre   = 10 * time.Second
+	motionPost  = 10 * time.Second
+	motionMerge = 20 * time.Second
+	motionMax   = 5 * time.Minute
+)
+
+func (d *Drive) wantsMotion(cam string) bool {
+	b := d.app.settings.Get().Drive
+	return b.Motion && d.Connected() && (len(b.MotionCameras) == 0 || contains(b.MotionCameras, cam))
+}
+
+func (d *Drive) MotionStart(cam string, at int64) {
+	if !d.wantsMotion(cam) {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.motion[cam]
+	if w == nil {
+		w = &motionWindow{from: at - motionPre.Milliseconds()}
+		d.motion[cam] = w
+	}
+	w.open, w.to = true, 0
+}
+
+func (d *Drive) MotionEnd(cam string, at int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if w := d.motion[cam]; w != nil {
+		w.open, w.to = false, at+motionPost.Milliseconds()
+	}
+}
+
+// flushMotion turns finished (or 5-minute) windows into clips; called every few seconds.
+func (d *Drive) flushMotion() {
+	now := time.Now().UnixMilli()
+	type job struct {
+		cam      string
+		from, to int64
+	}
+	var jobs []job
+	d.mu.Lock()
+	for cam, w := range d.motion {
+		switch {
+		case w.open && now-w.from >= motionMax.Milliseconds():
+			// Long motion: cut a 5-minute piece and carry on.
+			jobs = append(jobs, job{cam, w.from, w.from + motionMax.Milliseconds()})
+			w.from += motionMax.Milliseconds()
+		case !w.open && w.to > 0 && now > w.to+motionMerge.Milliseconds():
+			jobs = append(jobs, job{cam, w.from, min(w.to, w.from+motionMax.Milliseconds())})
+			delete(d.motion, cam)
+		}
+	}
+	d.mu.Unlock()
+	s := d.app.settings.Get()
+	for _, j := range jobs {
+		name := cameraName(s, j.cam)
+		from := time.UnixMilli(j.from)
+		_, err := d.app.clips.create(Camera{ID: j.cam, Name: name}, from, time.UnixMilli(j.to), fmt.Sprintf("Motion · %s · %s", name, from.In(time.Local).Format("15.04.05")), false, true)
+		if err != nil {
+			logf("drive: motion backup for %s: %v", j.cam, err)
+		}
+	}
 }
 
 // Queue marks a clip for upload (also used by "Back up now" and "Retry").
@@ -335,7 +470,7 @@ func (d *Drive) Queue(id string) {
 }
 
 func (d *Drive) Run(ctx context.Context) {
-	tick := time.NewTicker(time.Minute)
+	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	lastPrune := time.Time{}
 	for {
@@ -345,6 +480,7 @@ func (d *Drive) Run(ctx context.Context) {
 		case <-d.wake:
 		case <-tick.C:
 		}
+		d.flushMotion()
 		if !d.Connected() {
 			continue
 		}
@@ -355,9 +491,9 @@ func (d *Drive) Run(ctx context.Context) {
 			}
 			d.upload(c)
 		}
-		if days := d.app.settings.Get().Drive.RetentionDays; days > 0 && time.Since(lastPrune) > 6*time.Hour {
+		if time.Since(lastPrune) > time.Hour {
 			lastPrune = time.Now()
-			d.prune(days)
+			d.prune(0)
 		}
 	}
 }
@@ -398,6 +534,17 @@ func (d *Drive) upload(c *Clip) {
 		if c.Backup == nil || c.Backup.Tries+1 >= driveMaxTries {
 			d.app.incidents.Add("warn", c.Camera, "Clip not backed up to Google Drive: %v", err)
 		}
+		return
+	}
+	d.mu.Lock()
+	d.usage.Used += c.Size
+	d.usage.Files++
+	if d.usage.Free > 0 {
+		d.usage.Free -= c.Size
+	}
+	d.mu.Unlock()
+	if c.Auto {
+		d.app.clips.Delete(c.ID) // the recording is still on disk; Drive has the copy
 	} else {
 		d.app.incidents.Add("info", c.Camera, "Clip backed up to Google Drive: %s", c.Name)
 	}
@@ -405,8 +552,15 @@ func (d *Drive) upload(c *Clip) {
 
 // uploadFile sends the clip with a resumable upload, in chunks, resuming after errors.
 func (d *Drive) uploadFile(c *Clip) (string, error) {
-	folder, err := d.folder()
+	root, err := d.folder()
 	if err != nil {
+		return "", err
+	}
+	folder, err := d.dayFolder(root, time.UnixMilli(c.From).In(time.Local).Format("2006-01-02"))
+	if err != nil {
+		return "", err
+	}
+	if err := d.makeRoom(c.Size); err != nil {
 		return "", err
 	}
 	f, err := os.Open(d.app.clips.videoPath(c))
@@ -518,32 +672,154 @@ func (d *Drive) putChunk(session string, data []byte, offset, size int64) (strin
 	}
 }
 
-// prune deletes backups older than `days` from Drive (only files Sentinel uploaded).
-func (d *Drive) prune(days int) {
-	folder := d.app.secrets.Get().DriveFolderID
-	if folder == "" {
-		return
-	}
-	cut := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UTC().Format(time.RFC3339)
-	q := url.QueryEscape(fmt.Sprintf("'%s' in parents and trashed = false and createdTime < '%s'", folder, cut))
-	var r struct {
-		Files []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"files"`
-	}
-	if _, err := d.api("GET", "https://www.googleapis.com/drive/v3/files?pageSize=200&fields=files(id,name)&q="+q, nil, &r); err != nil {
-		logf("drive prune: %v", err)
-		return
-	}
-	for _, f := range r.Files {
-		if _, err := d.api("DELETE", "https://www.googleapis.com/drive/v3/files/"+f.ID, nil, nil); err == nil {
-			logf("drive: removed old backup %s", f.Name)
+type driveFile struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Size    string   `json:"size"`
+	Created string   `json:"createdTime"`
+	Parents []string `json:"parents"`
+}
+
+// files lists every video Sentinel uploaded (drive.file only shows the app's own files),
+// oldest first.
+func (d *Drive) files() ([]driveFile, error) {
+	var out []driveFile
+	q := url.QueryEscape("mimeType != 'application/vnd.google-apps.folder' and trashed = false")
+	token := ""
+	for page := 0; page < 100; page++ {
+		var r struct {
+			Files []driveFile `json:"files"`
+			Next  string      `json:"nextPageToken"`
+		}
+		u := "https://www.googleapis.com/drive/v3/files?pageSize=1000&orderBy=createdTime&fields=nextPageToken,files(id,name,size,createdTime,parents)&q=" + q
+		if token != "" {
+			u += "&pageToken=" + url.QueryEscape(token)
+		}
+		if _, err := d.api("GET", u, nil, &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r.Files...)
+		if token = r.Next; token == "" {
+			break
 		}
 	}
-	if len(r.Files) > 0 {
-		d.app.incidents.Add("info", "", "Removed %d backups older than %d days from Google Drive", len(r.Files), days)
+	return out, nil
+}
+
+func (f driveFile) bytes() int64 { n, _ := strconv.ParseInt(f.Size, 10, 64); return n }
+
+// accountFree is the free space on the Google account (-1 = unlimited).
+func (d *Drive) accountFree() int64 {
+	var r struct {
+		Quota struct {
+			Limit string `json:"limit"`
+			Usage string `json:"usage"`
+		} `json:"storageQuota"`
 	}
+	if _, err := d.api("GET", "https://www.googleapis.com/drive/v3/about?fields=storageQuota(limit,usage)", nil, &r); err != nil || r.Quota.Limit == "" {
+		return -1
+	}
+	limit, _ := strconv.ParseInt(r.Quota.Limit, 10, 64)
+	usage, _ := strconv.ParseInt(r.Quota.Usage, 10, 64)
+	return max(limit-usage, 0)
+}
+
+// Keep at least this much of the Google account free (Gmail and Photos share it).
+const driveReserve = 1 << 30
+
+// prune deletes backups past the retention and, to fit `need` more bytes, the oldest
+// ones beyond Sentinel's space limit or the account's free space. Folders left empty
+// are removed too.
+func (d *Drive) prune(need int64) error {
+	b := d.app.settings.Get().Drive
+	files, err := d.files()
+	if err != nil {
+		return err
+	}
+	free := d.accountFree()
+	var used int64
+	for _, f := range files {
+		used += f.bytes()
+	}
+	quota := int64(b.QuotaGB * 1e9)
+	cut := ""
+	if b.RetentionDays > 0 {
+		cut = time.Now().Add(-time.Duration(b.RetentionDays) * 24 * time.Hour).UTC().Format(time.RFC3339)
+	}
+	removed, freed := 0, int64(0)
+	touched := map[string]bool{}
+	for _, f := range files {
+		tooOld := cut != "" && f.Created < cut
+		overQuota := quota > 0 && used-freed+need > quota
+		accountFull := free >= 0 && free+freed-need < driveReserve
+		if !tooOld && !overQuota && !accountFull {
+			break
+		}
+		if _, err := d.api("DELETE", "https://www.googleapis.com/drive/v3/files/"+f.ID, nil, nil); err != nil {
+			logf("drive: could not remove %s: %v", f.Name, err)
+			continue
+		}
+		removed++
+		freed += f.bytes()
+		for _, p := range f.Parents {
+			touched[p] = true
+		}
+	}
+	root := d.app.secrets.Get().DriveFolderID
+	for folder := range touched {
+		if folder == root {
+			continue
+		}
+		var r struct {
+			Files []struct {
+				ID string `json:"id"`
+			} `json:"files"`
+		}
+		q := url.QueryEscape(fmt.Sprintf("'%s' in parents and trashed = false", folder))
+		if _, err := d.api("GET", "https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files(id)&q="+q, nil, &r); err == nil && len(r.Files) == 0 {
+			if _, err := d.api("DELETE", "https://www.googleapis.com/drive/v3/files/"+folder, nil, nil); err == nil {
+				d.mu.Lock()
+				for day, id := range d.days {
+					if id == folder {
+						delete(d.days, day)
+					}
+				}
+				d.mu.Unlock()
+			}
+		}
+	}
+	d.mu.Lock()
+	d.usage = driveUsage{Used: used - freed, Files: len(files) - removed, Free: free, Measured: time.Now().UnixMilli()}
+	if free >= 0 {
+		d.usage.Free = free + freed
+	}
+	d.mu.Unlock()
+	if removed > 0 {
+		logf("drive: removed %d old backups (%.1f GB)", removed, float64(freed)/1e9)
+		d.app.incidents.Add("info", "", "Removed %d oldest backups (%.1f GB) from Google Drive to stay within limits", removed, float64(freed)/1e9)
+	}
+	if quota > 0 && need > quota {
+		return fmt.Errorf("this clip (%.1f GB) is bigger than the Drive space limit", float64(need)/1e9)
+	}
+	if free >= 0 && free+freed-need < driveReserve && removed == 0 {
+		return errors.New("your Google Drive is full")
+	}
+	return nil
+}
+
+// makeRoom checks the limits before an upload, using the cached usage when it clearly
+// fits and a fresh listing (with deletions) when it may not.
+func (d *Drive) makeRoom(size int64) error {
+	b := d.app.settings.Get().Drive
+	d.mu.Lock()
+	u := d.usage
+	d.mu.Unlock()
+	fresh := time.Since(time.UnixMilli(u.Measured)) < 6*time.Hour
+	fits := (b.QuotaGB <= 0 || u.Used+size <= int64(b.QuotaGB*1e9)) && (u.Free < 0 || u.Free-size >= driveReserve)
+	if fresh && fits {
+		return nil
+	}
+	return d.prune(size)
 }
 
 type DriveStatus struct {
@@ -555,6 +831,7 @@ type DriveStatus struct {
 	Auth       *DriveAuth `json:"auth,omitempty"`
 	LastError  string     `json:"last_error,omitempty"`
 	LastOK     int64      `json:"last_ok,omitempty"`
+	Usage      driveUsage `json:"usage"`
 	Pending    int        `json:"pending"`
 	Uploading  int        `json:"uploading"`
 	Failed     int        `json:"failed"`
@@ -573,6 +850,7 @@ func (d *Drive) Status() DriveStatus {
 		st.Auth = &a
 	}
 	st.LastError, st.LastOK = d.lastErr, d.lastOK
+	st.Usage = d.usage
 	d.mu.Unlock()
 	for _, c := range d.app.clips.List() {
 		if c.Backup == nil {

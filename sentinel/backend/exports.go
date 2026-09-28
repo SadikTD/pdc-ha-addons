@@ -40,6 +40,9 @@ type Clip struct {
 	File string `json:"file"`
 	// Saved automatically for a night alert.
 	Alert bool `json:"alert,omitempty"`
+	// Made only to upload a motion event to Google Drive: hidden from the Clips page and
+	// removed once uploaded (the recording itself stays on disk as usual).
+	Auto bool `json:"auto,omitempty"`
 	// Google Drive copy, if any.
 	Backup *ClipBackup `json:"backup,omitempty"`
 }
@@ -146,10 +149,10 @@ func (cs *ClipStore) update(id string, f func(c *Clip)) {
 }
 
 func (cs *ClipStore) Create(cam Camera, from, to time.Time, name string) (*Clip, error) {
-	return cs.create(cam, from, to, name, false)
+	return cs.create(cam, from, to, name, false, false)
 }
 
-func (cs *ClipStore) create(cam Camera, from, to time.Time, name string, alert bool) (*Clip, error) {
+func (cs *ClipStore) create(cam Camera, from, to time.Time, name string, alert, auto bool) (*Clip, error) {
 	if !to.After(from) {
 		return nil, errors.New("the end must be after the start")
 	}
@@ -165,7 +168,7 @@ func (cs *ClipStore) create(cam Camera, from, to time.Time, name string, alert b
 	if name == "" {
 		name = fmt.Sprintf("%s · %s", cam.Name, from.In(time.Local).Format("Jan 2, 15:04:05"))
 	}
-	c := &Clip{ID: hex.EncodeToString(b), Name: name, Camera: cam.ID, CameraName: cam.Name, From: from.UnixMilli(), To: to.UnixMilli(), Created: time.Now().UnixMilli(), Status: "queued", Alert: alert}
+	c := &Clip{ID: hex.EncodeToString(b), Name: name, Camera: cam.ID, CameraName: cam.Name, From: from.UnixMilli(), To: to.UnixMilli(), Created: time.Now().UnixMilli(), Status: "queued", Alert: alert, Auto: auto}
 	c.File = clipFileName(name, c.ID)
 	cs.mu.Lock()
 	cs.clips[c.ID] = c
@@ -344,14 +347,16 @@ func (cs *ClipStore) Delete(id string) bool {
 	return ok
 }
 
-// Cleanup removes unpinned clips older than `days` (0 = keep forever).
+// Cleanup removes unpinned clips older than `days` (0 = keep forever), and motion-backup
+// clips that still haven't uploaded after 2 days (the recording is still on disk).
 func (cs *ClipStore) Cleanup(days int) {
-	if days <= 0 {
-		return
-	}
 	cut := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+	autoCut := time.Now().Add(-48 * time.Hour).UnixMilli()
 	for _, c := range cs.List() {
-		if !c.Pinned && c.Created < cut && c.Status != "saving" && c.Status != "queued" {
+		if c.Status == "saving" || c.Status == "queued" || c.Backup != nil && c.Backup.State == "uploading" {
+			continue
+		}
+		if c.Auto && (c.Created < autoCut || c.Status == "failed") || !c.Auto && days > 0 && !c.Pinned && c.Created < cut {
 			cs.Delete(c.ID)
 		}
 	}
@@ -370,6 +375,9 @@ func (cs *ClipStore) SetBackup(id string, f func(b *ClipBackup)) {
 func (cs *ClipStore) Bytes() int64 {
 	var n int64
 	for _, c := range cs.List() {
+		if c.Auto {
+			continue
+		}
 		n += c.Size
 	}
 	return n

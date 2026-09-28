@@ -47,8 +47,11 @@ through router restarts, power cuts and flaky cameras.
   preview it, name it and save. Clips are cut from the recordings without
   re-encoding, so saving is fast and full quality.
 - **Playback:** every camera playing the same moment side by side on one clock, to
-  follow someone from camera to camera. One timeline for all of them, previous/next
-  motion on any camera, speeds up to 8×, enlarge one camera, listen to one camera.
+  follow someone from camera to camera. The cameras are sized to fill the screen with
+  the timeline always visible (the grid scrolls rather than shrinking videos too small).
+  The timeline works like a camera's: drag to scrub with previews on every camera, let
+  go to play. Previous/next motion on any camera, up to 8×, enlarge one camera (the
+  others stay in a strip), listen to one camera.
 - **Go to (G):** on a camera or in Playback, type a moment the way you'd say it
   ("yesterday 3:15 pm", "22:40", "mon 9am", "27 sep 2pm", "10 min ago") or pick a
   date and time.
@@ -64,6 +67,9 @@ through router restarts, power cuts and flaky cameras.
   storage with a days-of-capacity forecast, clock status, and an activity log.
 - **Settings:** add/edit/remove cameras (with a connection test), retention, audio,
   motion sensitivity and ignore zones, alerts and quiet windows, disk floor.
+- **Ignore zones:** any number per camera, drawn as rectangles or any shape (click
+  around a tree or road), movable and reshapable, with a live overlay showing where
+  motion is being detected right now and which of it the zones ignore.
 
 ## Night alerts on WhatsApp
 
@@ -71,8 +77,11 @@ Between the hours you choose (default 23:00–06:00), motion on the selected cam
 sends WhatsApp pictures: a close-up of the area that moved and the full scene, both
 taken from the full-quality recording at the moment with the most movement. Motion
 shorter than the minimum length (insects, rain, IR flicker) is ignored, and each camera
-waits the cooldown before alerting again. Optionally each alert is saved as a clip.
-This is motion only; there is no person or face recognition.
+waits the chosen gap before alerting again; motion during the gap isn't dropped, it's
+sent as soon as the gap ends. While motion continues, a fresh picture can follow every
+15 s to 2 min, and an hourly limit per camera stops rain or a swaying tree from
+flooding the chat. Optionally each alert is saved as a clip. This is motion only;
+there is no person or face recognition.
 
 Messages go through the **PDC WhatsApp Bridge** add-on (2.1.0 or newer). In Settings,
 paste the bridge's `api_token`, then choose the chat: the bridge's recipient number or
@@ -82,8 +91,11 @@ retried for 15 minutes.
 
 ## Google Drive backup
 
-Clips can be copied to your Google Drive (automatically for night alert clips or all
-clips, or with the cloud button on a clip). Setup, once:
+Sentinel can upload every motion event (10 s before to 10 s after, per camera or all
+cameras), night alert clips and the clips you save, or any clip with its cloud button.
+Uploads go into one folder per day. Set how much Drive space Sentinel may use: when it's
+full, the oldest backups are deleted to make room (it also always leaves 1 GB free on
+the account, and can delete backups older than a number of days). Setup, once:
 
 1. In the Google Cloud Console create a project and enable the Google Drive API.
 2. In Google Auth Platform, set an app name, choose External and **Publish app**

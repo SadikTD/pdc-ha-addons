@@ -35,6 +35,13 @@ type Camera struct {
 	MotionRetainDays  int    `json:"motion_retain_days"`
 	MotionSensitivity int    `json:"motion_sensitivity"` // 1..100, higher = more sensitive
 	MotionMasks       []Rect `json:"motion_masks"`
+	// Ignore zones drawn as polygons (normalised points); motion inside is ignored.
+	MotionZones []Zone `json:"motion_zones"`
+}
+
+type Zone struct {
+	Name   string       `json:"name"`
+	Points [][2]float64 `json:"points"`
 }
 
 // MotionURL is the stream motion detection decodes: the substream when there is one.
@@ -70,8 +77,13 @@ type NightAlerts struct {
 	To      string `json:"to"`   // "06:00"
 	// Cameras that alert; empty = all.
 	Cameras []string `json:"cameras"`
-	// At most one alert per camera in this many minutes.
-	CooldownMinutes int `json:"cooldown_minutes"`
+	// Minimum gap between two alerts from one camera. Motion during the gap isn't lost:
+	// it's sent when the gap ends.
+	CooldownSeconds int `json:"cooldown_seconds"`
+	// While motion continues, send another picture this often (0 = only the first).
+	FollowupSeconds int `json:"followup_seconds"`
+	// Safety limit per camera per hour (0 = no limit), e.g. a swaying tree at night.
+	MaxPerHour int `json:"max_per_hour"`
 	// Motion must last this many seconds (filters insects, rain and IR flicker).
 	MinSeconds int `json:"min_seconds"`
 	// Also send a zoomed-in picture of the area that moved.
@@ -92,7 +104,15 @@ type WhatsApp struct {
 
 // DriveBackup uploads clips to Google Drive; credentials live in secrets.json.
 type DriveBackup struct {
-	Mode string `json:"mode"` // off | alerts | all
+	Mode   string `json:"mode,omitempty"` // pre-1.4 setting, migrated to the flags below
+	Alerts bool   `json:"backup_alerts"`  // night alert clips
+	Saved  bool   `json:"backup_saved"`   // clips saved by hand
+	Motion bool   `json:"backup_motion"`  // every motion event
+	// Cameras whose motion is backed up; empty = all.
+	MotionCameras []string `json:"motion_cameras"`
+	// Sentinel never uses more than this on Drive (0 = no limit); the oldest backups
+	// are deleted to make room.
+	QuotaGB float64 `json:"quota_gb"`
 	// Files Sentinel uploaded are removed from Drive after this many days (0 = never).
 	RetentionDays int `json:"retention_days"`
 }
@@ -106,9 +126,10 @@ func defaultSettings() Settings {
 		MQTTEnabled:        true,
 		ClipRetentionDays:  30,
 		NightAlerts: NightAlerts{
-			From: "23:00", To: "06:00", Cameras: []string{}, CooldownMinutes: 2, MinSeconds: 2, CloseUp: true, SaveClip: true,
+			From: "23:00", To: "06:00", Cameras: []string{}, CooldownSeconds: 30, FollowupSeconds: 60, MaxPerHour: 30,
+			MinSeconds: 2, CloseUp: true, SaveClip: true,
 		},
-		Drive: DriveBackup{Mode: "alerts", RetentionDays: 90},
+		Drive: DriveBackup{Alerts: true, MotionCameras: []string{}, QuotaGB: 10, RetentionDays: 90},
 	}
 }
 
@@ -215,6 +236,19 @@ func (s *Settings) normalize() error {
 		if c.MotionMasks == nil {
 			c.MotionMasks = []Rect{}
 		}
+		zones := []Zone{}
+		for _, z := range c.MotionZones {
+			if len(z.Points) < 3 || len(z.Points) > 64 {
+				continue
+			}
+			for i := range z.Points {
+				z.Points[i][0] = min(max(z.Points[i][0], 0), 1)
+				z.Points[i][1] = min(max(z.Points[i][1], 0), 1)
+			}
+			z.Name = strings.TrimSpace(z.Name)
+			zones = append(zones, z)
+		}
+		c.MotionZones = zones
 	}
 	n := &s.NightAlerts
 	if n.Cameras == nil {
@@ -229,7 +263,12 @@ func (s *Settings) normalize() error {
 	if !windowRe.MatchString(n.From + "-" + n.To) {
 		return fmt.Errorf("night alert hours must look like 23:00 and 06:00")
 	}
-	n.CooldownMinutes = min(max(n.CooldownMinutes, 0), 240)
+	n.CooldownSeconds = min(max(n.CooldownSeconds, 0), 3600)
+	n.FollowupSeconds = min(max(n.FollowupSeconds, 0), 600)
+	if n.FollowupSeconds > 0 && n.FollowupSeconds < 10 {
+		n.FollowupSeconds = 10
+	}
+	n.MaxPerHour = min(max(n.MaxPerHour, 0), 1000)
 	n.MinSeconds = min(max(n.MinSeconds, 0), 30)
 	w := &s.WhatsApp
 	w.To, w.BridgeURL = strings.TrimSpace(w.To), strings.TrimRight(strings.TrimSpace(w.BridgeURL), "/")
@@ -240,10 +279,18 @@ func (s *Settings) normalize() error {
 		return fmt.Errorf("bridge address must start with http://")
 	}
 	switch s.Drive.Mode {
-	case "off", "alerts", "all":
-	default:
-		s.Drive.Mode = "off"
+	case "off":
+		s.Drive.Alerts, s.Drive.Saved = false, false
+	case "alerts":
+		s.Drive.Alerts, s.Drive.Saved = true, false
+	case "all":
+		s.Drive.Alerts, s.Drive.Saved = true, true
 	}
+	s.Drive.Mode = ""
+	if s.Drive.MotionCameras == nil {
+		s.Drive.MotionCameras = []string{}
+	}
+	s.Drive.QuotaGB = min(max(s.Drive.QuotaGB, 0), 100000)
 	s.Drive.RetentionDays = max(s.Drive.RetentionDays, 0)
 	for _, w := range s.QuietWindows {
 		if !windowRe.MatchString(w) {
