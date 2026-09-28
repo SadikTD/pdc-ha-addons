@@ -36,6 +36,8 @@ type Clip struct {
 	Error      string  `json:"error,omitempty"`
 	Size       int64   `json:"size"`
 	Pinned     bool    `json:"pinned"`
+	// File name in the exports folder, e.g. "Roof front gate_1a2b3c4d.mp4".
+	File string `json:"file"`
 }
 
 type ClipStore struct {
@@ -68,13 +70,20 @@ func newClipStore(dir string, app *App) *ClipStore {
 		cs.persist(&c)
 	}
 	// Any file that isn't part of a known clip is leftover from a crash.
-	for _, d := range []string{dir, cs.metaDir()} {
-		all, _ := os.ReadDir(d)
-		for _, e := range all {
-			id := strings.SplitN(e.Name(), ".", 2)[0]
-			if _, ok := cs.clips[id]; !ok && !e.IsDir() {
-				_ = os.Remove(filepath.Join(d, e.Name()))
-			}
+	known := map[string]bool{}
+	for _, c := range cs.clips {
+		known[filepath.Base(cs.videoPath(c))] = true
+	}
+	top, _ := os.ReadDir(dir)
+	for _, e := range top {
+		if !e.IsDir() && !known[e.Name()] {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+	meta, _ := os.ReadDir(cs.metaDir())
+	for _, e := range meta {
+		if _, ok := cs.clips[strings.SplitN(e.Name(), ".", 2)[0]]; !ok {
+			_ = os.Remove(filepath.Join(cs.metaDir(), e.Name()))
 		}
 	}
 	return cs
@@ -91,7 +100,14 @@ func (cs *ClipStore) Run(ctx context.Context) {
 	}
 }
 
-func (cs *ClipStore) videoPath(id string) string { return filepath.Join(cs.dir, id+".mp4") }
+func (cs *ClipStore) videoPath(c *Clip) string {
+	if c.File != "" {
+		return filepath.Join(cs.dir, c.File)
+	}
+	return filepath.Join(cs.dir, c.ID+".mp4")
+}
+
+func clipFileName(name, id string) string        { return safeFileName(name) + "_" + id + ".mp4" }
 func (cs *ClipStore) partPath(id string) string  { return filepath.Join(cs.metaDir(), id+".part.mp4") }
 func (cs *ClipStore) thumbPath(id string) string { return filepath.Join(cs.metaDir(), id+".jpg") }
 
@@ -130,6 +146,7 @@ func (cs *ClipStore) Create(cam Camera, from, to time.Time, name string) (*Clip,
 		name = fmt.Sprintf("%s · %s", cam.Name, from.In(time.Local).Format("Jan 2, 15:04:05"))
 	}
 	c := &Clip{ID: hex.EncodeToString(b), Name: name, Camera: cam.ID, CameraName: cam.Name, From: from.UnixMilli(), To: to.UnixMilli(), Created: time.Now().UnixMilli(), Status: "queued"}
+	c.File = clipFileName(name, c.ID)
 	cs.mu.Lock()
 	cs.clips[c.ID] = c
 	cs.persist(c)
@@ -227,14 +244,14 @@ func (cs *ClipStore) render(ctx context.Context, id string) {
 		fail(redact(msg))
 		return
 	}
-	if err := os.Rename(cs.partPath(id), cs.videoPath(id)); err != nil {
+	if err := os.Rename(cs.partPath(id), cs.videoPath(&job)); err != nil {
 		fail(err.Error())
 		return
 	}
 	// Thumbnail from the middle of the clip.
 	mid := fmt.Sprintf("%.2f", float64(job.To-job.From)/2000)
-	_ = exec.CommandContext(cctx, "ffmpeg", "-v", "error", "-ss", mid, "-i", cs.videoPath(id), "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "5", "-y", cs.thumbPath(id)).Run()
-	st, _ := os.Stat(cs.videoPath(id))
+	_ = exec.CommandContext(cctx, "ffmpeg", "-v", "error", "-ss", mid, "-i", cs.videoPath(&job), "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "5", "-y", cs.thumbPath(id)).Run()
+	st, _ := os.Stat(cs.videoPath(&job))
 	cs.update(id, func(c *Clip) {
 		c.Status, c.Progress, c.Error = "ready", 100, ""
 		if st != nil {
@@ -274,6 +291,12 @@ func (cs *ClipStore) Patch(id string, name *string, pinned *bool) (Clip, bool) {
 	}
 	if name != nil && strings.TrimSpace(*name) != "" {
 		c.Name = strings.TrimSpace(*name)
+		if c.Status == "ready" {
+			newFile := clipFileName(c.Name, c.ID)
+			if err := os.Rename(cs.videoPath(c), filepath.Join(cs.dir, newFile)); err == nil {
+				c.File = newFile
+			}
+		}
 	}
 	if pinned != nil {
 		c.Pinned = *pinned
@@ -291,7 +314,10 @@ func (cs *ClipStore) Delete(id string) bool {
 	}
 	delete(cs.clips, id)
 	cs.mu.Unlock()
-	for _, p := range []string{cs.videoPath(id), cs.thumbPath(id), cs.partPath(id), filepath.Join(cs.metaDir(), id+".json")} {
+	if !ok {
+		return false
+	}
+	for _, p := range []string{cs.videoPath(c), cs.thumbPath(id), cs.partPath(id), filepath.Join(cs.metaDir(), id+".json")} {
 		_ = os.Remove(p)
 	}
 	return ok

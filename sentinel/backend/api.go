@@ -567,7 +567,7 @@ func (a *App) handleClipVideo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "clip not ready")
 		return
 	}
-	f, err := os.Open(a.clips.videoPath(c.ID))
+	f, err := os.Open(a.clips.videoPath(&c))
 	if err != nil {
 		writeErr(w, 404, "clip file missing")
 		return
