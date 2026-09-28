@@ -281,7 +281,9 @@ func (cs *ClipStore) render(ctx context.Context, id string) {
 			c.Size = st.Size()
 		}
 	})
-	cs.app.incidents.Add("info", job.Camera, "Clip saved: %s", job.Name)
+	if !job.Auto {
+		cs.app.incidents.Add("info", job.Camera, "Clip saved: %s", job.Name)
+	}
 	cs.app.drive.ClipReady(id)
 }
 

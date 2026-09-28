@@ -129,7 +129,7 @@ export function NightAlertsCard({ draft, set, cameras }: { draft: Settings; set:
               <select value={n.max_per_hour} onChange={(e) => setN({ max_per_hour: Number(e.target.value) })} className={inputCls}>
                 {[10, 20, 30, 60, 120, 0].map((v) => (
                   <option key={v} value={v}>
-                    {v === 0 ? "No limit" : `${v} pictures per camera per hour`}
+                    {v === 0 ? "No limit" : `${v} per camera per hour`}
                   </option>
                 ))}
               </select>
@@ -420,7 +420,7 @@ export function DriveCard({ draft, set, cameras }: { draft: Settings; set: SetFn
           </div>
           <DriveUsage st={st} quotaGB={d.quota_gb} />
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
-            <span>{st.done} backed up</span>
+            <span>{st.usage.files} file{st.usage.files === 1 ? "" : "s"} on Drive</span>
             {st.uploading > 0 && <span className="text-cyan-300">{st.uploading} uploading</span>}
             {st.pending > 0 && <span>{st.pending} waiting</span>}
             {st.failed > 0 && <span className="text-rose-300">{st.failed} failed (retrying)</span>}
