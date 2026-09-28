@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,10 +43,12 @@ type Recorder struct {
 	status      RecStatus
 	restarts    []time.Time
 	noAudioTill time.Time
-	heartbeat   atomic.Int64
-	restartCh   chan struct{}
-	cancel      context.CancelFunc
-	done        chan struct{}
+	// The camera sent timestamps the MP4 muxer can't store (big jumps): use arrival time.
+	wallclock bool
+	heartbeat atomic.Int64
+	restartCh chan struct{}
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 func newRecorder(cam Camera, store *Store, clock *Clock, inc *IncidentLog) *Recorder {
@@ -241,6 +244,9 @@ func (r *Recorder) run(ctx context.Context) {
 								r.incidents.Add("info", r.cam.ID, "Recording started%s", map[bool]string{true: "", false: " (without audio)"}[audio])
 							}
 							r.setState("recording", "")
+						} else if r.getState() == "stalled" {
+							// Data is flowing again after a pause.
+							r.setState("recording", "")
 						}
 					}
 				}
@@ -279,6 +285,10 @@ func (r *Recorder) run(ctx context.Context) {
 		r.mu.Unlock()
 		if gotData {
 			r.incidents.Add("warn", r.cam.ID, "Recording interrupted: %s", reason+detail(msg, reason))
+		}
+		if strings.Contains(msg, "next_dts") && !r.wallclock {
+			r.wallclock = true
+			r.incidents.Add("info", r.cam.ID, "The camera sends broken timestamps; recording with arrival-time timestamps from now on")
 		}
 		if ran > 2*time.Minute {
 			bo.reset()
@@ -326,6 +336,9 @@ func (r *Recorder) hb(ctx context.Context, d time.Duration) {
 func (r *Recorder) ffmpegArgs(dir, session string, info StreamInfo, audio bool) []string {
 	args := []string{"-hide_banner", "-loglevel", "warning", "-nostdin", "-fflags", "+genpts+discardcorrupt"}
 	args = append(args, inputArgs(r.cam.MainURL)...)
+	if r.wallclock {
+		args = append(args, "-use_wallclock_as_timestamps", "1")
+	}
 	args = append(args, "-i", r.cam.MainURL, "-map", "0:v:0", "-c:v", "copy")
 	if info.VideoCodec == "hevc" {
 		args = append(args, "-tag:v", "hvc1") // required for browser playback of H.265 in MP4

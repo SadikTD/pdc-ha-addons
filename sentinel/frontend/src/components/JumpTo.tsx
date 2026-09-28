@@ -35,11 +35,15 @@ export function JumpTo({
   const [picked, setPicked] = useState(() => toLocalInput(Date.now() - 3_600_000));
   const input = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLDivElement>(null);
+  // Open towards whichever side has room.
+  const [alignLeft, setAlignLeft] = useState(false);
   const t = text.trim() ? parseWhen(text) : null;
   const tooOld = t !== null && oldest !== undefined && t < oldest;
 
   useEffect(() => {
     if (!open) return;
+    const r = box.current?.getBoundingClientRect();
+    if (r) setAlignLeft(r.left + r.width / 2 < window.innerWidth / 2);
     setTimeout(() => input.current?.focus(), 30);
     const onDown = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
@@ -74,7 +78,7 @@ export function JumpTo({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ duration: 0.15 }}
-            className="absolute right-0 top-11 z-40 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-ink-900/95 p-3 shadow-2xl shadow-black/60 backdrop-blur-xl"
+            className={clsx("absolute top-11 z-40", alignLeft ? "left-0" : "right-0", " w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-white/10 bg-ink-900/95 p-3 shadow-2xl shadow-black/60 backdrop-blur-xl")}
           >
             <div className="relative">
               <input
