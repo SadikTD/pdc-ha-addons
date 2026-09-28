@@ -3,20 +3,23 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
 import {
-  ArrowLeft, Camera as CamIcon, Download, Expand, Pause, Play, Radio, RotateCcw, RotateCw, Scissors, Volume2, VolumeX, X,
-  ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Zap,
+  ArrowLeft, Camera as CamIcon, Download, Expand, Loader2, Pause, Play, Radio, RotateCcw, RotateCw, Scissors, SkipBack, SkipForward,
+  Volume2, VolumeX, X, ZoomIn, ZoomOut, Zap, ImageOff,
 } from "lucide-react";
 import { LiveStream } from "../components/LiveStream";
 import { VodPlayer, type VodHandle } from "../components/VodPlayer";
-import { Timeline } from "../components/Timeline";
+import { Scrubber, MIN_RANGE, MAX_RANGE } from "../components/Scrubber";
 import { Button, Card, IconButton, StatePill, recState } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { useTimeline } from "../lib/useTimeline";
+import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
 import { api, exportURL, thumbURL, type SentinelEvent, type Span } from "../lib/api";
-import { DAY, HOUR, fmtBitrate, fmtBytes, fmtDay, fmtDuration, fmtTime, fmtTimeSec, startOfDay } from "../lib/format";
+import { DAY, HOUR, fmtBitrate, fmtBytes, fmtDay, fmtDuration, fmtTimeSec } from "../lib/format";
 
 const RATES = [1, 2, 4, 8, 16];
+const ZOOMS: [string, number][] = [["5m", 5 * 60_000], ["30m", 30 * 60_000], ["1h", HOUR], ["6h", 6 * HOUR], ["24h", DAY]];
+const CLIP_LENGTHS: [string, number][] = [["15s", 15_000], ["30s", 30_000], ["1m", 60_000], ["2m", 120_000], ["5m", 300_000], ["15m", 900_000]];
 
 function findPlayable(spans: Span[], t: number): number | null {
   for (const s of spans) {
@@ -42,21 +45,23 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   const [mode, setMode] = useState<"live" | "playback">(initialT ? "playback" : "live");
   const [seek, setSeek] = useState({ t: initialT, n: 0 });
   const [curT, setCurT] = useState<number | null>(initialT || null);
+  const [scrubT, setScrubT] = useState<number | null>(null);
+  const [pendingT, setPendingT] = useState<number | null>(null);
   const [playing, setPlaying] = useState(true);
   const [rate, setRate] = useState(1);
   const [audio, setAudio] = useState(false);
-  const [view, setView] = useState(() => {
-    const c = initialT || Date.now();
-    return initialT ? { start: c - HOUR, end: c + HOUR } : { start: c - 3 * HOUR, end: c + 15 * 60_000 };
-  });
-  const [follow, setFollow] = useState(!initialT);
+  const [range, setRange] = useState(HOUR);
   const [selection, setSelection] = useState<{ from: number; to: number } | null>(null);
   const [events, setEvents] = useState<SentinelEvent[]>([]);
   const vod = useRef<VodHandle>(null);
   const liveVideo = useRef<HTMLVideoElement | null>(null);
   const stage = useRef<HTMLDivElement>(null);
+  const pendingTimer = useRef(0);
 
-  const lanes = useTimeline(useMemo(() => (cam ? [{ id: cam.id, name: cam.name }] : [{ id, name: id }]), [cam?.id, cam?.name, id]), view.start, view.end);
+  const center = scrubT ?? pendingT ?? (mode === "live" ? now : (curT ?? now));
+  const live = mode === "live" && scrubT === null && pendingT === null;
+
+  const lanes = useTimeline(useMemo(() => [{ id, name: cam?.name ?? id }], [id, cam?.name]), center - range / 2, center + range / 2);
   const spans = lanes[0]?.spans ?? [];
 
   useEffect(() => {
@@ -64,55 +69,71 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
     return () => window.clearInterval(t);
   }, []);
 
-  // Keep the live edge in view while following.
   useEffect(() => {
-    if (!follow) return;
-    setView((v) => {
-      const r = v.end - v.start;
-      const end = now + r * 0.08;
-      return Math.abs(end - v.end) > r * 0.02 ? { start: end - r, end } : v;
-    });
-  }, [now, follow]);
+    prefetchPreviews(id, initialT || Date.now() - 2 * 60_000, range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
+  const dayBucket = Math.floor((center - range) / DAY);
   useEffect(() => {
-    const from = startOfDay(Math.min(view.start, now)) - DAY;
-    api.events({ cameras: [id], from, to: now + HOUR, limit: 300 }).then(setEvents).catch(() => {});
-  }, [id, Math.floor(now / 30_000), Math.floor(view.start / DAY)]);
+    const from = Math.min(center - range, now - DAY);
+    api.events({ cameras: [id], from: from - DAY, to: now + HOUR, limit: 1000 }).then(setEvents).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, Math.floor(now / 20_000), dayBucket]);
 
   const goLive = useCallback(() => {
     setMode("live");
     setCurT(null);
     setRate(1);
-    setFollow(true);
+    setPendingT(null);
   }, []);
 
   const seekTo = useCallback(
-    (t: number) => {
+    (t: number, quiet = false) => {
       if (t >= Date.now() - 4000) return goLive();
       const p = findPlayable(spans, t);
       if (p === null || p >= Date.now() - 4000) {
-        toast("No recording after that point — showing live", "info");
+        if (!quiet) toast("No recording after that point — showing live", "info");
         return goLive();
       }
-      if (p !== t) toast(`No footage at ${fmtTime(t)} — jumped to ${fmtTimeSec(p)}`, "info");
+      if (p - t > 5000 && !quiet) toast(`No recording at ${fmtTimeSec(t)} — jumped to ${fmtTimeSec(p)}`, "info");
       setMode("playback");
-      setFollow(false);
       setCurT(p);
+      setPendingT(p);
+      window.clearTimeout(pendingTimer.current);
+      pendingTimer.current = window.setTimeout(() => setPendingT(null), 8000);
       setSeek((s) => ({ t: p, n: s.n + 1 }));
     },
     [spans, goLive, toast],
   );
 
+  // ---- scrubbing ----
+  const onScrubStart = () => {
+    if (mode === "playback") vod.current?.video?.pause();
+  };
+  const onScrubEnd = (t: number) => {
+    setScrubT(null);
+    seekTo(t, true);
+  };
+
+  const preview = usePreviewFrame(scrubT !== null || pendingT !== null ? id : null, scrubT ?? pendingT);
+  const showOverlay = scrubT !== null || pendingT !== null;
+
   const nudge = (sec: number) => {
-    if (mode === "live") {
-      if (sec < 0) seekTo(Date.now() + sec * 1000);
-      return;
-    }
-    if (curT) seekTo(curT + sec * 1000);
+    const base = mode === "live" ? Date.now() : (curT ?? Date.now());
+    seekTo(base + sec * 1000, true);
+  };
+
+  const jumpEvent = (dir: -1 | 1) => {
+    const ref = center + dir * 3000;
+    const sorted = [...events].sort((a, b) => a.start - b.start);
+    const e = dir < 0 ? [...sorted].reverse().find((x) => x.start < ref - 3000) : sorted.find((x) => x.start > ref);
+    if (!e) return toast(dir < 0 ? "No earlier motion" : "No later motion", "info");
+    seekTo(e.start - 3000, true);
   };
 
   const togglePlay = () => {
-    if (mode === "live") return;
+    if (mode === "live") return seekTo(Date.now() - 10_000, true);
     vod.current?.toggle();
   };
 
@@ -136,13 +157,8 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   };
 
   const startClip = () => {
-    const c = mode === "live" ? Date.now() - 60_000 : (curT ?? Date.now() - 60_000);
-    setSelection({ from: c - 30_000, to: Math.min(Date.now() - 2000, c + 30_000) });
-    setFollow(false);
-    setView((v) => {
-      const r = Math.min(v.end - v.start, 30 * 60_000);
-      return { start: c - r / 2, end: c + r / 2 };
-    });
+    const from = Math.min(center, Date.now() - 30_000);
+    setSelection({ from, to: from + 30_000 });
   };
 
   const fullscreen = () => {
@@ -158,6 +174,8 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
       if (e.key === " ") (e.preventDefault(), togglePlay());
       else if (e.key === "ArrowLeft") nudge(e.shiftKey ? -60 : -10);
       else if (e.key === "ArrowRight") nudge(e.shiftKey ? 60 : 10);
+      else if (e.key === "[") jumpEvent(-1);
+      else if (e.key === "]") jumpEvent(1);
       else if (e.key === "l" || e.key === "L") goLive();
       else if (e.key === "f" || e.key === "F") fullscreen();
     };
@@ -165,20 +183,9 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const zoom = (f: number) => {
-    const c = curT ?? now;
-    const r = Math.max(2 * 60_000, Math.min(7 * DAY, (view.end - view.start) * f));
-    setFollow(false);
-    setView({ start: c - r / 2, end: c + r / 2 });
-  };
+  const zoom = (f: number) => setRange((r) => Math.min(MAX_RANGE, Math.max(MIN_RANGE, r * f)));
 
-  const jumpDay = (d: number) => {
-    const s = startOfDay(view.start + (view.end - view.start) / 2) + d * DAY;
-    setFollow(false);
-    setView({ start: s, end: Math.min(s + DAY, now + HOUR) });
-  };
-
-  const dayEvents = events.filter((e) => e.start >= view.start - HOUR && e.start <= view.end + HOUR);
+  const listEvents = events.filter((e) => e.start >= center - Math.max(range, 6 * HOUR) && e.start <= center + Math.max(range, 6 * HOUR));
 
   if (status && !cam) {
     return (
@@ -189,7 +196,6 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   }
 
   const state = cam ? recState(cam.enabled, cam.record, cam.recorder) : "starting";
-  const clipSeconds = selection ? (selection.to - selection.from) / 1000 : 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -215,68 +221,96 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
-        <div className="flex min-w-0 flex-col gap-4">
+        <div className="flex min-w-0 flex-col gap-3">
           {/* Player stage */}
           <div ref={stage} className="group relative aspect-video overflow-hidden rounded-2xl border border-white/[0.07] bg-black shadow-2xl shadow-black/50">
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div key={mode} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.25 }} className="absolute inset-0">
-                {mode === "live" ? (
-                  <LiveStream camera={id} hq audio={audio} className="h-full w-full" onVideo={(v) => (liveVideo.current = v)} />
-                ) : (
-                  <VodPlayer
-                    ref={vod}
-                    camera={id}
-                    seek={seek}
-                    rate={rate}
-                    onTime={setCurT}
-                    onPlaying={setPlaying}
-                    onCaughtUp={() => {
-                      toast("Caught up — back to live", "info");
-                      goLive();
-                    }}
-                    onNoFootage={(t) => {
-                      const next = spans.find((s) => s.s > t + 1000);
-                      if (next && next.s < Date.now() - 4000) {
-                        setSeek((s) => ({ t: next.s, n: s.n + 1 }));
-                      } else goLive();
-                    }}
-                  />
-                )}
-              </motion.div>
+            <div className="absolute inset-0">
+              {mode === "live" ? (
+                <LiveStream camera={id} hq audio={audio} className="h-full w-full" onVideo={(v) => (liveVideo.current = v)} />
+              ) : (
+                <VodPlayer
+                  ref={vod}
+                  camera={id}
+                  seek={seek}
+                  rate={rate}
+                  onTime={(t) => pendingT === null && scrubT === null && setCurT(t)}
+                  onPlaying={(p) => {
+                    setPlaying(p);
+                    if (p) setPendingT(null);
+                  }}
+                  onCaughtUp={() => {
+                    toast("Caught up — back to live", "info");
+                    goLive();
+                  }}
+                  onNoFootage={(t) => {
+                    const next = spans.find((s) => s.s > t + 1000);
+                    if (next && next.s < Date.now() - 4000) setSeek((s) => ({ t: next.s, n: s.n + 1 }));
+                    else goLive();
+                  }}
+                />
+              )}
+            </div>
+
+            {/* Scrub preview overlay */}
+            <AnimatePresence>
+              {showOverlay && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.35 } }} transition={{ duration: 0.12 }} className="absolute inset-0 bg-black">
+                  {preview?.url ? (
+                    <img src={preview.url} className="h-full w-full object-contain" draggable={false} />
+                  ) : (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-slate-500">
+                      {preview ? <><ImageOff className="size-6" /> No preview for this moment</> : <Loader2 className="size-6 animate-spin" />}
+                    </div>
+                  )}
+                  <div className="absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/70 to-transparent p-4">
+                    <div>
+                      <div className="font-mono text-2xl font-semibold text-white drop-shadow md:text-3xl">{fmtTimeSec(scrubT ?? pendingT ?? 0)}</div>
+                      <div className="text-xs text-white/70">{fmtDay(scrubT ?? pendingT ?? 0)}</div>
+                    </div>
+                    <span className="flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs text-white/80 backdrop-blur">
+                      {scrubT !== null ? "Release to play" : <><Loader2 className="size-3 animate-spin" /> Loading video</>}
+                    </span>
+                  </div>
+                </motion.div>
+              )}
             </AnimatePresence>
 
             {/* Top overlay */}
             <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between bg-gradient-to-b from-black/60 to-transparent p-3">
-              <AnimatePresence mode="wait">
-                {mode === "live" ? (
-                  <motion.span key="live" initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} className="flex items-center gap-2 rounded-lg bg-rose-500/90 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-white shadow-lg">
-                    <span className="size-1.5 animate-pulse-dot rounded-full bg-white" /> Live
-                  </motion.span>
-                ) : (
-                  <motion.span key="pb" initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} className="rounded-lg bg-black/60 px-2.5 py-1 font-mono text-sm font-semibold text-white backdrop-blur">
-                    {curT ? `${fmtDay(curT)} · ${fmtTimeSec(curT)}` : "…"}
-                    {rate !== 1 && <span className="ml-2 text-cyan-300">{rate}×</span>}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-              {cam?.motion?.active && mode === "live" && (
-                <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-bold uppercase text-black">Motion</span>
+              {live ? (
+                <span className="flex items-center gap-2 rounded-lg bg-rose-500/90 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-white shadow-lg">
+                  <span className="size-1.5 animate-pulse-dot rounded-full bg-white" /> Live
+                </span>
+              ) : !showOverlay && curT ? (
+                <span className="rounded-lg bg-black/60 px-2.5 py-1 font-mono text-sm font-semibold text-white backdrop-blur">
+                  {fmtDay(curT)} · {fmtTimeSec(curT)}
+                  {rate !== 1 && <span className="ml-2 text-cyan-300">{rate}×</span>}
+                </span>
+              ) : (
+                <span />
               )}
+              {cam?.motion?.active && live && <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-bold uppercase text-black">Motion</span>}
             </div>
           </div>
 
           {/* Controls */}
           <Card className="flex flex-wrap items-center gap-1 p-2">
+            <IconButton title="Previous motion ( [ )" onClick={() => jumpEvent(-1)}>
+              <SkipBack className="size-4" />
+            </IconButton>
             <IconButton title="Back 10 s (←)" onClick={() => nudge(-10)}>
               <RotateCcw className="size-4" />
             </IconButton>
-            <IconButton title={mode === "live" ? "Live" : playing ? "Pause (space)" : "Play (space)"} onClick={togglePlay} disabled={mode === "live"} className="size-11 bg-white/5">
+            <IconButton title={mode === "live" ? "Rewind 10 s" : playing ? "Pause (space)" : "Play (space)"} onClick={togglePlay} className="size-11 bg-white/5">
               {mode === "playback" && !playing ? <Play className="size-5 fill-current" /> : <Pause className="size-5 fill-current" />}
             </IconButton>
             <IconButton title="Forward 10 s (→)" onClick={() => nudge(10)} disabled={mode === "live"}>
               <RotateCw className="size-4" />
             </IconButton>
-            <div className="mx-1 flex rounded-xl bg-white/5 p-0.5">
+            <IconButton title="Next motion ( ] )" onClick={() => jumpEvent(1)} disabled={mode === "live"}>
+              <SkipForward className="size-4" />
+            </IconButton>
+            <div className="mx-1 hidden rounded-xl bg-white/5 p-0.5 sm:flex">
               {RATES.map((r) => (
                 <button
                   key={r}
@@ -303,38 +337,22 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
               <IconButton title="Fullscreen (F)" onClick={fullscreen}>
                 <Expand className="size-4" />
               </IconButton>
-              <Button variant={mode === "live" ? "ghost" : "primary"} size="sm" onClick={goLive} disabled={mode === "live"} className="ml-1">
+              <Button variant={live ? "ghost" : "primary"} size="sm" onClick={goLive} disabled={live} className="ml-1">
                 <Radio className="size-3.5" /> Live
               </Button>
             </div>
           </Card>
 
           {/* Timeline */}
-          <Card className="p-3 pt-9 md:p-4 md:pt-10">
-            <div className="-mt-7 mb-3 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1">
-                <IconButton title="Previous day" onClick={() => jumpDay(-1)} className="size-8">
-                  <ChevronLeft className="size-4" />
-                </IconButton>
-                <span className="min-w-24 text-center text-sm font-semibold text-white">{fmtDay(view.start + (view.end - view.start) / 2)}</span>
-                <IconButton title="Next day" onClick={() => jumpDay(1)} className="size-8" disabled={view.end > now}>
-                  <ChevronRight className="size-4" />
-                </IconButton>
-              </div>
-              <div className="flex items-center gap-1">
-                {[
-                  ["1h", HOUR],
-                  ["6h", 6 * HOUR],
-                  ["24h", DAY],
-                ].map(([l, r]) => (
+          <Card className="px-3 pb-3 pt-3 md:px-4">
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-white">{fmtDay(center)}</span>
+              <div className="flex items-center gap-0.5">
+                {ZOOMS.map(([l, r]) => (
                   <button
-                    key={l as string}
-                    onClick={() => {
-                      const c = curT ?? now;
-                      setFollow(mode === "live");
-                      setView(mode === "live" ? { start: now - (r as number) * 0.92, end: now + (r as number) * 0.08 } : { start: c - (r as number) / 2, end: c + (r as number) / 2 });
-                    }}
-                    className="rounded-lg px-2 py-1 text-xs font-medium text-slate-400 transition hover:bg-white/5 hover:text-white"
+                    key={l}
+                    onClick={() => setRange(r)}
+                    className={clsx("rounded-lg px-2 py-1 text-xs font-medium transition", Math.abs(range - r) < 1000 ? "bg-white/10 text-white" : "text-slate-400 hover:bg-white/5 hover:text-white")}
                   >
                     {l}
                   </button>
@@ -347,49 +365,28 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
                 </IconButton>
               </div>
             </div>
-            <Timeline
-              lanes={lanes}
-              start={view.start}
-              end={view.end}
+            <Scrubber
+              camera={id}
+              spans={spans}
+              activity={lanes[0]?.activity ?? []}
+              events={events}
               now={now}
-              cursor={mode === "live" ? now : curT}
-              onView={(s, e) => {
-                setFollow(false);
-                setView({ start: s, end: e });
-              }}
-              onSeek={(t) => seekTo(t)}
+              center={center}
+              range={range}
+              live={live}
               selection={selection}
-              onSelection={setSelection}
-              laneHeight={56}
+              onScrubStart={onScrubStart}
+              onScrub={setScrubT}
+              onScrubEnd={onScrubEnd}
+              onRange={setRange}
             />
-            <div className="mt-2 flex items-center gap-4 text-[11px] text-slate-500">
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-gradient-to-r from-violet-500/70 to-cyan-400/40" /> Recorded</span>
-              <span className="flex items-center gap-1.5"><span className="h-2 w-1.5 rounded-sm bg-amber-400" /> Motion</span>
-              <span className="hidden sm:inline">Drag to pan · scroll to zoom · click to play</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-amber-400" /> Motion</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-rose-500/30" /> Not recorded</span>
+              <span className="ml-auto hidden md:inline">Drag or flick to scrub · click to jump · scroll to zoom</span>
             </div>
-            <AnimatePresence>
-              {selection && (
-                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-                  <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-cyan-400/20 bg-cyan-400/5 px-3 py-2.5 text-sm">
-                    <Scissors className="size-4 text-cyan-300" />
-                    <span className="text-slate-200">
-                      {fmtTimeSec(selection.from)} → {fmtTimeSec(selection.to)} <span className="text-slate-500">({fmtDuration(clipSeconds * 1000)})</span>
-                    </span>
-                    <span className="text-xs text-slate-500">Drag the cyan handles to adjust</span>
-                    <div className="ml-auto flex gap-2">
-                      <Button size="sm" variant="ghost" onClick={() => setSelection(null)}>
-                        <X className="size-3.5" /> Cancel
-                      </Button>
-                      <a href={exportURL(id, selection.from, selection.to)} download onClick={() => toast("Preparing your clip…", "info")}>
-                        <Button size="sm" variant="primary" disabled={clipSeconds > 3 * 3600}>
-                          <Download className="size-3.5" /> Download MP4
-                        </Button>
-                      </a>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <AnimatePresence>{selection && <ClipPanel id={id} selection={selection} setSelection={setSelection} center={center} onDone={() => toast("Preparing your clip…", "info")} />}</AnimatePresence>
           </Card>
         </div>
 
@@ -399,42 +396,90 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
             <span className="flex items-center gap-2 text-sm font-semibold text-white">
               <Zap className="size-4 text-amber-300" /> Motion events
             </span>
-            <span className="text-xs text-slate-500">{dayEvents.length}</span>
+            <span className="text-xs text-slate-500">{listEvents.length}</span>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {dayEvents.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-slate-500">No motion in this period</div>
+            {listEvents.length === 0 ? (
+              <div className="px-4 py-10 text-center text-sm text-slate-500">No motion around this time</div>
             ) : (
-              dayEvents.map((e, i) => (
-                <motion.button
-                  key={e.id}
-                  initial={{ opacity: 0, x: 8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: Math.min(i, 12) * 0.02 }}
-                  onClick={() => {
-                    seekTo(e.start - 3000);
-                    setView({ start: e.start - 30 * 60_000, end: e.start + 30 * 60_000 });
-                  }}
-                  className={clsx(
-                    "flex w-full items-center gap-3 rounded-xl p-2 text-left transition hover:bg-white/5",
-                    curT && curT >= e.start - 3000 && curT <= (e.end || now) && "bg-violet-500/10 ring-1 ring-violet-400/30",
-                  )}
-                >
-                  <div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-lg bg-ink-800">
-                    {e.thumb ? <img src={thumbURL(e)} loading="lazy" className="h-full w-full object-cover" /> : <Zap className="absolute inset-0 m-auto size-4 text-slate-600" />}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-white">{fmtTimeSec(e.start)}</div>
-                    <div className="text-xs text-slate-500">
-                      {e.end ? fmtDuration(e.end - e.start) : "ongoing"} · {e.peak.toFixed(1)}% of frame
+              listEvents.map((e) => {
+                const active = center >= e.start - 3000 && center <= (e.end || now);
+                return (
+                  <button
+                    key={e.id}
+                    onClick={() => seekTo(e.start - 3000, true)}
+                    className={clsx("flex w-full items-center gap-3 rounded-xl p-2 text-left transition hover:bg-white/5", active && "bg-violet-500/10 ring-1 ring-violet-400/30")}
+                  >
+                    <div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-lg bg-ink-800">
+                      {e.thumb ? <img src={thumbURL(e)} loading="lazy" className="h-full w-full object-cover" /> : <Zap className="absolute inset-0 m-auto size-4 text-slate-600" />}
+                      {!e.end && <span className="absolute right-1 top-1 rounded bg-amber-400 px-1 text-[9px] font-bold text-black">NOW</span>}
                     </div>
-                  </div>
-                </motion.button>
-              ))
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-white">{fmtTimeSec(e.start)}</div>
+                      <div className="text-xs text-slate-500">
+                        {fmtDay(e.start)} · {e.end ? fmtDuration(e.end - e.start) : "ongoing"}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </Card>
       </div>
     </div>
+  );
+}
+
+function toTimeInput(ms: number) {
+  const d = new Date(ms);
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
+}
+
+function ClipPanel({ id, selection, setSelection, center, onDone }: { id: string; selection: { from: number; to: number }; setSelection: (s: { from: number; to: number } | null) => void; center: number; onDone: () => void }) {
+  const len = selection.to - selection.from;
+  const setStart = (from: number) => setSelection({ from, to: from + len });
+  return (
+    <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+      <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-cyan-400/20 bg-cyan-400/5 px-3 py-3 text-sm">
+        <Scissors className="size-4 text-cyan-300" />
+        <label className="flex items-center gap-2 text-slate-300">
+          Start
+          <input
+            type="time"
+            step={1}
+            value={toTimeInput(selection.from)}
+            onChange={(e) => {
+              const [h, m, s] = e.target.value.split(":").map(Number);
+              const d = new Date(selection.from);
+              d.setHours(h, m, s || 0, 0);
+              setStart(d.getTime());
+            }}
+            className="h-8 rounded-lg border border-white/10 bg-ink-900 px-2 text-sm text-white"
+          />
+        </label>
+        <button onClick={() => setStart(center)} className="rounded-lg px-2 py-1 text-xs text-cyan-200 hover:bg-white/5">Start at playhead</button>
+        <div className="flex rounded-lg bg-white/5 p-0.5">
+          {CLIP_LENGTHS.map(([l, ms]) => (
+            <button key={l} onClick={() => setSelection({ from: selection.from, to: selection.from + ms })} className={clsx("rounded-md px-2 py-1 text-xs font-medium", len === ms ? "bg-cyan-500 text-ink-950" : "text-slate-400 hover:text-white")}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-slate-500">
+          {fmtTimeSec(selection.from)} → {fmtTimeSec(selection.to)}
+        </span>
+        <div className="ml-auto flex gap-2">
+          <Button size="sm" variant="ghost" onClick={() => setSelection(null)}>
+            <X className="size-3.5" /> Cancel
+          </Button>
+          <a href={exportURL(id, selection.from, selection.to)} download onClick={onDone}>
+            <Button size="sm" variant="primary">
+              <Download className="size-3.5" /> Download MP4
+            </Button>
+          </a>
+        </div>
+      </div>
+    </motion.div>
   );
 }

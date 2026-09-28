@@ -396,6 +396,8 @@ type CamStorage struct {
 	Newest int64 `json:"newest"`
 	// Average write rate over the last 24 h, bytes/hour.
 	RateBph int64 `json:"rate_bph"`
+	// Share of the last 24 h (or since recording began) that is on disk, 0..100.
+	Uptime24h float64 `json:"uptime_24h"`
 }
 
 func (st *Store) Stats() map[string]CamStorage {
@@ -407,6 +409,7 @@ func (st *Store) Stats() map[string]CamStorage {
 		var cs CamStorage
 		var recent int64
 		var recentMs int64
+		var covered time.Duration
 		for _, s := range list {
 			cs.Bytes += s.Size
 			cs.Count++
@@ -414,10 +417,24 @@ func (st *Store) Stats() map[string]CamStorage {
 				recent += s.Size
 				recentMs += s.End().Sub(s.Start()).Milliseconds()
 			}
+			if e := s.End(); e.After(dayAgo) {
+				b := s.Start()
+				if b.Before(dayAgo) {
+					b = dayAgo
+				}
+				covered += e.Sub(b)
+			}
 		}
 		if len(list) > 0 {
 			cs.Oldest = list[0].Start().UnixMilli()
 			cs.Newest = list[len(list)-1].End().UnixMilli()
+			from := dayAgo
+			if o := list[0].Start(); o.After(from) {
+				from = o
+			}
+			if win := time.Since(from); win > time.Minute {
+				cs.Uptime24h = min(100, float64(covered)*100/float64(win))
+			}
 		}
 		if recentMs > 60_000 {
 			cs.RateBph = recent * 3_600_000 / recentMs

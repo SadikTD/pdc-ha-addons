@@ -30,7 +30,7 @@ func main() {
 	listen := env("SENTINEL_LISTEN", ":8099")
 	logf("Sentinel %s starting (config %s, media %s)", version, configDir, media)
 
-	for _, d := range []string{configDir, filepath.Join(media, "recordings"), filepath.Join(media, "events"), filepath.Join(media, "activity")} {
+	for _, d := range []string{configDir, filepath.Join(media, "recordings"), filepath.Join(media, "events"), filepath.Join(media, "activity"), filepath.Join(media, "previews")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			logf("cannot create %s: %v", d, err)
 		}
@@ -56,6 +56,7 @@ func main() {
 		store:     store,
 		events:    newEventStore(filepath.Join(media, "events")),
 		activity:  newActivityStore(filepath.Join(media, "activity")),
+		previews:  newPreviewStore(filepath.Join(media, "previews")),
 		incidents: incidents,
 		go2rtc:    newGo2RTC(filepath.Join(os.TempDir(), "go2rtc.yaml"), incidents),
 		mqtt:      newMQTT(),
@@ -95,5 +96,6 @@ func main() {
 	}
 	app.mu.Unlock()
 	app.activity.Flush()
+	app.previews.Close()
 	logf("bye")
 }

@@ -41,13 +41,14 @@ func (t *tailBuffer) last() string {
 
 // startProc runs a command in its own process group that dies with Sentinel,
 // so a crashed or restarted Sentinel never leaves orphan ffmpeg processes behind.
-func startProc(name string, args []string, env []string, stdout io.Writer, tail *tailBuffer) (*exec.Cmd, error) {
+func startProc(name string, args []string, env []string, stdout io.Writer, tail *tailBuffer, extra ...*os.File) (*exec.Cmd, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	if stdout != nil {
 		cmd.Stdout = stdout
 	}
+	cmd.ExtraFiles = extra // fd 3, 4, ... in the child
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, err

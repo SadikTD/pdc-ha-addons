@@ -61,6 +61,17 @@ func (a *App) Routes(www string) http.Handler {
 	mux.HandleFunc("GET /api/activity/{id}", a.handleActivity)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("GET /api/events/{cam}/{id}/thumb.jpg", a.handleThumb)
+	mux.HandleFunc("GET /api/preview/{cam}/{ts}", a.handlePreview)
+	mux.HandleFunc("GET /api/cameras/{id}/latest.jpg", func(w http.ResponseWriter, r *http.Request) {
+		img := a.previews.Latest(r.PathValue("id"))
+		if img == nil {
+			writeErr(w, 404, "no frame yet")
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write(img)
+	})
 	mux.HandleFunc("GET /api/vod.m3u8", a.handleVOD)
 	mux.HandleFunc("GET /api/seg/{cam}/{id}", a.handleSegment)
 	mux.HandleFunc("GET /api/export/{id}", a.handleExport)
@@ -455,4 +466,26 @@ func (a *App) handleExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	http.ServeContent(w, r, name, st.ModTime(), f)
+}
+
+// handlePreview serves the preview frame nearest to a time (unix ms) for timeline scrubbing.
+func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
+	ts, err := strconv.ParseInt(strings.TrimSuffix(r.PathValue("ts"), ".jpg"), 10, 64)
+	if err != nil {
+		writeErr(w, 400, "bad time")
+		return
+	}
+	img, at, ok := a.previews.Get(r.PathValue("cam"), time.UnixMilli(ts))
+	if !ok {
+		writeErr(w, 404, "no preview")
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("X-Frame-Time", strconv.FormatInt(at, 10))
+	if time.Since(time.UnixMilli(ts)) > time.Minute {
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+	} else {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	w.Write(img)
 }

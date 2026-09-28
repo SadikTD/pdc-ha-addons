@@ -19,6 +19,7 @@ type App struct {
 	store     *Store
 	events    *EventStore
 	activity  *ActivityStore
+	previews  *PreviewStore
 	incidents *IncidentLog
 	go2rtc    *Go2RTC
 	mqtt      *MQTT
@@ -142,6 +143,8 @@ func (a *App) MotionEnd(cam string) {
 }
 
 func (a *App) Activity(cam string, score float64) { a.activity.Record(cam, a.clock.Now(), score) }
+
+func (a *App) Preview(cam string, jpeg []byte) { a.previews.Add(cam, a.clock.Now(), jpeg) }
 
 func (a *App) captureThumb(cam, id string) {
 	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
@@ -331,6 +334,7 @@ func (a *App) cleanup() {
 	a.store.Cleanup(retain, def, s.MinFreeGB)
 	a.events.Cleanup(retain, def)
 	a.activity.Cleanup(retain, def)
+	a.previews.Cleanup(retain, def)
 }
 
 func (a *App) publishStorage() {

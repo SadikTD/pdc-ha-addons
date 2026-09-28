@@ -42,7 +42,7 @@ export type MotionStatus = { state: string; active: boolean; score: number; erro
 
 export type SentinelEvent = { id: string; camera: string; start: number; end: number; peak: number; thumb: boolean };
 
-export type CamStorage = { bytes: number; count: number; oldest: number; newest: number; rate_bph: number };
+export type CamStorage = { bytes: number; count: number; oldest: number; newest: number; rate_bph: number; uptime_24h: number };
 
 export type CameraStatus = Camera & {
   recorder: RecStatus | null;
@@ -119,6 +119,7 @@ export const api = {
 };
 
 export const snapshotURL = (cam: string, hq = false, bust = 0) => `api/cameras/${cam}/snapshot.jpg?${hq ? "hq=1&" : ""}t=${bust}`;
+export const latestFrameURL = (cam: string) => `api/cameras/${cam}/latest.jpg`;
 export const thumbURL = (e: SentinelEvent) => `api/events/${e.camera}/${e.id}/thumb.jpg`;
 export const vodURL = (cam: string, from: number, to: number) => `api/vod.m3u8?camera=${cam}&from=${Math.round(from)}&to=${Math.round(to)}`;
 export const exportURL = (cam: string, from: number, to: number) => `api/export/${cam}?from=${Math.round(from)}&to=${Math.round(to)}`;

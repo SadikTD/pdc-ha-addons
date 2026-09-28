@@ -30,10 +30,14 @@ through router restarts, power cuts and flaky cameras.
 
 - **Live:** all cameras in a grid (substreams, low bandwidth), with a recording
   badge and a glow on cameras that see motion.
-- **Camera:** full-quality live view with audio, and the recordings timeline:
-  drag to pan, scroll or pinch to zoom, click to play. Playback speed up to 16×,
-  ±10 s skips, snapshots, fullscreen, and clip export (drag the handles, download
-  an MP4). Keys: space play/pause, ←/→ 10 s (Shift = 1 min), L live, F fullscreen.
+- **Camera:** full-quality live view with audio, and a scrubbing timeline: the
+  playhead stays in the middle while you drag (or flick) the timeline, and the
+  player shows preview frames of that moment as you go; let go to play from there.
+  Click to jump, scroll or pinch to zoom (1 minute to 2 days). Motion events are
+  bars above the track, missing footage is tinted red, and hovering shows a
+  thumbnail. Playback up to 16×, previous/next motion, ±10 s, snapshots,
+  fullscreen and clip export. Keys: space play/pause, ←/→ 10 s (Shift = 1 min),
+  [ / ] previous/next motion, L live, F fullscreen.
 - **Timeline:** every camera on one timeline with recording gaps and motion, plus
   recorded percentage per camera.
 - **Events:** motion events with thumbnails, by day, filterable by camera and size.
@@ -55,14 +59,15 @@ and live view) and one more for full-quality live view while you watch it.
 
 ## Home Assistant
 
-With the Mosquitto broker add-on installed, each camera gets:
+With the Mosquitto broker add-on installed, each camera becomes a device with
+(entity IDs follow the camera name, e.g. "Roof"):
 
-- `binary_sensor.sentinel_<camera>_motion`
-- `binary_sensor.sentinel_<camera>_recording` (off = not recording)
-- `camera.sentinel_<camera>` (snapshot of the last motion)
+- `binary_sensor.roof_motion`
+- `binary_sensor.roof_recording` (off = not recording)
+- `camera.roof_last_motion` (snapshot of the last motion)
 
-plus `sensor.sentinel_storage_free`, `sensor.sentinel_storage_used` and
-`binary_sensor.sentinel_clock_problem`.
+plus a "Sentinel NVR" device with `sensor.sentinel_nvr_storage_free`,
+`sensor.sentinel_nvr_recordings_size` and `binary_sensor.sentinel_nvr_clock_problem`.
 
 If a camera stops recording for longer than the alert delay, Sentinel creates a
 persistent notification and, if set, sends it to your notify service. It sends
@@ -71,5 +76,6 @@ router restart) suppress these alerts; recording is unaffected.
 
 ## Storage
 
-Recordings: `/media/sentinel/recordings/<camera>/` (not included in Home
+Recordings: `/media/sentinel/recordings/<camera>/`, timeline previews (about 3%
+of the recording size) in `/media/sentinel/previews/` (not included in Home
 Assistant backups). Settings: `/addon_configs/<slug>/sentinel.json` (included).

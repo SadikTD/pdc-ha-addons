@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"os"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ type MotionListener interface {
 	MotionUpdate(cam string, score float64)
 	MotionEnd(cam string)
 	Activity(cam string, score float64)
+	Preview(cam string, jpeg []byte)
 }
 
 type MotionStatus struct {
@@ -137,12 +139,29 @@ func (m *MotionDetector) run(ctx context.Context) {
 		url := restreamURL(m.cam.ID)
 		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
 		args = append(args, inputArgs(url)...)
+		// One decode feeds both motion (tiny grey frames on stdout) and timeline previews
+		// (small JPEGs on fd 3).
 		args = append(args, "-i", url, "-an", "-sn",
-			"-vf", "fps=3,scale=128:72:flags=area,format=gray",
-			"-f", "rawvideo", "-pix_fmt", "gray", "pipe:1")
+			"-filter_complex", "[0:v]fps=3,split=2[a][b];[a]scale=128:72:flags=area,format=gray[m];[b]fps=1/2,scale=320:-2[p]",
+			"-map", "[m]", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
+			"-map", "[p]", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "7", "pipe:3")
 		pr, pw := io.Pipe()
+		prevR, prevW, perr := os.Pipe()
+		if perr != nil {
+			sleepCtx(ctx, bo.next())
+			continue
+		}
 		tail := &tailBuffer{}
-		cmd, err := startProc("ffmpeg", args, nil, pw, tail)
+		cmd, err := startProc("ffmpeg", args, nil, pw, tail, prevW)
+		prevW.Close() // the child has its own copy
+		if err == nil {
+			go func() {
+				defer prevR.Close()
+				splitJPEGs(prevR, func(j []byte) { m.listener.Preview(m.cam.ID, j) })
+			}()
+		} else {
+			prevR.Close()
+		}
 		if err != nil {
 			m.set(func(s *MotionStatus) { s.State, s.Error = "offline", err.Error() })
 			sleepCtx(ctx, bo.next())

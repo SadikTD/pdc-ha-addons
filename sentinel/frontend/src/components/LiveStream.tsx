@@ -22,6 +22,7 @@ export function LiveStream({
   cover = false,
   className,
   onVideo,
+  poster,
 }: {
   camera: string;
   hq?: boolean;
@@ -29,6 +30,7 @@ export function LiveStream({
   cover?: boolean;
   className?: string;
   onVideo?: (v: HTMLVideoElement | null) => void;
+  poster?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<"loading" | "playing" | "error">("loading");
@@ -76,9 +78,10 @@ export function LiveStream({
 
   return (
     <div className={clsx("relative overflow-hidden bg-black", cover && "cover", className)}>
+      {poster && state !== "playing" && <img src={poster} className={clsx("absolute inset-0 h-full w-full", cover ? "object-cover" : "object-contain")} onError={(e) => (e.currentTarget.style.display = "none")} />}
       <div ref={host} className="absolute inset-0" />
       {state !== "playing" && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-ink-900/40 to-ink-950/70">
+        <div className={clsx("absolute inset-0 flex items-center justify-center", !poster && "bg-gradient-to-b from-ink-900/40 to-ink-950/70")}>
           {state === "loading" ? (
             <Loader2 className="size-7 animate-spin text-white/60" />
           ) : (

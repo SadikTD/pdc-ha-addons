@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Span } from "../lib/api";
 import { fmtTime, fmtTimeSec, HOUR, DAY, startOfDay } from "../lib/format";
+import { usePreviewFrame } from "../lib/usePreview";
 
 export type Lane = { id: string; label?: string; spans: Span[]; activity: [number, number][] };
 
@@ -28,6 +29,7 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(600);
   const [hover, setHover] = useState<number | null>(null);
+  const [hoverLane, setHoverLane] = useState<string | null>(null);
   const drag = useRef<{ x: number; start: number; end: number; moved: boolean; mode: "pan" | "selFrom" | "selTo" | "pinch"; dist?: number } | null>(null);
   const pointers = useRef(new Map<number, { x: number }>());
   const height = AXIS + lanes.length * (laneHeight + 6) + 4;
@@ -205,6 +207,9 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
     const d = drag.current;
     if (!d) {
       setHover(tOf(x));
+      const y = e.clientY - (canvas.current?.getBoundingClientRect().top ?? 0);
+      const li = Math.floor((y - AXIS) / (laneHeight + 6));
+      setHoverLane(li >= 0 && li < lanes.length ? lanes[li].id : null);
       return;
     }
     if (d.mode === "pinch" && pointers.current.size === 2 && d.dist) {
@@ -262,6 +267,9 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
     return () => c.removeEventListener("wheel", onWheel);
   });
 
+  const thumbT = hover !== null && hover < now && hoverLane ? hover : null;
+  const thumb = usePreviewFrame(thumbT !== null ? hoverLane : null, thumbT);
+
   return (
     <div ref={wrap} className="relative w-full select-none">
       <canvas
@@ -272,7 +280,10 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onPointerLeave={() => setHover(null)}
+        onPointerLeave={() => {
+          setHover(null);
+          setHoverLane(null);
+        }}
       />
       {hover !== null && !drag.current && (
         <div
@@ -280,6 +291,16 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
           style={{ left: Math.min(width - 40, Math.max(40, xOf(hover))) }}
         >
           {fmtTimeSec(hover)}
+        </div>
+      )}
+      {thumbT !== null && !drag.current && (
+        <div
+          className="pointer-events-none absolute z-20 w-44 -translate-x-1/2 overflow-hidden rounded-xl border border-white/15 bg-ink-900 shadow-2xl shadow-black/60"
+          style={{ left: Math.min(width - 88, Math.max(88, xOf(thumbT))), bottom: height + 30 }}
+        >
+          <div className="aspect-video bg-ink-800">
+            {thumb?.url ? <img src={thumb.url} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-[10px] text-slate-500">{thumb ? "No preview" : "…"}</div>}
+          </div>
         </div>
       )}
     </div>
