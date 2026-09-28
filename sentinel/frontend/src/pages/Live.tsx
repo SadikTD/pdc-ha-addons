@@ -2,11 +2,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import clsx from "clsx";
-import { Camera as CamIcon, Grid2x2, Grid3x3, Square, Maximize2, HardDrive, ShieldCheck, Zap, AlertTriangle, ChevronRight, Scan, PowerOff } from "lucide-react";
+import { Camera as CamIcon, Grid2x2, Grid3x3, Square, Maximize2, HardDrive, ShieldCheck, Zap, AlertTriangle, ChevronRight, Scan, PowerOff, Volume2, VolumeX } from "lucide-react";
 import { fitGrid } from "../lib/layout";
 import { LiveStream } from "../components/LiveStream";
 import { Empty, PageHeader, StatePill, buttonCls, recState } from "../components/ui";
 import { useStatus } from "../lib/status";
+import { useSound } from "../lib/sound";
 import { fmtAgo, fmtBitrate, fmtBytes, fmtTime, startOfDay } from "../lib/format";
 import { api, latestFrameURL, thumbURL, type CameraStatus, type SentinelEvent } from "../lib/api";
 
@@ -238,6 +239,8 @@ export function CameraTile({ cam, index }: { cam: CameraStatus; index: number })
   // back to the real shape instead of cropping or letterboxing.
   const s = cam.recorder?.stream;
   const wide = !s?.width || Math.abs(s.width / s.height - 16 / 9) < 0.08;
+  const [sound, setSound] = useSound(cam.id);
+  const [hasAudio, setHasAudio] = useState(false);
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.98 }}
@@ -255,7 +258,15 @@ export function CameraTile({ cam, index }: { cam: CameraStatus; index: number })
           <span className="text-xs text-slate-600">Recording starts by itself when it's on</span>
         </div>
       ) : (
-        <LiveStream camera={cam.id} fill={wide} poster={latestFrameURL(cam.id)} className="h-full w-full" />
+        <LiveStream
+          camera={cam.id}
+          fill={wide}
+          poster={latestFrameURL(cam.id)}
+          muted={!sound}
+          onMutedByBrowser={() => setSound(false)}
+          onHasAudio={setHasAudio}
+          className="h-full w-full"
+        />
       )}
       {/* Small labels only: nothing darkens the picture. */}
       <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1.5">
@@ -263,8 +274,28 @@ export function CameraTile({ cam, index }: { cam: CameraStatus; index: number })
         {motionOn && <span className="rounded-md bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold uppercase text-black">Motion</span>}
       </div>
       {!off && (
-        <div className="pointer-events-none absolute right-2 top-2">
-          <StatePill state={state} compact />
+        <div className="absolute right-2 top-2 flex items-center gap-1.5">
+          {hasAudio && (
+            <button
+              type="button"
+              title={sound ? `Mute ${cam.name}` : `Listen to ${cam.name}`}
+              aria-label={sound ? `Mute ${cam.name}` : `Listen to ${cam.name}`}
+              aria-pressed={sound}
+              onClick={(e) => {
+                e.stopPropagation(); // don't open the camera
+                setSound(!sound);
+              }}
+              className={clsx(
+                "flex size-7 items-center justify-center rounded-md backdrop-blur-sm transition",
+                sound ? "bg-emerald-500/90 text-white shadow-lg shadow-emerald-500/30" : "bg-black/55 text-white/80 hover:bg-black/75 hover:text-white",
+              )}
+            >
+              {sound ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
+            </button>
+          )}
+          <span className="pointer-events-none">
+            <StatePill state={state} compact />
+          </span>
         </div>
       )}
       <div className="pointer-events-none absolute inset-x-2 bottom-2 flex items-end justify-between opacity-0 transition group-hover:opacity-100">

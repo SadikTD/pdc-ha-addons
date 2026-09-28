@@ -24,6 +24,7 @@ type VideoStreamEl = HTMLElement & {
   wsState?: number;
   pcState?: number;
   disconnectTID?: number;
+  mseCodecs?: string;
 };
 
 // go2rtc's player keeps streaming for 5 s after it leaves the page (in case it comes
@@ -52,7 +53,9 @@ function closeStream(el: VideoStreamEl) {
 export function LiveStream({
   camera,
   hq = false,
-  audio = false,
+  muted = true,
+  onMutedByBrowser,
+  onHasAudio,
   cover = false,
   fill = false,
   className,
@@ -61,7 +64,13 @@ export function LiveStream({
 }: {
   camera: string;
   hq?: boolean;
-  audio?: boolean;
+  // Sound is always part of the stream (it's tiny next to the video), so turning it on or
+  // off is instant: it never reconnects.
+  muted?: boolean;
+  // The browser refused to start with sound (no click on the page yet): now muted.
+  onMutedByBrowser?: () => void;
+  // Whether the camera sends sound at all, known once the stream starts.
+  onHasAudio?: (has: boolean) => void;
   cover?: boolean;
   // Stretch to the box: for substreams whose shape differs from the camera's picture
   // (e.g. 640x480 of a 16:9 camera).
@@ -71,7 +80,10 @@ export function LiveStream({
   poster?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const video = useRef<HTMLVideoElement | null>(null);
   const [state, setState] = useState<"loading" | "playing" | "error">("loading");
+  const latest = useRef({ muted, onMutedByBrowser, onHasAudio });
+  latest.current = { muted, onMutedByBrowser, onHasAudio };
 
   useEffect(() => {
     let el: VideoStreamEl | null = null;
@@ -83,36 +95,51 @@ export function LiveStream({
         if (cancelled || !host.current) return;
         el = document.createElement("video-stream") as VideoStreamEl;
         el.mode = "mse";
-        el.media = audio ? "video,audio" : "video";
+        el.media = "video,audio";
         el.background = false;
         host.current.appendChild(el);
         const src = new URL(`go2rtc/api/ws?src=${encodeURIComponent(hq ? camera : `${camera}_sub`)}`, base());
         src.protocol = src.protocol === "https:" ? "wss:" : "ws:";
         el.src = src.toString();
         const v = el.video;
-        if (v) {
-          v.controls = false;
-          v.muted = !audio;
-          v.playsInline = true;
-          v.addEventListener("playing", () => {
-            window.clearTimeout(stallTimer);
-            setState("playing");
-          });
-          v.addEventListener("waiting", () => {
-            stallTimer = window.setTimeout(() => setState("loading"), 1500);
-          });
-          onVideo?.(v);
-        }
+        if (!v) return;
+        const stream = el;
+        video.current = v;
+        v.controls = false;
+        v.muted = latest.current.muted;
+        v.playsInline = true;
+        v.addEventListener("playing", () => {
+          window.clearTimeout(stallTimer);
+          setState("playing");
+          latest.current.onHasAudio?.(/mp4a|flac|opus/.test(stream.mseCodecs ?? ""));
+        });
+        v.addEventListener("waiting", () => {
+          stallTimer = window.setTimeout(() => setState("loading"), 1500);
+        });
+        v.addEventListener("volumechange", () => {
+          // Not while closing: closeStream() mutes the video itself.
+          if (!cancelled && v.muted && !latest.current.muted) latest.current.onMutedByBrowser?.();
+        });
+        onVideo?.(v);
       })
       .catch(() => setState("error"));
     return () => {
       cancelled = true;
       window.clearTimeout(stallTimer);
+      video.current = null;
       onVideo?.(null);
       if (el) closeStream(el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camera, hq, audio]);
+  }, [camera, hq]);
+
+  useEffect(() => {
+    const v = video.current;
+    if (!v || v.muted === muted) return;
+    v.muted = muted;
+    // Unmuting happens on a click, so the browser allows it; resume in case it had paused.
+    if (!muted && v.paused) v.play().catch(() => {});
+  }, [muted]);
 
   return (
     <div className={clsx("relative overflow-hidden bg-black", cover && "cover", fill && "fill", className)}>

@@ -34,8 +34,11 @@ through router restarts, power cuts and flaky cameras.
   from the low-bandwidth substreams shown in the camera's real shape, with only small
   labels over the picture and a glow on cameras that see motion. Cameras marked "Often
   switched off" show as switched off instead of as a problem, and never raise
-  "not recording" alerts; they start recording by themselves when turned on.
-- **Camera:** full-quality live view with audio, and a scrubbing timeline: the
+  "not recording" alerts; they start recording by themselves when turned on. Every
+  camera with a microphone has a speaker button: tap it to listen to that camera
+  (any number at once). The sound stays on when you open the camera.
+- **Camera:** full-quality live view with sound (one tap to mute or unmute, without
+  reloading the video; recordings play with sound), and a scrubbing timeline: the
   playhead stays in the middle while you drag (or flick) the timeline, and the
   player shows preview frames of that moment as you go; let go to play from there.
   Click to jump, scroll or pinch to zoom (1 minute to 2 days). Motion events are
@@ -44,7 +47,7 @@ through router restarts, power cuts and flaky cameras.
   fullscreen. Scroll on the video to zoom into the picture (up to 8×), drag to pan,
   double-click to zoom in or reset. Keys: space play/pause, ←/→ 10 s (Shift =
   1 min), [ / ] previous/next motion, + / − / 0 video zoom, I / O clip start/end,
-  L live, F fullscreen.
+  M sound, L live, F fullscreen.
 - **Saving a clip:** press the scissors button, then drag the cyan handles on the
   timeline (or scrub and press I / O, or type exact times with ±1 s buttons),
   preview it, name it and save. Clips are cut from the recordings without

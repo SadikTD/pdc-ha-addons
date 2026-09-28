@@ -15,6 +15,7 @@ import { Button, Card, IconButton, StatePill, recState } from "../components/ui"
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { useTimeline } from "../lib/useTimeline";
+import { useSound } from "../lib/sound";
 import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
 import { api, thumbURL, type SentinelEvent, type Span } from "../lib/api";
 import { DAY, HOUR, fmtBitrate, fmtBytes, fmtDay, fmtDuration, fmtTimeSec } from "../lib/format";
@@ -50,7 +51,12 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   const [pendingT, setPendingT] = useState<number | null>(null);
   const [playing, setPlaying] = useState(true);
   const [rate, setRate] = useState(1);
-  const [audio, setAudio] = useState(false);
+  // Live sound is shared with the grid (off unless turned on there or here); recordings
+  // play with sound unless muted.
+  const [liveSound, setLiveSound] = useSound(id);
+  const [vodMuted, setVodMuted] = useState(false);
+  const soundOn = mode === "live" ? liveSound : !vodMuted;
+  const toggleSound = () => (mode === "live" ? setLiveSound(!liveSound) : setVodMuted((m) => !m));
   const [range, setRange] = useState(HOUR);
   const [selection, setSelection] = useState<{ from: number; to: number } | null>(null);
   const [events, setEvents] = useState<SentinelEvent[]>([]);
@@ -211,6 +217,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
       else if (e.key === "l" || e.key === "L") goLive();
       else if (e.key === "f" || e.key === "F") fullscreen();
       else if (e.key === "g" || e.key === "G") (e.preventDefault(), setJumpOpen(true));
+      else if (e.key === "m" || e.key === "M") toggleSound();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -270,11 +277,13 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
             <ZoomPan resetKey={id}>
             <div className="absolute inset-0">
               {mode === "live" ? (
-                <LiveStream camera={id} hq audio={audio} className="h-full w-full" onVideo={(v) => (liveVideo.current = v)} />
+                <LiveStream camera={id} hq muted={!liveSound} onMutedByBrowser={() => setLiveSound(false)} className="h-full w-full" onVideo={(v) => (liveVideo.current = v)} />
               ) : (
                 <VodPlayer
                   ref={vod}
                   camera={id}
+                  muted={vodMuted}
+                  onMutedByBrowser={() => setVodMuted(true)}
                   seek={seek}
                   rate={rate}
                   onTime={(t) => {
@@ -375,11 +384,9 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
               ))}
             </div>
             <div className="ml-auto flex items-center gap-1">
-              {mode === "live" && (
-                <IconButton title={audio ? "Mute" : "Listen"} onClick={() => setAudio((a) => !a)}>
-                  {audio ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
-                </IconButton>
-              )}
+              <IconButton title={soundOn ? "Mute (M)" : "Sound on (M)"} aria-pressed={soundOn} onClick={toggleSound} className={clsx(soundOn && "text-emerald-300")}>
+                {soundOn ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
+              </IconButton>
               <IconButton title="Snapshot" onClick={snapshot}>
                 <CamIcon className="size-4" />
               </IconButton>

@@ -59,6 +59,9 @@ export type VodHandle = { video: HTMLVideoElement | null; toggle: () => void };
 
 type Props = {
   camera: string;
+  muted: boolean;
+  // The browser refused to play with sound (no click on the page yet): now muted.
+  onMutedByBrowser?: () => void;
   seek: { t: number; n: number }; // n changes to force a seek to the same time
   rate: number;
   onTime: (t: number) => void;
@@ -67,22 +70,38 @@ type Props = {
   onNoFootage: (t: number) => void;
 };
 
-export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camera, seek, rate, onTime, onPlaying, onCaughtUp, onNoFootage }, ref) {
+export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camera, muted, onMutedByBrowser, seek, rate, onTime, onPlaying, onCaughtUp, onNoFootage }, ref) {
   const video = useRef<HTMLVideoElement>(null);
   const hls = useRef<Hls | null>(null);
   const win = useRef<{ from: number; to: number; frags: Frag[] } | null>(null);
   const loadSeq = useRef(0);
   const pending = useRef<AbortController | null>(null);
   const [loading, setLoading] = useState(true);
-  const cb = useRef({ onTime, onPlaying, onCaughtUp, onNoFootage });
-  cb.current = { onTime, onPlaying, onCaughtUp, onNoFootage };
+  const cb = useRef({ onTime, onPlaying, onCaughtUp, onNoFootage, onMutedByBrowser });
+  cb.current = { onTime, onPlaying, onCaughtUp, onNoFootage, onMutedByBrowser };
+
+  // Play, falling back to muted when the browser blocks sound (e.g. a link opened
+  // directly), instead of sitting paused.
+  const play = () => {
+    const v = video.current;
+    v?.play().catch((e: Error) => {
+      if (e.name !== "NotAllowedError" || v.muted) return;
+      v.muted = true;
+      cb.current.onMutedByBrowser?.();
+      v.play().catch(() => {});
+    });
+  };
+
+  useEffect(() => {
+    if (video.current) video.current.muted = muted;
+  }, [muted]);
 
   useImperativeHandle(ref, () => ({
     video: video.current,
     toggle: () => {
       const v = video.current;
       if (!v) return;
-      if (v.paused) v.play().catch(() => {});
+      if (v.paused) play();
       else v.pause();
     },
   }));
@@ -118,7 +137,7 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     const start = () => {
       v.currentTime = pos;
       v.playbackRate = rate;
-      v.play().catch(() => {});
+      play();
     };
     if (Hls.isSupported()) {
       hls.current?.destroy();
@@ -126,7 +145,7 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
       hls.current = h;
       h.on(Hls.Events.MANIFEST_PARSED, () => {
         v.playbackRate = rate;
-        v.play().catch(() => {});
+        play();
       });
       h.on(Hls.Events.ERROR, (_e, data) => {
         if (!data.fatal) return;
@@ -149,7 +168,7 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
       const pos = timeToPos(w.frags, seek.t);
       if (pos !== null && pos < (w.frags.at(-1)!.pos + w.frags.at(-1)!.dur)) {
         v.currentTime = pos;
-        v.play().catch(() => {});
+        play();
         return;
       }
     }
@@ -196,7 +215,6 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
         ref={video}
         className="h-full w-full object-contain"
         playsInline
-        muted={false}
         onTimeUpdate={onTimeUpdate}
         onPlaying={() => {
           setLoading(false);
