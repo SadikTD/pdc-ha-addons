@@ -167,8 +167,7 @@ export function NightAlertsCard({ draft, set, cameras }: { draft: Settings; set:
           </div>
 
           <div className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2">
-            <Toggle checked={!n.any_motion} onChange={(v) => setN({ any_motion: !v })} label="Only people and animals" hint="Checks the motion for a person, cat or dog and frames the picture on them. Off: any motion, even a light change" />
-            <Toggle checked={n.close_up} onChange={(v) => setN({ close_up: v })} label="Send the full view too" hint="A second picture of the whole scene, after the one framed on who moved" />
+            <Toggle checked={!n.any_motion} onChange={(v) => setN({ any_motion: !v })} label="Only people and animals" hint="Sends a picture only when a person, cat or dog is seen. Off: any motion, even a light change" />
             <Toggle checked={n.save_clip} onChange={(v) => setN({ save_clip: v })} label="Save a clip of each alert" hint="From 10 s before to 10 s after the motion, in Clips (and Google Drive, if on)" />
           </div>
         </div>

@@ -39,7 +39,6 @@ export type Settings = {
     max_per_hour: number;
     min_seconds: number;
     any_motion?: boolean;
-    close_up: boolean;
     save_clip: boolean;
   };
   whatsapp: { to: string; to_name: string; bridge_url: string };

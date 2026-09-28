@@ -11,7 +11,8 @@ import (
 
 // Night alerts: when motion starts inside the alert hours, Sentinel looks for a person or
 // animal that wasn't there before the motion (object detection on a few frames) and sends
-// a WhatsApp picture framed on them, from the full-quality recording. Motion with nobody in
+// a WhatsApp picture of the whole scene at the moment they're seen best, from the
+// full-quality recording. Motion with nobody in
 // it (light changes, shadows, rain) sends nothing. Optionally the event is saved as a clip,
 // which the Drive backup can upload.
 
@@ -251,7 +252,7 @@ func (al *Alerter) fire(cam string, e Event) {
 	}
 	rec := AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: pic.t.UnixMilli(), Event: e.ID, Status: "sending"}
 	al.put(rec)
-	err := al.deliver(cam, name, pic, n.CloseUp, s.WhatsApp.To, e.ID, pic.what, note, 15*time.Minute)
+	err := al.deliver(cam, name, pic.t, s.WhatsApp.To, e.ID, pic.what, note, 15*time.Minute)
 	al.finish(rec.ID, err)
 	if err != nil {
 		al.app.incidents.Add("error", cam, "Night alert not sent to WhatsApp: %v", err)
@@ -291,7 +292,7 @@ func (al *Alerter) fire(cam string, e Event) {
 		if b.what != "" {
 			label = b.what + " still there"
 		}
-		err = al.deliver(cam, name, b, n.CloseUp, s.WhatsApp.To, id, label, note, 5*time.Minute)
+		err = al.deliver(cam, name, b.t, s.WhatsApp.To, id, label, note, 5*time.Minute)
 		al.finish(id, err)
 		n = al.app.settings.Get().NightAlerts
 	}
@@ -301,7 +302,7 @@ type shotResult struct {
 	t    time.Time
 	box  Rect
 	size int
-	// Set when object detection chose the picture: box frames who was seen.
+	// Set when object detection chose the picture: box is who was seen.
 	detected bool
 	what     string // "Person", "2 people", "Cat", ...
 }
@@ -500,104 +501,60 @@ func cameraConfig(s Settings, cam string) Camera {
 
 // deliver renders the pictures and sends them, retrying while the bridge or WhatsApp is
 // down (e.g. during a router restart) for up to `patience`.
-func (al *Alerter) deliver(cam, name string, pic shotResult, closeUp bool, to, key, label, note string, patience time.Duration) error {
-	full, crop, err := al.pictures(cam, pic, closeUp)
+func (al *Alerter) deliver(cam, name string, t time.Time, to, key, label, note string, patience time.Duration) error {
+	img, err := al.picture(cam, t)
 	if err != nil {
 		return err
 	}
-	when := pic.t.In(time.Local).Format("Mon 2 Jan · 3:04:05 PM")
-	type msg struct {
-		img     []byte
-		caption string
-	}
+	when := t.In(time.Local).Format("Mon 2 Jan · 3:04:05 PM")
 	if label == "" {
 		label = "Motion"
 	}
 	caption := fmt.Sprintf("🚨 *%s · %s*\n%s%s", label, name, when, note)
-	msgs := []msg{{full, caption}}
-	switch {
-	case crop != nil && closeUp:
-		msgs = []msg{{crop, caption}, {full, "Full view · " + name}}
-	case crop != nil:
-		msgs = []msg{{crop, caption}}
-	}
 	deadline := time.Now().Add(patience)
-	for i, m := range msgs {
-		var bo backoff
-		for {
-			err := al.wa.SendImage(to, m.img, m.caption, fmt.Sprintf("sentinel:%s:%d", key, i+1))
-			if err == nil {
-				break
-			}
-			var be *bridgeError
-			if !errors.As(err, &be) || !be.retryable || time.Now().After(deadline) {
-				return err
-			}
-			if !sleepCtx(al.app.ctx, 5*bo.next()) {
-				return err
-			}
+	var bo backoff
+	for {
+		err := al.wa.SendImage(to, img, caption, fmt.Sprintf("sentinel:%s:1", key))
+		if err == nil {
+			break
+		}
+		var be *bridgeError
+		if !errors.As(err, &be) || !be.retryable || time.Now().After(deadline) {
+			return err
+		}
+		if !sleepCtx(al.app.ctx, 5*bo.next()) {
+			return err
 		}
 	}
 	return nil
 }
 
-// pictures returns the full scene (up to 1920 px wide) and, when useful, a close-up, both
-// decoded from the full-quality recording. With a detection the close-up is always made:
-// who was seen in the middle, with the space around them. Without one (plain motion) it's
-// made only when asked for, around the area that moved.
-func (al *Alerter) pictures(cam string, pic shotResult, closeUp bool) (full, crop []byte, err error) {
+// picture returns the full scene (up to 1920 px wide), decoded from the full-quality
+// recording. Alerts always show the whole picture, never a crop.
+func (al *Alerter) picture(cam string, t time.Time) (img []byte, err error) {
 	ctx := al.app.ctx
-	t, box := pic.t, pic.box
 	// The recording reaches the disk a few seconds after the fact.
 	for deadline := time.Now().Add(30 * time.Second); ; {
-		full, err = al.app.decodeFrame(ctx, cam, t, "scale='min(1920,iw)':-2", 3, true)
+		img, err = al.app.decodeFrame(ctx, cam, t, "scale='min(1920,iw)':-2", 3, true)
 		if err == nil || time.Now().After(deadline) || !sleepCtx(ctx, 2*time.Second) {
 			break
 		}
 	}
-	if full == nil {
+	if img == nil {
 		// Not recording right now: fall back to the live substream.
-		if full, err = al.app.go2rtc.Frame(ctx, cam+"_sub"); err != nil {
-			return nil, nil, fmt.Errorf("no picture available: %v", err)
-		}
-		return full, nil, nil
-	}
-	if (pic.detected || closeUp) && box.W > 0 && box.H > 0 {
-		r := closeUpRect(box)
-		if pic.detected {
-			r = frameRect(box)
-		}
-		if r.W*r.H < 0.6 {
-			// At least 720 px tall; larger cameras keep their full detail.
-			vf := fmt.Sprintf("crop=trunc(iw*%.4f/2)*2:trunc(ih*%.4f/2)*2:trunc(iw*%.4f):trunc(ih*%.4f),scale=-2:'max(720,trunc(ih/2)*2)':flags=lanczos", r.W, r.H, r.X, r.Y)
-			crop, _ = al.app.decodeFrame(ctx, cam, t, vf, 2, true)
+		if img, err = al.app.go2rtc.Frame(ctx, cam+"_sub"); err != nil {
+			return nil, fmt.Errorf("no picture available: %v", err)
 		}
 	}
-	return full, crop, nil
+	return img, nil
 }
 
-// frameRect frames who was seen: them in the middle with the space around them (where
-// they are matters as much as who), about 4:3 on a 16:9 camera, kept inside the frame.
+// frameRect is the area around a box that detection zooms into for a second look: about
+// 4:3 on a 16:9 camera, kept inside the frame.
 func frameRect(b Rect) Rect {
 	cx, cy := b.X+b.W/2, b.Y+b.H/2
 	h := min(max(b.H*1.6, 0.5), 1)
 	w := min(max(b.W*1.8, h*0.75), 1)
-	x := min(max(cx-w/2, 0), 1-w)
-	y := min(max(cy-h/2, 0), 1-h)
-	return Rect{X: x, Y: y, W: w, H: h}
-}
-
-// closeUpRect widens the motion box with some margin, keeps a sensible shape (between
-// portrait 3:4 and 16:9 on a 16:9 frame) and keeps it inside the frame.
-func closeUpRect(b Rect) Rect {
-	cx, cy := b.X+b.W/2, b.Y+b.H/2
-	w, h := max(b.W*1.5, 0.2), max(b.H*1.5, 0.2)
-	if ar := w * 16 / (h * 9); ar > 16.0/9 {
-		h = w
-	} else if ar < 0.75 {
-		w = h * 27 / 64
-	}
-	w, h = min(w, 1), min(h, 1)
 	x := min(max(cx-w/2, 0), 1-w)
 	y := min(max(cy-h/2, 0), 1-h)
 	return Rect{X: x, Y: y, W: w, H: h}
@@ -654,7 +611,7 @@ func (al *Alerter) Test(cam string) error {
 	id := fmt.Sprintf("test-%d", time.Now().UnixMilli())
 	rec := AlertRecord{ID: id, Camera: cam, CameraName: name, At: t.UnixMilli(), Status: "sending", Test: true}
 	al.put(rec)
-	err := al.deliver(cam, name, shotResult{t: t}, false, s.WhatsApp.To, id, "Test", "", 0)
+	err := al.deliver(cam, name, t, s.WhatsApp.To, id, "Test", "", 0)
 	al.finish(id, err)
 	return err
 }

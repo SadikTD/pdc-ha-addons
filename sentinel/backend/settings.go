@@ -90,10 +90,8 @@ type NightAlerts struct {
 	// Motion must last this many seconds (filters insects, rain and IR flicker).
 	MinSeconds int `json:"min_seconds"`
 	// Alert on any motion. Off (the default): only when a person, cat or dog that
-	// wasn't there before is seen; the picture is framed on them.
+	// wasn't there before is seen.
 	AnyMotion bool `json:"any_motion"`
-	// Two pictures per alert: a close-up of who or what moved, then the full view.
-	CloseUp bool `json:"close_up"`
 	// Save a clip of each alerted event (and back it up if Drive backup is on).
 	SaveClip bool `json:"save_clip"`
 }
@@ -133,7 +131,7 @@ func defaultSettings() Settings {
 		ClipRetentionDays:  30,
 		NightAlerts: NightAlerts{
 			From: "23:00", To: "06:00", Cameras: []string{}, CooldownSeconds: 30, FollowupSeconds: 60, MaxPerHour: 30,
-			MinSeconds: 2, CloseUp: false, SaveClip: true,
+			MinSeconds: 2, SaveClip: true,
 		},
 		Drive: DriveBackup{Alerts: true, MotionCameras: []string{}, QuotaGB: 10, RetentionDays: 90},
 	}

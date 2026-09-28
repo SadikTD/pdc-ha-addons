@@ -87,8 +87,8 @@ flooding the chat.
 
 **Only people and animals** (on by default): Sentinel checks several frames across the
 motion with a small object detector (YOLOX-tiny) for a person, cat or dog, and sends
-the frame where they're seen best, framed with them in the middle and the caption
-saying who ("Person · Ground Floor", "2 people · …", "Cat · …"). If nothing is found
+the frame where they're seen best, always as the full picture, with the caption saying
+who ("Person · Ground Floor", "2 people · …", "Cat · …"). If nothing is found
 in the whole picture, it zooms into the area that moved and looks again, so a cat far
 down a corridor is still caught. People and animals that were already there before the
 motion (a sleeping cat) and those in ignore zones don't count. Motion with nobody in it
@@ -98,8 +98,7 @@ looks at, never continuously, taking about 0.2 s per frame on a Raspberry Pi 5. 
 can't run, alerts fall back to plain motion (below) and a warning is logged.
 
 With it off, any motion alerts: Sentinel sends the frame where something stands out
-most from the empty scene just before. **Send the full view too** adds the whole scene
-as a second picture. Optionally each alert is saved as a clip. There is no face
+most from the empty scene just before. Optionally each alert is saved as a clip. There is no face
 recognition.
 
 Messages go through the **PDC WhatsApp Bridge** add-on (2.1.0 or newer). In Settings,
