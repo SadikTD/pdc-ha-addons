@@ -1,0 +1,124 @@
+// Everything is relative: the app runs under a Home Assistant ingress prefix.
+
+export type Rect = { x: number; y: number; w: number; h: number };
+
+export type Camera = {
+  id: string;
+  name: string;
+  main_url: string;
+  sub_url: string;
+  enabled: boolean;
+  record: boolean;
+  audio: boolean;
+  motion: boolean;
+  retain_days: number;
+  motion_sensitivity: number;
+  motion_masks: Rect[];
+};
+
+export type Settings = {
+  cameras: Camera[];
+  min_free_gb: number;
+  notify_service: string;
+  notify_after_minutes: number;
+  quiet_windows: string[];
+  mqtt_enabled: boolean;
+};
+
+export type StreamInfo = { video_codec: string; width: number; height: number; fps: number; audio_codec: string };
+
+export type RecStatus = {
+  state: "recording" | "starting" | "stalled" | "reconnecting" | "offline";
+  since: number;
+  last_error?: string;
+  restarts_24h: number;
+  bitrate_kbps: number;
+  last_write: number;
+  audio: boolean;
+  stream: StreamInfo;
+};
+
+export type MotionStatus = { state: string; active: boolean; score: number; error?: string };
+
+export type SentinelEvent = { id: string; camera: string; start: number; end: number; peak: number; thumb: boolean };
+
+export type CamStorage = { bytes: number; count: number; oldest: number; newest: number; rate_bph: number };
+
+export type CameraStatus = Camera & {
+  recorder: RecStatus | null;
+  motion: MotionStatus | null;
+  storage: CamStorage;
+  last_event: SentinelEvent | null;
+};
+
+export type ClockStatus = {
+  synced: boolean;
+  offset_ms: number;
+  last_check: number;
+  last_success: number;
+  server: string;
+  error?: string;
+  jumps: number;
+};
+
+export type Status = {
+  version: string;
+  uptime_ms: number;
+  now: number;
+  cameras: CameraStatus[];
+  storage: {
+    disk: { total: number; free: number; used: number };
+    used: number;
+    rate_bph: number;
+    capacity_days: number;
+    min_free_gb: number;
+    orphans: { id: string; bytes: number; count: number }[] | null;
+  };
+  clock: ClockStatus;
+  live: boolean;
+  mqtt: { connected: boolean; error: string };
+  health: boolean;
+};
+
+export type Span = { s: number; e: number };
+export type Incident = { t: number; level: "info" | "warn" | "error"; camera?: string; message: string };
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    cache: "no-store",
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+  return data as T;
+}
+
+export const api = {
+  status: () => request<Status>("GET", "api/status"),
+  settings: () => request<Settings>("GET", "api/settings"),
+  saveSettings: (s: Settings) => request<Settings>("PUT", "api/settings", s),
+  testStream: (url: string, camera?: string, field?: string) =>
+    request<{ ok: boolean; error?: string; info?: StreamInfo }>("POST", "api/test-stream", { url, camera, field }),
+  coverage: (cam: string, from: number, to: number) => request<Span[]>("GET", `api/recordings/${cam}?from=${from}&to=${to}`),
+  activity: (cam: string, from: number, to: number, step: number) =>
+    request<[number, number][]>("GET", `api/activity/${cam}?from=${from}&to=${to}&step=${step}`),
+  events: (opts: { cameras?: string[]; from?: number; to?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (opts.cameras?.length) q.set("cameras", opts.cameras.join(","));
+    if (opts.from) q.set("from", String(opts.from));
+    if (opts.to) q.set("to", String(opts.to));
+    if (opts.limit) q.set("limit", String(opts.limit));
+    return request<SentinelEvent[]>("GET", `api/events?${q}`);
+  },
+  incidents: (limit = 200) => request<Incident[]>("GET", `api/incidents?limit=${limit}`),
+  restartCamera: (id: string) => request<{ ok: boolean }>("POST", `api/cameras/${id}/restart`),
+  deleteRecordings: (id: string) => request<{ ok: boolean }>("DELETE", `api/recordings/${id}`),
+};
+
+export const snapshotURL = (cam: string, hq = false, bust = 0) => `api/cameras/${cam}/snapshot.jpg?${hq ? "hq=1&" : ""}t=${bust}`;
+export const thumbURL = (e: SentinelEvent) => `api/events/${e.camera}/${e.id}/thumb.jpg`;
+export const vodURL = (cam: string, from: number, to: number) => `api/vod.m3u8?camera=${cam}&from=${Math.round(from)}&to=${Math.round(to)}`;
+export const exportURL = (cam: string, from: number, to: number) => `api/export/${cam}?from=${Math.round(from)}&to=${Math.round(to)}`;

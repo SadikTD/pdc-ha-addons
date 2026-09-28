@@ -1,0 +1,33 @@
+# Backend: one static Go binary.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+# The Supervisor passes the add-on version.
+ARG BUILD_VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${BUILD_VERSION}" -o /sentinel .
+
+FROM alpine:3.24
+
+# Supervisor passes the target architecture (aarch64 / amd64).
+ARG BUILD_ARCH=aarch64
+
+RUN apk add --no-cache ffmpeg tzdata ca-certificates
+
+# go2rtc (live view only; recording never depends on it), pinned by checksum.
+RUN set -eux; \
+    case "${BUILD_ARCH}" in \
+      aarch64) arch=arm64; sha=359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50 ;; \
+      amd64)   arch=amd64; sha=32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6 ;; \
+      *) echo "unsupported arch ${BUILD_ARCH}"; exit 1 ;; \
+    esac; \
+    wget -qO /usr/local/bin/go2rtc "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.14/go2rtc_linux_${arch}"; \
+    echo "${sha}  /usr/local/bin/go2rtc" | sha256sum -c -; \
+    chmod +x /usr/local/bin/go2rtc
+
+COPY --from=build /sentinel /usr/local/bin/sentinel
+# Prebuilt UI (source in frontend/, built with `npm run build`).
+COPY www/ /app/www/
+
+CMD ["/usr/local/bin/sentinel"]

@@ -1,0 +1,67 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-ink-950: #05070b;
+  --color-ink-900: #0a0d14;
+  --color-ink-850: #0e121b;
+  --color-ink-800: #131824;
+  --color-ink-700: #1c2230;
+  --color-ink-600: #2a3142;
+  --color-accent: #8b5cf6;
+  --color-accent-2: #22d3ee;
+  --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
+  --animate-glow: glow 1.4s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 0 1px rgb(251 191 36 / 0.9), 0 0 24px 2px rgb(251 191 36 / 0.35); }
+  50% { box-shadow: 0 0 0 1px rgb(251 191 36 / 0.5), 0 0 10px 0 rgb(251 191 36 / 0.15); }
+}
+@keyframes shimmer {
+  from { background-position: -400px 0; }
+  to { background-position: 400px 0; }
+}
+
+html, body, #root { height: 100%; }
+body {
+  @apply bg-ink-950 text-slate-200 antialiased;
+  background-image:
+    radial-gradient(1200px 600px at 10% -10%, rgb(139 92 246 / 0.10), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, rgb(34 211 238 / 0.07), transparent 60%);
+  background-attachment: fixed;
+  font-feature-settings: "cv11", "ss01";
+}
+
+::selection { background: rgb(139 92 246 / 0.4); }
+* { scrollbar-width: thin; scrollbar-color: #2a3142 transparent; }
+
+@utility glass {
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.045), rgb(255 255 255 / 0.02));
+  border: 1px solid rgb(255 255 255 / 0.07);
+  backdrop-filter: blur(14px);
+}
+@utility text-gradient {
+  background: linear-gradient(90deg, #a78bfa, #22d3ee);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@utility skeleton {
+  background: linear-gradient(90deg, #131824 0%, #1c2230 50%, #131824 100%);
+  background-size: 800px 100%;
+  animation: var(--animate-shimmer);
+}
+
+video-stream { display: block; width: 100%; height: 100%; }
+video-stream > div { display: none !important; } /* go2rtc status overlay */
+video-stream video { width: 100% !important; height: 100% !important; object-fit: contain; background: #000; }
+.cover video-stream video { object-fit: cover; }
+
+input[type="range"] { accent-color: #8b5cf6; }

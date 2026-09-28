@@ -1,5 +1,16 @@
 # PDC Home Assistant add-ons
 
+## Sentinel
+
+Reliable 24/7 camera recorder (NVR) with a modern UI, built to keep recording through router restarts and power cuts.
+
+- Records each camera's main stream without re-encoding into 1-minute, power-cut-safe MP4 files. A watchdog restarts any stream that stalls for 20 s and retries dropped cameras forever.
+- Corrects timestamps itself when the host clock is wrong (e.g. after a power cut with the internet down); file names are unique, so nothing is ever overwritten.
+- Sidebar app: live grid, full-quality live view, zoomable recordings timeline with motion heatmap, events with thumbnails, clip export, system health and storage forecast, and a Settings page to add or edit any number of cameras.
+- Motion detection on the substream, with ignore zones; MQTT motion/recording sensors and snapshot cameras; outage alerts with quiet windows.
+
+See [sentinel/DOCS.md](sentinel/DOCS.md). UI source is in `sentinel/frontend` (`npm run build` writes `sentinel/www`).
+
 ## PDC WhatsApp Bridge
 
 Self-hosted [Baileys](https://github.com/WhiskeySockets/Baileys) sender used by the Pitch Duplicate Checker Worker.
