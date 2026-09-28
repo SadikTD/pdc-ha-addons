@@ -23,6 +23,7 @@ type App struct {
 	clips     *ClipStore
 	secrets   *SecretStore
 	alerts    *Alerter
+	detector  *Detector
 	drive     *Drive
 	breakdown atomic.Value // map[string]int64: bytes per data type
 	incidents *IncidentLog

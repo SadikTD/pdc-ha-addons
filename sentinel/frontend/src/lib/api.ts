@@ -38,6 +38,7 @@ export type Settings = {
     followup_seconds: number;
     max_per_hour: number;
     min_seconds: number;
+    any_motion?: boolean;
     close_up: boolean;
     save_clip: boolean;
   };

@@ -54,7 +54,8 @@ through router restarts, power cuts and flaky cameras.
   the timeline always visible (the grid scrolls rather than shrinking videos too small).
   The timeline works like a camera's: drag to scrub with previews on every camera, let
   go to play. Previous/next motion on any camera, up to 8×, enlarge one camera (the
-  others stay in a strip), listen to one camera.
+  others stay in a strip; the enlarged one zooms like a camera's player: scroll, drag,
+  double-click, pinch, + / − / 0), listen to one camera.
 - **Go to (G):** on a camera or in Playback, type a moment the way you'd say it
   ("yesterday 3:15 pm", "22:40", "mon 9am", "27 sep 2pm", "10 min ago") or pick a
   date and time.
@@ -77,18 +78,29 @@ through router restarts, power cuts and flaky cameras.
 ## Night alerts on WhatsApp
 
 Between the hours you choose (default 23:00–06:00), motion on the selected cameras
-sends WhatsApp pictures: a close-up of the area that moved and the full scene, both
-taken from the full-quality recording at the moment with the most movement. Motion
+sends a WhatsApp picture of who moved, from the full-quality recording. Motion
 shorter than the minimum length (insects, rain, IR flicker) is ignored, and each camera
 waits the chosen gap before alerting again; motion during the gap isn't dropped, it's
 sent as soon as the gap ends. While motion continues, a fresh picture can follow every
 15 s to 2 min, and an hourly limit per camera stops rain or a swaying tree from
-flooding the chat. The picture isn't just "the moment of most motion": Sentinel decodes
-several full-quality frames across the motion and sends the one where something stands
-out most from the empty scene just before, with the close-up around it. If nothing
-visible moved (a light change, a shadow, noise), no alert is sent and the reason shows
-under Recent alerts. Optionally each alert is saved as a clip. This is motion only;
-there is no person or face recognition.
+flooding the chat.
+
+**Only people and animals** (on by default): Sentinel checks several frames across the
+motion with a small object detector (YOLOX-tiny) for a person, cat or dog, and sends
+the frame where they're seen best, framed with them in the middle and the caption
+saying who ("Person · Ground Floor", "2 people · …", "Cat · …"). If nothing is found
+in the whole picture, it zooms into the area that moved and looks again, so a cat far
+down a corridor is still caught. People and animals that were already there before the
+motion (a sleeping cat) and those in ignore zones don't count. Motion with nobody in it
+(a light change, the camera switching to night mode, a shadow) sends nothing; the
+reason shows under Recent alerts. The detector only runs on the few frames an alert
+looks at, never continuously, taking about 0.2 s per frame on a Raspberry Pi 5. If it
+can't run, alerts fall back to plain motion (below) and a warning is logged.
+
+With it off, any motion alerts: Sentinel sends the frame where something stands out
+most from the empty scene just before. **Send the full view too** adds the whole scene
+as a second picture. Optionally each alert is saved as a clip. There is no face
+recognition.
 
 Messages go through the **PDC WhatsApp Bridge** add-on (2.1.0 or newer). In Settings,
 paste the bridge's `api_token`, then choose the chat: the bridge's recipient number or

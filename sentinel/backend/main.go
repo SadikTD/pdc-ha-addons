@@ -58,6 +58,7 @@ func main() {
 		activity:  newActivityStore(filepath.Join(media, "activity")),
 		previews:  newPreviewStore(filepath.Join(media, "previews")),
 		incidents: incidents,
+		detector:  newDetector(),
 		go2rtc:    newGo2RTC(filepath.Join(os.TempDir(), "go2rtc.yaml"), incidents),
 		mqtt:      newMQTT(),
 		started:   time.Now(),

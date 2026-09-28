@@ -9,10 +9,11 @@ import (
 	"time"
 )
 
-// Night alerts: when motion starts inside the alert hours, Sentinel sends WhatsApp pictures
-// of the moment with the most movement: a close-up of the area that moved (full resolution,
-// from the recording) and the whole scene. Optionally the event is saved as a clip, which
-// the Drive backup can upload.
+// Night alerts: when motion starts inside the alert hours, Sentinel looks for a person or
+// animal that wasn't there before the motion (object detection on a few frames) and sends
+// a WhatsApp picture framed on them, from the full-quality recording. Motion with nobody in
+// it (light changes, shadows, rain) sends nothing. Optionally the event is saved as a clip,
+// which the Drive backup can upload.
 
 type alertSample struct {
 	t     time.Time
@@ -40,6 +41,8 @@ type Alerter struct {
 	samples map[string][]alertSample
 	cams    map[string]*camAlerts
 	log     []AlertRecord // newest last
+	// Last time a detection failure was reported (at most one warning an hour).
+	detectWarned time.Time
 }
 
 // camAlerts is one camera's alert state.
@@ -219,7 +222,7 @@ func (al *Alerter) fire(cam string, e Event) {
 	for {
 		to := time.Now()
 		hint := al.best(cam, from.UnixMilli(), to.UnixMilli())
-		if pic, found = al.shot(cfg, bg, from, to, hint.t); found {
+		if pic, found = al.shot(cfg, bg, from, to, hint.t, n.AnyMotion); found {
 			break
 		}
 		cur, ok := al.app.events.Get(cam, e.ID)
@@ -232,7 +235,11 @@ func (al *Alerter) fire(cam string, e Event) {
 		}
 	}
 	if !found {
-		al.put(AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: ev.Start, Event: e.ID, Status: "skipped", Error: "nothing visible moved (light change or noise)"})
+		why := "nothing visible moved (light change or noise)"
+		if pic.detected {
+			why = "no person or animal seen"
+		}
+		al.put(AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: ev.Start, Event: e.ID, Status: "skipped", Error: why})
 		return
 	}
 
@@ -244,7 +251,7 @@ func (al *Alerter) fire(cam string, e Event) {
 	}
 	rec := AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: pic.t.UnixMilli(), Event: e.ID, Status: "sending"}
 	al.put(rec)
-	err := al.deliver(cam, name, pic.t, pic.box, n.CloseUp, s.WhatsApp.To, e.ID, "", note, 15*time.Minute)
+	err := al.deliver(cam, name, pic, n.CloseUp, s.WhatsApp.To, e.ID, pic.what, note, 15*time.Minute)
 	al.finish(rec.ID, err)
 	if err != nil {
 		al.app.incidents.Add("error", cam, "Night alert not sent to WhatsApp: %v", err)
@@ -268,7 +275,7 @@ func (al *Alerter) fire(cam string, e Event) {
 			return // the motion stopped; the next motion is a new alert
 		}
 		hint := al.best(cam, from.UnixMilli(), time.Now().UnixMilli())
-		b, seen := al.shot(cfg, bg, from, time.Now(), hint.t)
+		b, seen := al.shot(cfg, bg, from, time.Now(), hint.t, n.AnyMotion)
 		if !seen {
 			continue // nothing visible this time; look again next round
 		}
@@ -280,7 +287,11 @@ func (al *Alerter) fire(cam string, e Event) {
 		}
 		id := fmt.Sprintf("%s-f%d", e.ID, i)
 		al.put(AlertRecord{ID: id, Camera: cam, CameraName: name, At: b.t.UnixMilli(), Event: e.ID, Status: "sending"})
-		err = al.deliver(cam, name, b.t, b.box, n.CloseUp, s.WhatsApp.To, id, "Still moving", note, 5*time.Minute)
+		label := "Still moving"
+		if b.what != "" {
+			label = b.what + " still there"
+		}
+		err = al.deliver(cam, name, b, n.CloseUp, s.WhatsApp.To, id, label, note, 5*time.Minute)
 		al.finish(id, err)
 		n = al.app.settings.Get().NightAlerts
 	}
@@ -290,6 +301,9 @@ type shotResult struct {
 	t    time.Time
 	box  Rect
 	size int
+	// Set when object detection chose the picture: box frames who was seen.
+	detected bool
+	what     string // "Person", "2 people", "Cat", ...
 }
 
 const (
@@ -299,11 +313,11 @@ const (
 	minShotBlob = 18
 )
 
-// shot looks at several full-quality frames between from and to and picks the one that
-// differs most, as one solid shape, from the scene before the motion (bg). That is the
-// frame where the person or thing is most visible, and the shape gives the close-up.
-// found is false when nothing visible moved (a light change, noise, a shadow).
-func (al *Alerter) shot(cam Camera, bg, from, to, hint time.Time) (shotResult, bool) {
+// shot picks the best picture between from and to. With object detection it's the frame
+// where a person or animal that wasn't in the scene before the motion (bg) is seen most
+// clearly; otherwise (any-motion alerts, or detection unavailable) the frame that differs
+// most, as one solid shape, from bg. found is false when there is nothing worth sending.
+func (al *Alerter) shot(cam Camera, bg, from, to, hint time.Time, anyMotion bool) (shotResult, bool) {
 	ctx := al.app.ctx
 	// The newest footage reaches the disk a few seconds late.
 	for deadline := time.Now().Add(20 * time.Second); ; {
@@ -318,12 +332,6 @@ func (al *Alerter) shot(cam Camera, bg, from, to, hint time.Time) (shotResult, b
 			return shotResult{}, false
 		}
 	}
-	base, err := al.app.decodeGray(ctx, cam.ID, bg, shotW, shotH)
-	if err != nil {
-		// No recording to compare with: can't judge, so don't hold the alert back.
-		return shotResult{t: hint}, true
-	}
-	mask := maskGrid(cam, shotW, shotH)
 	span := to.Sub(from)
 	n := min(max(int(span/(700*time.Millisecond))+1, 3), 8)
 	times := []time.Time{}
@@ -333,6 +341,137 @@ func (al *Alerter) shot(cam Camera, bg, from, to, hint time.Time) (shotResult, b
 	if hint.After(from) && hint.Before(to) {
 		times = append(times, hint)
 	}
+	if !anyMotion && al.app.detector.Available() {
+		r, err := al.shotObjects(cam, bg, hint, times)
+		if err == nil {
+			return r, r.what != ""
+		}
+		al.mu.Lock()
+		if time.Since(al.detectWarned) > time.Hour {
+			al.detectWarned = time.Now()
+			al.app.incidents.Add("warn", cam.ID, "Object detection failed, night alerts use plain motion for now: %v", err)
+		}
+		al.mu.Unlock()
+	}
+	return al.shotMotion(cam, bg, hint, times)
+}
+
+// shotObjects runs object detection on the frames. When nothing is recognised in the
+// whole picture, it looks again, zoomed in on the area that moved (small or distant
+// people and animals). It fails only when no frame could be checked at all.
+func (al *Alerter) shotObjects(cam Camera, bg, hint time.Time, times []time.Time) (shotResult, error) {
+	best, err := al.scanObjects(cam, bg, times, fullFrame)
+	if err != nil || best.what != "" {
+		return best, err
+	}
+	m, ok := al.shotMotion(cam, bg, hint, times)
+	if !ok || m.box.W == 0 {
+		return best, nil
+	}
+	near := []time.Time{}
+	for _, t := range times {
+		if d := t.Sub(m.t); d > -1500*time.Millisecond && d < 1500*time.Millisecond {
+			near = append(near, t)
+		}
+	}
+	if r := frameRect(m.box); r.W*r.H < 0.6 {
+		if b, err := al.scanObjects(cam, bg, near, r); err == nil && b.what != "" {
+			return b, nil
+		}
+	}
+	return best, nil
+}
+
+// scanObjects looks for people and animals in part r of the frames. Those already in the
+// scene before the motion (a sleeping cat, a coat that looks like a person) and those in
+// ignore zones don't count.
+func (al *Alerter) scanObjects(cam Camera, bg time.Time, times []time.Time, r Rect) (shotResult, error) {
+	ctx := al.app.ctx
+	before, _ := al.app.detectAt(ctx, cam.ID, bg, r)
+	mask := maskGrid(cam, shotW, shotH)
+	best := shotResult{detected: true}
+	top := 0.0
+	checked := 0
+	var lastErr error
+	for _, t := range times {
+		dets, err := al.app.detectAt(ctx, cam.ID, t, r)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		checked++
+		var moving []Detection
+		for _, d := range dets {
+			cx, cy := int((d.Box.X+d.Box.W/2)*shotW), int((d.Box.Y+d.Box.H/2)*shotH)
+			if mask[min(max(cy, 0), shotH-1)*shotW+min(max(cx, 0), shotW-1)] {
+				continue
+			}
+			still := false
+			for _, b := range before {
+				if iou(d.Box, b.Box) > 0.5 {
+					still = true
+					break
+				}
+			}
+			if !still {
+				moving = append(moving, d)
+			}
+		}
+		// Detections come best first.
+		if len(moving) == 0 || moving[0].Score <= top {
+			continue
+		}
+		top = moving[0].Score
+		box := moving[0].Box
+		for _, d := range moving[1:] {
+			box = unionRect(box, d.Box)
+		}
+		best = shotResult{t: t, box: box, detected: true, what: describeDetections(moving)}
+	}
+	if checked == 0 && lastErr != nil {
+		return shotResult{}, lastErr
+	}
+	return best, nil
+}
+
+// describeDetections names who was seen, for the caption.
+func describeDetections(ds []Detection) string {
+	people := 0
+	for _, d := range ds {
+		if d.Label == "person" {
+			people++
+		}
+	}
+	switch {
+	case people > 1:
+		return fmt.Sprintf("%d people", people)
+	case people == 1:
+		return "Person"
+	case ds[0].Label == "cat":
+		return "Cat"
+	case ds[0].Label == "dog":
+		return "Dog"
+	}
+	return "Motion"
+}
+
+func unionRect(a, b Rect) Rect {
+	x0, y0 := min(a.X, b.X), min(a.Y, b.Y)
+	x1, y1 := max(a.X+a.W, b.X+b.W), max(a.Y+a.H, b.Y+b.H)
+	return Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
+}
+
+// shotMotion picks the frame that differs most, as one solid shape, from the scene before
+// the motion (bg); the shape gives the close-up. found is false when nothing visible moved
+// (a light change, noise, a shadow).
+func (al *Alerter) shotMotion(cam Camera, bg, hint time.Time, times []time.Time) (shotResult, bool) {
+	ctx := al.app.ctx
+	base, err := al.app.decodeGray(ctx, cam.ID, bg, shotW, shotH)
+	if err != nil {
+		// No recording to compare with: can't judge, so don't hold the alert back.
+		return shotResult{t: hint}, true
+	}
+	mask := maskGrid(cam, shotW, shotH)
 	var best shotResult
 	for _, t := range times {
 		f, err := al.app.decodeGray(ctx, cam.ID, t, shotW, shotH)
@@ -361,12 +500,12 @@ func cameraConfig(s Settings, cam string) Camera {
 
 // deliver renders the pictures and sends them, retrying while the bridge or WhatsApp is
 // down (e.g. during a router restart) for up to `patience`.
-func (al *Alerter) deliver(cam, name string, t time.Time, box Rect, closeUp bool, to, key, label, note string, patience time.Duration) error {
-	full, crop, err := al.pictures(cam, t, box, closeUp)
+func (al *Alerter) deliver(cam, name string, pic shotResult, closeUp bool, to, key, label, note string, patience time.Duration) error {
+	full, crop, err := al.pictures(cam, pic, closeUp)
 	if err != nil {
 		return err
 	}
-	when := t.In(time.Local).Format("Mon 2 Jan · 3:04:05 PM")
+	when := pic.t.In(time.Local).Format("Mon 2 Jan · 3:04:05 PM")
 	type msg struct {
 		img     []byte
 		caption string
@@ -376,8 +515,11 @@ func (al *Alerter) deliver(cam, name string, t time.Time, box Rect, closeUp bool
 	}
 	caption := fmt.Sprintf("🚨 *%s · %s*\n%s%s", label, name, when, note)
 	msgs := []msg{{full, caption}}
-	if crop != nil {
+	switch {
+	case crop != nil && closeUp:
 		msgs = []msg{{crop, caption}, {full, "Full view · " + name}}
+	case crop != nil:
+		msgs = []msg{{crop, caption}}
 	}
 	deadline := time.Now().Add(patience)
 	for i, m := range msgs {
@@ -399,10 +541,13 @@ func (al *Alerter) deliver(cam, name string, t time.Time, box Rect, closeUp bool
 	return nil
 }
 
-// pictures returns the full scene (up to 1920 px wide) and, when asked and useful, a
-// close-up of the moving area, both decoded from the full-quality recording.
-func (al *Alerter) pictures(cam string, t time.Time, box Rect, closeUp bool) (full, crop []byte, err error) {
+// pictures returns the full scene (up to 1920 px wide) and, when useful, a close-up, both
+// decoded from the full-quality recording. With a detection the close-up is always made:
+// who was seen in the middle, with the space around them. Without one (plain motion) it's
+// made only when asked for, around the area that moved.
+func (al *Alerter) pictures(cam string, pic shotResult, closeUp bool) (full, crop []byte, err error) {
 	ctx := al.app.ctx
+	t, box := pic.t, pic.box
 	// The recording reaches the disk a few seconds after the fact.
 	for deadline := time.Now().Add(30 * time.Second); ; {
 		full, err = al.app.decodeFrame(ctx, cam, t, "scale='min(1920,iw)':-2", 3, true)
@@ -417,14 +562,29 @@ func (al *Alerter) pictures(cam string, t time.Time, box Rect, closeUp bool) (fu
 		}
 		return full, nil, nil
 	}
-	if closeUp && box.W > 0 && box.H > 0 {
+	if (pic.detected || closeUp) && box.W > 0 && box.H > 0 {
 		r := closeUpRect(box)
+		if pic.detected {
+			r = frameRect(box)
+		}
 		if r.W*r.H < 0.6 {
-			vf := fmt.Sprintf("crop=trunc(iw*%.4f/2)*2:trunc(ih*%.4f/2)*2:trunc(iw*%.4f):trunc(ih*%.4f),scale=-2:720:flags=lanczos", r.W, r.H, r.X, r.Y)
+			// At least 720 px tall; larger cameras keep their full detail.
+			vf := fmt.Sprintf("crop=trunc(iw*%.4f/2)*2:trunc(ih*%.4f/2)*2:trunc(iw*%.4f):trunc(ih*%.4f),scale=-2:'max(720,trunc(ih/2)*2)':flags=lanczos", r.W, r.H, r.X, r.Y)
 			crop, _ = al.app.decodeFrame(ctx, cam, t, vf, 2, true)
 		}
 	}
 	return full, crop, nil
+}
+
+// frameRect frames who was seen: them in the middle with the space around them (where
+// they are matters as much as who), about 4:3 on a 16:9 camera, kept inside the frame.
+func frameRect(b Rect) Rect {
+	cx, cy := b.X+b.W/2, b.Y+b.H/2
+	h := min(max(b.H*1.6, 0.5), 1)
+	w := min(max(b.W*1.8, h*0.75), 1)
+	x := min(max(cx-w/2, 0), 1-w)
+	y := min(max(cy-h/2, 0), 1-h)
+	return Rect{X: x, Y: y, W: w, H: h}
 }
 
 // closeUpRect widens the motion box with some margin, keeps a sensible shape (between
@@ -494,7 +654,7 @@ func (al *Alerter) Test(cam string) error {
 	id := fmt.Sprintf("test-%d", time.Now().UnixMilli())
 	rec := AlertRecord{ID: id, Camera: cam, CameraName: name, At: t.UnixMilli(), Status: "sending", Test: true}
 	al.put(rec)
-	err := al.deliver(cam, name, t, Rect{}, false, s.WhatsApp.To, id, "Test", "", 0)
+	err := al.deliver(cam, name, shotResult{t: t}, false, s.WhatsApp.To, id, "Test", "", 0)
 	al.finish(id, err)
 	return err
 }

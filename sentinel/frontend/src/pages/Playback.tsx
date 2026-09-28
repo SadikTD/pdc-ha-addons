@@ -6,6 +6,7 @@ import { Columns2, Expand, ImageOff, Loader2, Maximize2, Minimize2, Pause, Play,
 import { SyncPlayer } from "../components/SyncPlayer";
 import { Scrubber, MIN_RANGE, MAX_RANGE } from "../components/Scrubber";
 import { JumpTo } from "../components/JumpTo";
+import { ZoomPan } from "../components/ZoomPan";
 import { Empty, IconButton } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
@@ -358,15 +359,8 @@ const Tile = memo(function Tile({
   onOpen: () => void;
 }) {
   const preview = usePreviewFrame(scrubT !== null ? id : null, scrubT);
-  return (
-    <motion.div
-      layout
-      transition={{ type: "spring", stiffness: 420, damping: 40 }}
-      style={style}
-      className={clsx("group relative aspect-video overflow-hidden rounded-xl border bg-black", focused ? "border-violet-400/40" : "border-white/[0.07]", small && "cursor-pointer")}
-      onClick={small ? onFocus : undefined}
-      onDoubleClick={small ? undefined : onOpen}
-    >
+  const picture = (
+    <>
       <SyncPlayer camera={id} master={master} playing={playing} rate={rate} epoch={epoch} muted={muted} />
       <AnimatePresence>
         {scrubT !== null && (
@@ -379,6 +373,19 @@ const Tile = memo(function Tile({
           </motion.div>
         )}
       </AnimatePresence>
+    </>
+  );
+  return (
+    <motion.div
+      layout
+      transition={{ type: "spring", stiffness: 420, damping: 40 }}
+      style={style}
+      className={clsx("group relative aspect-video overflow-hidden rounded-xl border bg-black", focused ? "border-violet-400/40" : "border-white/[0.07]", small && "cursor-pointer")}
+      onClick={small ? onFocus : undefined}
+      onDoubleClick={small || focused ? undefined : onOpen}
+    >
+      {/* The enlarged camera zooms like the Live page: scroll, drag, double-click, pinch. */}
+      {focused ? <ZoomPan resetKey={id}>{picture}</ZoomPan> : picture}
       <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 to-transparent p-2">
         <span className={clsx("font-semibold text-white drop-shadow", small ? "text-[11px]" : "text-sm")}>{name}</span>
       </div>

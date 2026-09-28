@@ -13,7 +13,8 @@ FROM alpine:3.24
 # Supervisor passes the target architecture (aarch64 / amd64).
 ARG BUILD_ARCH=aarch64
 
-RUN apk add --no-cache ffmpeg tzdata ca-certificates
+# python3 + onnxruntime: the object detector for night alerts (a separate worker process).
+RUN apk add --no-cache ffmpeg tzdata ca-certificates python3 py3-numpy py3-onnxruntime
 
 # go2rtc (live view only; recording never depends on it), pinned by checksum.
 RUN set -eux; \
@@ -25,6 +26,12 @@ RUN set -eux; \
     wget -qO /usr/local/bin/go2rtc "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.14/go2rtc_linux_${arch}"; \
     echo "${sha}  /usr/local/bin/go2rtc" | sha256sum -c -; \
     chmod +x /usr/local/bin/go2rtc
+
+# YOLOX-tiny (Apache-2.0), pinned by checksum.
+RUN set -eux; mkdir -p /app/detect; \
+    wget -qO /app/detect/yolox_tiny.onnx "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_tiny.onnx"; \
+    echo "427cc366d34e27ff7a03e2899b5e3671425c262ea2291f88bb942bc1cc70b0f7  /app/detect/yolox_tiny.onnx" | sha256sum -c -
+COPY detect/detect.py /app/detect/
 
 COPY --from=build /sentinel /usr/local/bin/sentinel
 # Prebuilt UI (source in frontend/, built with `npm run build`).
