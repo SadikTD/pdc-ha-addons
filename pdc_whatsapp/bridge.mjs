@@ -18,6 +18,8 @@ export function loadOptions(file = `${DATA}/options.json`) {
     notifications: o.ha_notifications !== false,
     offlineMinutes: Math.min(1440, Math.max(1, Number(o.offline_notify_minutes) || 10)),
     workerUrl: String(o.worker_url || '').trim().replace(/\/+$/, ''),
+    // 0 turns the "Worker can't reach this bridge" watchdog off.
+    upstreamMinutes: Math.min(1440, Math.max(0, Number(o.upstream_alert_minutes ?? 15) || 0)),
   };
   if (options.token.length < 32) throw new Error('api_token must be at least 32 characters');
   if (!/^[1-9]\d{7,14}$/.test(options.sender) || !/^[1-9]\d{7,14}$/.test(options.recipient)) {
@@ -67,7 +69,9 @@ function readJson(req, limit = 64 * 1024) {
 // `wa` exposes { status(): {connected, paired, accountOk}, send(jid, text): Promise<id>,
 // sendImage(jid, jpeg, caption): Promise<id>, groups(): Promise<[{id, name, size}]> }.
 // `events` (optional) records rejected requests and send results for the dashboard.
-export function createHandler({ options, ledger, wa, events }) {
+// `upstream` (optional) is told about each Worker heartbeat. Other senders
+// (e.g. Sentinel on the local network) don't count: they don't use the tunnel.
+export function createHandler({ options, ledger, wa, events, upstream }) {
   const note = (type, detail) => events?.add(type, detail);
   const reply = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
   return async (req, res) => {
@@ -77,10 +81,15 @@ export function createHandler({ options, ledger, wa, events }) {
       return reply(res, 200, { ok: s.connected && s.accountOk, connected: s.connected, paired: s.paired });
     }
     const route = `${req.method} ${url.pathname}`;
-    if (!['POST /send', 'POST /send-image', 'GET /chats'].includes(route)) return reply(res, 404, { status: 'not_found' });
+    if (!['POST /send', 'POST /send-image', 'GET /chats', 'POST /heartbeat'].includes(route)) return reply(res, 404, { status: 'not_found' });
     if (!tokenMatches(req.headers.authorization, options.token)) {
       note('rejected', 'Request with a wrong or missing token');
       return reply(res, 401, { status: 'unauthorized' });
+    }
+    // The Worker pings every minute over the tunnel, so silence means its route here is broken.
+    if (route === 'POST /heartbeat') {
+      upstream?.contact();
+      return reply(res, 200, { ok: true, connected: wa.status().connected });
     }
 
     // Chats a sender may pick: the configured recipient plus the groups this account is in.
@@ -136,6 +145,39 @@ export function createHandler({ options, ledger, wa, events }) {
   };
 }
 
+// Watches for the Worker going quiet (tunnel/Cloudflared down, Worker broken).
+// The Worker can't report that itself, but this bridge can still reach
+// WhatsApp, so it tells the recipient directly: once, again every `repeatMs`
+// while it lasts, and once more when the Worker is back.
+// `send(text)` resolves true when WhatsApp accepted the message.
+export function createUpstreamWatchdog({ minutes, send, notify = () => {}, events, clock = Date.now, repeatMs = 6 * 3600000 }) {
+  let last = clock(), down = false, lastAlert = null, recoveryDue = false;
+  const since = () => Math.round((clock() - last) / 60000);
+  return {
+    contact() {
+      last = clock();
+      if (down) { down = false; recoveryDue = lastAlert !== null; notify(null); events?.add('upstream_ok', 'The pitch-checker Worker reached the bridge again'); }
+    },
+    lastContact: () => last,
+    async tick() {
+      if (!minutes) return;
+      if (!down && clock() - last > minutes * 60000) {
+        down = true;
+        events?.add('upstream_lost', `No contact from the pitch-checker Worker for ${since()} minutes`);
+        notify(`The pitch-checker Worker hasn't reached this bridge for ${since()} minutes, so duplicate-pitch alerts can't be delivered. The Cloudflare tunnel (Cloudflared add-on) is the most likely cause. Alerts wait in the queue and send once it's fixed.`);
+      }
+      if (down && (lastAlert === null || clock() - lastAlert >= repeatMs)) {
+        const text = ['⚠️ *Pitch alerts are not getting through*', '',
+          `The pitch checker hasn't reached this WhatsApp bridge for ${since()} minutes, so duplicate-pitch alerts can't be delivered.`, '',
+          'Most likely the Cloudflared add-on (Cloudflare tunnel) in Home Assistant is stopped or uninstalled. New alerts are queued and will be sent once it is fixed.'].join('\n');
+        if (await send(text).catch(() => false)) lastAlert = clock();
+      }
+      if (recoveryDue && await send('✅ *Pitch alerts are getting through again*\n\nThe pitch checker can reach the WhatsApp bridge again. Any queued alerts will arrive over the next few minutes.').catch(() => false)) {
+        recoveryDue = false; lastAlert = null;
+      }
+    },
+  };
+}
 
 // Connection and activity log for the dashboard: newest last, capped, and
 // written at most every few seconds so a burst of events costs one write.

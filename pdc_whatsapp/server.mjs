@@ -4,7 +4,7 @@ import http from 'node:http';
 import { rm, mkdir, readFile } from 'node:fs/promises';
 import makeWASocket, { DisconnectReason, Browsers, fetchLatestBaileysVersion } from 'baileys';
 import pino from 'pino';
-import { DATA, loadOptions, createLedger, createHandler, createEventLog, log } from './bridge.mjs';
+import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, log } from './bridge.mjs';
 import { useAtomicAuthState } from './auth-state.mjs';
 import { createUiHandler } from './ui.mjs';
 
@@ -29,10 +29,10 @@ async function supervisor(method, path, body) {
 }
 
 // Settings sidebar bell, so a broken link is noticed without reading the add-on log.
-async function haNotify(options, message) {
+async function haNotify(options, message, id = 'pdc_whatsapp_bridge') {
   if (!process.env.SUPERVISOR_TOKEN || (message && !options.notifications)) return;
   const service = message ? 'create' : 'dismiss';
-  const body = { notification_id: 'pdc_whatsapp_bridge', ...(message ? { title: 'PDC WhatsApp Bridge', message } : {}) };
+  const body = { notification_id: id, ...(message ? { title: 'PDC WhatsApp Bridge', message } : {}) };
   const { status } = await supervisor('POST', `/core/api/services/persistent_notification/${service}`, body);
   if (status !== 200) log('Could not update Home Assistant notification');
 }
@@ -214,7 +214,21 @@ const events = createEventLog();
 events.add('started', `Add-on ${version} started`);
 const ledger = createLedger();
 const wa = startWhatsApp(options, events);
-const server = http.createServer(createHandler({ options, ledger, wa, events }));
+// Alerts the recipient directly if the Worker's heartbeats stop (tunnel down).
+const upstream = createUpstreamWatchdog({
+  minutes: options.upstreamMinutes, events,
+  notify: message => haNotify(options, message, 'pdc_whatsapp_upstream'),
+  async send(text) {
+    const s = wa.status();
+    if (!s.connected || !s.accountOk) return false; // retried next minute
+    const key = `watchdog:${Date.now()}`;
+    ledger.set(key, { state: 'sending', text, to: options.recipient, sentAt: null, error: null });
+    try { ledger.set(key, { state: 'sent', id: await wa.send(`${options.recipient}@s.whatsapp.net`, text), sentAt: Date.now() }); return true; }
+    catch (e) { ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
+  },
+});
+setInterval(() => upstream.tick().catch(e => log('Watchdog failed:', e?.message || e)), 60000).unref();
+const server = http.createServer(createHandler({ options, ledger, wa, events, upstream }));
 server.requestTimeout = 60000;
 server.listen(PORT, () => log(`Bridge listening on :${PORT}`));
 

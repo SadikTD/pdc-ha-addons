@@ -615,6 +615,8 @@ const EVENT_STYLE = {
   rejected: ['var(--critical)', 'Request rejected', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
   send_failed: ['var(--critical)', 'Send not confirmed', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
   error: ['var(--critical)', 'Error', '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16v.1"/>'],
+  upstream_lost: ['var(--critical)', 'Worker can\'t reach the bridge', '<path d="M6 6l12 12M18 6 6 18"/>'],
+  upstream_ok: ['var(--good)', 'Worker reaching the bridge again', '<path d="m5 12 5 5 9-10"/>'],
 };
 function renderActivity() {
   const series = scanSeries();

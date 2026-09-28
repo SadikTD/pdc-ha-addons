@@ -4,7 +4,7 @@ import http from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadOptions, createLedger, createHandler } from './bridge.mjs';
+import { loadOptions, createLedger, createHandler, createUpstreamWatchdog } from './bridge.mjs';
 
 const token = 'x'.repeat(40);
 const options = { token, sender: '15550000001', recipient: '15550000002' };
@@ -79,10 +79,10 @@ test('rejects malformed bodies and keys', async () => {
 test('options require a long token and international numbers', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pdc-')), file = join(dir, 'options.json');
   writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002' }));
-  assert.deepEqual(loadOptions(file), { ...options, notifications: true, offlineMinutes: 10, workerUrl: '' });
+  assert.deepEqual(loadOptions(file), { ...options, notifications: true, offlineMinutes: 10, workerUrl: '', upstreamMinutes: 15 });
   writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002',
-    ha_notifications: false, offline_notify_minutes: 30, worker_url: 'https://w.example.dev/' }));
-  assert.deepEqual(loadOptions(file), { ...options, notifications: false, offlineMinutes: 30, workerUrl: 'https://w.example.dev' });
+    ha_notifications: false, offline_notify_minutes: 30, worker_url: 'https://w.example.dev/', upstream_alert_minutes: 0 }));
+  assert.deepEqual(loadOptions(file), { ...options, notifications: false, offlineMinutes: 30, workerUrl: 'https://w.example.dev', upstreamMinutes: 0 });
   writeFileSync(file, JSON.stringify({ api_token: 'short', sender_number: '+15550000001', recipient_number: '+15550000002' }));
   assert.throws(() => loadOptions(file));
 });
@@ -115,4 +115,53 @@ test('lists chats for authorised callers', async () => {
   assert.deepEqual(await r.json(), { recipient: '+15550000002', groups: [{ id: '120363000000000001@g.us', name: 'Home', size: 3 }] });
   assert.equal((await fetch(s.base + '/chats')).status, 401);
   s.close();
+});
+
+test('only an authenticated heartbeat counts as Worker contact; local sends do not', async () => {
+  let contacts = 0;
+  const ledger = createLedger(join(mkdtempSync(join(tmpdir(), 'pdc-')), 'sent.json'));
+  const server = http.createServer(createHandler({ options, ledger, wa: online(), upstream: { contact: () => contacts++ } }));
+  await new Promise(r => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const beat = auth => fetch(base + '/heartbeat', { method: 'POST', headers: { Authorization: auth } });
+  assert.equal((await beat('Bearer wrong')).status, 401);
+  assert.equal(contacts, 0);
+  const res = await beat(`Bearer ${token}`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true, connected: true });
+  assert.equal(contacts, 1);
+  await fetch(base + '/send', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(msg) });
+  assert.equal(contacts, 1); // e.g. Sentinel sending locally must not mask a dead tunnel
+  server.close();
+});
+
+test('watchdog alerts once after silence, repeats every 6 hours, and reports recovery', async () => {
+  let t = 0; const sent = [], notes = [];
+  let accept = true;
+  const w = createUpstreamWatchdog({ minutes: 15, clock: () => t, send: async text => { if (accept) sent.push(text); return accept; }, notify: m => notes.push(m) });
+  t = 14 * 60000; await w.tick();
+  assert.equal(sent.length, 0);
+  t = 16 * 60000; accept = false; await w.tick(); // WhatsApp offline: retried next minute
+  assert.equal(sent.length, 0); assert.equal(notes.length, 1); assert.match(notes[0], /Cloudflared/);
+  accept = true; t += 60000; await w.tick();
+  assert.equal(sent.length, 1); assert.match(sent[0], /not getting through/);
+  t += 60000; await w.tick();
+  assert.equal(sent.length, 1); // no spam
+  t += 6 * 3600000; await w.tick();
+  assert.equal(sent.length, 2); // reminder while it lasts
+  w.contact(); assert.equal(notes.at(-1), null); // HA notification dismissed
+  await w.tick();
+  assert.equal(sent.length, 3); assert.match(sent[2], /getting through again/);
+  t += 60 * 60000; w.contact(); await w.tick();
+  assert.equal(sent.length, 3); // healthy: silent
+});
+
+test('watchdog with 0 minutes is off; recovery before any alert is silent', async () => {
+  let t = 0; const sent = [];
+  const off = createUpstreamWatchdog({ minutes: 0, clock: () => t, send: async x => sent.push(x) });
+  t = 99 * 3600000; await off.tick();
+  const w = createUpstreamWatchdog({ minutes: 15, clock: () => t, send: async () => false, notify: () => {} });
+  t += 20 * 60000; await w.tick(); // WhatsApp down, nothing delivered
+  w.contact(); await w.tick();
+  assert.equal(sent.length, 0);
 });
