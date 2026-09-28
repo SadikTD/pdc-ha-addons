@@ -97,7 +97,8 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
       // motion heatmap
       const bw = Math.max(1.5, (10_000 / range) * w);
       for (const [t, score] of lane.activity) {
-        if (t < start - 60_000 || t > end) continue;
+        // Ignore sub-threshold flicker (noise, leaves) so real activity stands out.
+        if (score < 0.3 || t < start - 60_000 || t > end) continue;
         const k = Math.min(1, Math.sqrt(score / 6));
         const h = Math.max(3, k * (laneHeight - 8));
         g.fillStyle = `rgba(251,191,36,${0.35 + 0.6 * k})`;

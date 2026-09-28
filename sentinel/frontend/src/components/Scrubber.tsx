@@ -129,7 +129,8 @@ export function Scrubber(p: Props) {
     // motion heatmap
     const bw = Math.max(1.5, (10_000 / range) * width);
     for (const [t, score] of p.activity) {
-      if (t < start - 60_000 || t > end) continue;
+      // Ignore sub-threshold flicker (noise, leaves) so real activity stands out.
+      if (score < 0.3 || t < start - 60_000 || t > end) continue;
       const k = Math.min(1, Math.sqrt(score / 6));
       const h = Math.max(3, k * (TRACK_H - 10));
       g.fillStyle = `rgba(251,191,36,${0.3 + 0.6 * k})`;
