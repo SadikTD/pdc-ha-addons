@@ -63,9 +63,14 @@ func main() {
 		started:   time.Now(),
 	}
 	app.heartbeat.Store(time.Now().UnixMilli())
+	app.secrets = loadSecrets(filepath.Join(configDir, "secrets.json"))
+	app.drive = newDrive(app)
 	app.clips = newClipStore(filepath.Join(media, "exports"), app)
+	app.alerts = newAlerter(app, filepath.Join(media, "alerts.json"))
 	app.Init()
 	go app.clips.Run(ctx)
+	go app.drive.Run(ctx)
+	go installCard(env("SENTINEL_HA_CONFIG", "/homeassistant"))
 	go app.measureSizes()
 
 	go clock.Run(ctx)

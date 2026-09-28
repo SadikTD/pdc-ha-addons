@@ -22,6 +22,8 @@ type Props = {
   onScrub: (t: number) => void;
   onScrubEnd: (t: number) => void;
   onRange: (r: number) => void;
+  // Before this time only motion footage is kept, so gaps there aren't missing footage.
+  fullFrom?: number;
 };
 
 export const MIN_RANGE = 60_000;
@@ -104,7 +106,7 @@ export function Scrubber(p: Props) {
     // gaps (no recording) since the first recording: faint red so missing footage stands out
     const first = p.spans[0]?.s;
     if (first !== undefined) {
-      let cursor = Math.max(first, start);
+      let cursor = Math.max(first, start, p.fullFrom ?? 0);
       const gapTo = Math.min(end, now);
       g.fillStyle = "rgba(244,63,94,0.10)";
       for (const s of p.spans) {

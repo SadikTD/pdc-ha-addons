@@ -460,18 +460,29 @@ func diskUsage(path string) DiskUsage {
 	return DiskUsage{Total: total, Free: free, Used: total - fs.Bfree*uint64(fs.Bsize)}
 }
 
+// Retention is how long a camera's footage is kept: everything for Days, and the files
+// that contain motion for MotionDays (when longer).
+type Retention struct {
+	Days       int
+	MotionDays int
+}
+
+func (r Retention) Longest() int { return max(r.Days, r.MotionDays) }
+
 // Cleanup enforces retention and the free-space floor. It never touches files being written.
-func (st *Store) Cleanup(retain map[string]int, defaultDays int, minFreeGB float64) {
+// motion holds each camera's motion spans (merged, sorted, already padded).
+func (st *Store) Cleanup(pol map[string]Retention, def Retention, minFreeGB float64, motion map[string][]Span) {
 	now := time.Now()
 	boot := st.clock.BootTag()
 	var expired []*Segment
 	st.mu.RLock()
 	for cam, list := range st.segs {
-		days, ok := retain[cam]
+		r, ok := pol[cam]
 		if !ok {
-			days = defaultDays
+			r = def
 		}
-		cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
+		cutoff := now.Add(-time.Duration(r.Days) * 24 * time.Hour)
+		motionCutoff := now.Add(-time.Duration(r.Longest()) * 24 * time.Hour)
 		for _, s := range list {
 			if !s.End().Before(cutoff) {
 				break
@@ -479,6 +490,9 @@ func (st *Store) Cleanup(retain map[string]int, defaultDays int, minFreeGB float
 			// A file from this boot whose time we haven't verified may only *look* old
 			// (clock set back after a power cut); keep it until the clock is known.
 			if s.Active || (s.Unverified && strings.HasPrefix(s.Session, boot)) {
+				continue
+			}
+			if s.End().After(motionCutoff) && overlaps(motion[cam], s.Start().UnixMilli(), s.End().UnixMilli()) {
 				continue
 			}
 			expired = append(expired, s)
@@ -509,6 +523,12 @@ func (st *Store) Cleanup(retain map[string]int, defaultDays int, minFreeGB float
 	if removed > 0 {
 		st.incidents.Add("warn", "", "Disk nearly full: removed %d oldest recordings to keep %.0f GB free", removed, minFreeGB)
 	}
+}
+
+// overlaps reports whether [from, to] touches any of the sorted, merged spans.
+func overlaps(spans []Span, from, to int64) bool {
+	i := sort.Search(len(spans), func(i int) bool { return spans[i].End >= from })
+	return i < len(spans) && spans[i].Start <= to
 }
 
 func (st *Store) oldest() *Segment {

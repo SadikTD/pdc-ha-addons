@@ -25,7 +25,8 @@ type MotionListener interface {
 	MotionStart(cam string, score float64)
 	MotionUpdate(cam string, score float64)
 	MotionEnd(cam string)
-	Activity(cam string, score float64)
+	// box is the part of the frame that changed (normalised), for close-up snapshots.
+	Activity(cam string, score float64, box Rect)
 	Preview(cam string, jpeg []byte)
 }
 
@@ -222,10 +223,14 @@ func (m *MotionDetector) run(ctx context.Context) {
 					continue
 				}
 				changed := 0
+				var cols [motionW]int
+				var rows [motionH]int
 				for i, v := range f {
 					d := float32(v) - bg[i]
 					if !mask[i] && (d > pixelThreshold || d < -pixelThreshold) {
 						changed++
+						cols[i%motionW]++
+						rows[i/motionW]++
 					}
 					bg[i] += d * 0.08
 				}
@@ -237,7 +242,13 @@ func (m *MotionDetector) run(ctx context.Context) {
 					}
 					score = 0
 				}
-				m.listener.Activity(m.cam.ID, score)
+				var box Rect
+				if changed > 0 {
+					x0, x1 := trimmedSpan(cols[:], changed/20)
+					y0, y1 := trimmedSpan(rows[:], changed/20)
+					box = Rect{X: float64(x0) / motionW, Y: float64(y0) / motionH, W: float64(x1-x0+1) / motionW, H: float64(y1-y0+1) / motionH}
+				}
+				m.listener.Activity(m.cam.ID, score, box)
 				if score >= thr {
 					consecutive++
 				} else {
@@ -284,4 +295,21 @@ func (m *MotionDetector) run(ctx context.Context) {
 		}
 	}
 	m.set(func(s *MotionStatus) { s.Active, s.Score = false, 0 })
+}
+
+// trimmedSpan returns the index range of a histogram left after ignoring up to `trim`
+// counts on each side, so a few stray noisy pixels don't stretch the motion box.
+func trimmedSpan(h []int, trim int) (int, int) {
+	lo, acc := 0, 0
+	for lo < len(h)-1 && acc+h[lo] <= trim {
+		acc += h[lo]
+		lo++
+	}
+	hi := len(h) - 1
+	acc = 0
+	for hi > lo && acc+h[hi] <= trim {
+		acc += h[hi]
+		hi--
+	}
+	return lo, hi
 }

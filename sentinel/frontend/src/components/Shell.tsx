@@ -1,12 +1,13 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
-import { LayoutGrid, GanttChart, Zap, Film, HeartPulse, Settings2 } from "lucide-react";
+import { LayoutGrid, GanttChart, Zap, Film, HeartPulse, Settings2, Columns2, ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import { useStatus } from "../lib/status";
 
 const NAV = [
   { to: "/", label: "Live", icon: LayoutGrid },
+  { to: "/playback", label: "Playback", icon: Columns2 },
   { to: "/timeline", label: "Timeline", icon: GanttChart },
   { to: "/events", label: "Events", icon: Zap },
   { to: "/clips", label: "Clips", icon: Film },
@@ -44,6 +45,9 @@ function Health() {
     </span>
   );
 }
+
+// Inside the Home Assistant dashboard card (its iframe is named "sentinel-card").
+const inCard = window.name === "sentinel-card";
 
 export function Shell({ children }: { children: ReactNode }) {
   const loc = useLocation();
@@ -105,6 +109,11 @@ export function Shell({ children }: { children: ReactNode }) {
               transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
               className="mx-auto w-full max-w-[1600px] px-4 pb-28 pt-5 md:px-8 md:pb-10 md:pt-8"
             >
+              {inCard && (
+                <Link to="/embed" className="mb-4 inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white">
+                  <ArrowLeft className="size-3.5" /> Back to the dashboard view
+                </Link>
+              )}
               {children}
             </motion.div>
           </AnimatePresence>

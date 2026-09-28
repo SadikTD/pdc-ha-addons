@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { Bell, Camera as CamIcon, CheckCircle2, Eye, EyeOff, HardDrive, Loader2, Pencil, Plus, Trash2, X, XCircle, Moon } from "lucide-react";
 import { Button, Card, Field, IconButton, PageHeader, SectionTitle, StatePill, Toggle, inputCls, recState } from "../components/ui";
 import { MaskEditor } from "../components/MaskEditor";
+import { DriveCard, NightAlertsCard } from "../components/AlertsSettings";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { api, type Camera, type Settings, type StreamInfo } from "../lib/api";
@@ -18,6 +19,7 @@ const blankCamera = (): Camera => ({
   audio: true,
   motion: true,
   retain_days: 2,
+  motion_retain_days: 7,
   motion_sensitivity: 50,
   motion_masks: [],
 });
@@ -127,6 +129,11 @@ export function SettingsPage() {
         </Card>
       </div>
 
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <NightAlertsCard draft={draft} set={set} cameras={saved.cameras} />
+        <DriveCard draft={draft} set={set} />
+      </div>
+
       <AnimatePresence>
         {dirty && (
           <motion.div
@@ -185,7 +192,7 @@ function CameraRow({ cam, onEdit }: { cam: Camera; onEdit: () => void }) {
           <span className="text-xs text-slate-600">{cam.id}</span>
         </div>
         <div className="truncate text-xs text-slate-500">
-          Keep {cam.retain_days}d · {cam.record ? "24/7 recording" : "live only"}
+          Keep {cam.retain_days}d{cam.motion_retain_days > cam.retain_days ? ` (motion ${cam.motion_retain_days}d)` : ""} · {cam.record ? "24/7 recording" : "live only"}
           {cam.audio && cam.record ? " · audio" : ""} · {cam.motion ? `motion ${cam.motion_sensitivity}%` : "no motion"}
           {cam.motion_masks.length ? ` · ${cam.motion_masks.length} zone${cam.motion_masks.length > 1 ? "s" : ""}` : ""}
         </div>
@@ -313,10 +320,38 @@ function CameraEditor({ initial, isNew, saving, onClose, onSave, onDelete }: { i
             <Toggle checked={cam.motion} onChange={(v) => set("motion", v)} label="Motion detection" hint="Timeline heatmap, events, and HA motion sensor" />
           </div>
 
-          <Field label="Keep recordings for">
+          <Field label="Keep all footage (24/7) for">
             <div className="flex items-center gap-3">
               <input type="range" min={1} max={30} value={Math.min(30, cam.retain_days)} onChange={(e) => set("retain_days", Number(e.target.value))} className="flex-1" />
               <input type="number" min={1} max={365} value={cam.retain_days} onChange={(e) => set("retain_days", Math.max(1, Number(e.target.value)))} className={clsx(inputCls, "w-20 text-center")} />
+              <span className="text-sm text-slate-400">days</span>
+            </div>
+          </Field>
+          <Field
+            label="Keep footage with motion for"
+            hint={
+              cam.motion_retain_days > cam.retain_days
+                ? `Everything for ${cam.retain_days} day${cam.retain_days > 1 ? "s" : ""}, then only the minutes with motion (and 15 s around it) until day ${cam.motion_retain_days}. Needs motion detection on.`
+                : "Same as all footage. Set it longer to keep motion for more days without keeping 24/7 footage that long."
+            }
+          >
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={cam.retain_days}
+                max={Math.max(30, cam.retain_days)}
+                value={Math.min(Math.max(30, cam.retain_days), Math.max(cam.retain_days, cam.motion_retain_days))}
+                onChange={(e) => set("motion_retain_days", Number(e.target.value) <= cam.retain_days ? 0 : Number(e.target.value))}
+                className="flex-1"
+              />
+              <input
+                type="number"
+                min={cam.retain_days}
+                max={365}
+                value={Math.max(cam.retain_days, cam.motion_retain_days)}
+                onChange={(e) => set("motion_retain_days", Number(e.target.value) <= cam.retain_days ? 0 : Math.min(365, Number(e.target.value)))}
+                className={clsx(inputCls, "w-20 text-center")}
+              />
               <span className="text-sm text-slate-400">days</span>
             </div>
           </Field>

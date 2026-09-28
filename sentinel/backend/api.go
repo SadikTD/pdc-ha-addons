@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -90,6 +91,71 @@ func (a *App) Routes(www string) http.Handler {
 	mux.HandleFunc("GET /api/clips/{id}/thumb.jpg", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "private, max-age=3600")
 		http.ServeFile(w, r, a.clips.thumbPath(filepath.Base(r.PathValue("id"))))
+	})
+	mux.HandleFunc("POST /api/clips/{id}/backup", func(w http.ResponseWriter, r *http.Request) {
+		if !a.drive.Connected() {
+			writeErr(w, 409, "connect Google Drive in Settings first")
+			return
+		}
+		if _, ok := a.clips.Get(r.PathValue("id")); !ok {
+			writeErr(w, 404, "clip not found")
+			return
+		}
+		a.drive.Queue(r.PathValue("id"))
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("GET /api/alerts", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, a.alerts.List()) })
+	mux.HandleFunc("POST /api/alerts/test", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Camera string `json:"camera"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req)
+		if err := a.alerts.Test(req.Camera); err != nil {
+			writeErr(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("GET /api/whatsapp", func(w http.ResponseWriter, r *http.Request) {
+		out := map[string]any{"token_set": a.secrets.Get().WhatsAppToken != ""}
+		if out["token_set"] == true {
+			chats, err := a.alerts.wa.Chats()
+			if err != nil {
+				out["error"] = err.Error()
+			} else {
+				out["chats"] = chats
+			}
+		}
+		writeJSON(w, 200, out)
+	})
+	mux.HandleFunc("PUT /api/whatsapp/token", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		_ = a.secrets.Update(func(s *Secrets) { s.WhatsAppToken = strings.TrimSpace(req.Token) })
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("GET /api/drive", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, a.drive.Status()) })
+	mux.HandleFunc("POST /api/drive/connect", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ClientID     string `json:"client_id"`
+			ClientSecret string `json:"client_secret"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req)
+		auth, err := a.drive.StartAuth(req.ClientID, req.ClientSecret)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, auth)
+	})
+	mux.HandleFunc("POST /api/drive/disconnect", func(w http.ResponseWriter, r *http.Request) {
+		a.drive.Disconnect()
+		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("GET /api/incidents", func(w http.ResponseWriter, r *http.Request) {
 		n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -195,6 +261,8 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"disk": du, "used": used, "rate_bph": rate, "capacity_days": capacityDays,
 			"min_free_gb": s.MinFreeGB, "orphans": orphans, "breakdown": a.breakdown.Load(), "clips": a.clips.Bytes(),
 		},
+		"alerts": map[string]any{"enabled": s.NightAlerts.Enabled && s.WhatsApp.To != "", "active": a.alerts.Active() && s.WhatsApp.To != ""},
+		"drive":  map[string]any{"connected": a.drive.Connected(), "mode": s.Drive.Mode},
 		"clock":  a.clock.Status(),
 		"live":   a.go2rtc.running.Load(),
 		"mqtt":   map[string]any{"connected": a.mqtt.Connected(), "error": a.mqtt.Error()},
@@ -458,28 +526,45 @@ func (a *App) frameFromRecording(ctx context.Context, cam string, t time.Time) (
 		b := v.([]byte)
 		return b, b != nil
 	}
+	out, err := a.decodeFrame(ctx, cam, t, "scale=320:-2", 7, false)
+	if err != nil {
+		return nil, false
+	}
+	if extractCount.Add(1)%2000 == 0 {
+		extractCache.Clear()
+	}
+	extractCache.Store(key, out)
+	return out, true
+}
+
+var errNoFrame = errors.New("no recording at that moment yet")
+
+// decodeFrame decodes one frame of the recording at time t through the video filter vf.
+// Only the init section and the fragment containing t are fed to ffmpeg (each fragment
+// starts with a keyframe), so no seeking inside large files is needed. With exact, the
+// frame at t itself is decoded (not the fragment's keyframe) and the fragment must
+// already contain t.
+func (a *App) decodeFrame(ctx context.Context, cam string, t time.Time, vf string, q int, exact bool) ([]byte, error) {
 	segs := a.store.Range(cam, t, t.Add(time.Millisecond))
 	if len(segs) == 0 {
-		return nil, false
+		return nil, errNoFrame
 	}
 	s := segs[0]
 	p := a.store.Path(cam, s.ID)
 	if p == "" {
-		return nil, false
+		return nil, errNoFrame
 	}
 	select {
 	case extractSem <- struct{}{}:
 		defer func() { <-extractSem }()
 	case <-ctx.Done():
-		return nil, false
+		return nil, ctx.Err()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	// Feed ffmpeg just the init section plus the fragment containing t. Each fragment starts
-	// with a keyframe, so this decodes one frame without any seeking.
 	idx, err := a.store.Index(&s)
 	if err != nil || len(idx.Fragments) == 0 {
-		return nil, false
+		return nil, errNoFrame
 	}
 	off := t.Sub(s.Start()).Seconds()
 	frag := idx.Fragments[0]
@@ -488,30 +573,33 @@ func (a *App) frameFromRecording(ctx context.Context, cam string, t time.Time) (
 			frag = f
 		}
 	}
+	if exact && off > frag.Start+frag.Duration {
+		return nil, errNoFrame // not written to disk yet
+	}
 	file, err := os.Open(p)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	defer file.Close()
 	data := make([]byte, idx.InitLength+frag.Length)
 	if _, err := file.ReadAt(data[:idx.InitLength], 0); err != nil {
-		return nil, false
+		return nil, err
 	}
 	if _, err := file.ReadAt(data[idx.InitLength:], frag.Offset); err != nil {
-		return nil, false
+		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-i", "pipe:0",
-		"-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "7", "-f", "image2", "-c:v", "mjpeg", "pipe:1")
+	args := []string{"-v", "error", "-i", "pipe:0"}
+	if exact && off > frag.Start {
+		args = append(args, "-ss", fmt.Sprintf("%.3f", off-frag.Start))
+	}
+	args = append(args, "-frames:v", "1", "-vf", vf, "-q:v", strconv.Itoa(q), "-f", "image2", "-c:v", "mjpeg", "pipe:1")
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = bytes.NewReader(data)
 	out, err := cmd.Output()
 	if err != nil || len(out) < 100 {
-		return nil, false
+		return nil, fmt.Errorf("could not decode a frame: %v", err)
 	}
-	if extractCount.Add(1)%2000 == 0 {
-		extractCache.Clear()
-	}
-	extractCache.Store(key, out)
-	return out, true
+	return out, nil
 }
 
 func (a *App) handleCreateClip(w http.ResponseWriter, r *http.Request) {

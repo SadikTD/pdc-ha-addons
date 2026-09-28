@@ -5,6 +5,7 @@ import { timingSafeEqual, createHash } from 'node:crypto';
 
 export const DATA = process.env.DATA_DIR || '/data';
 const MAX_TEXT = 4096;
+const MAX_IMAGE_BODY = 8 * 1024 * 1024; // base64 JPEG snapshots
 const LEDGER_LIMIT = 1000;
 
 const digits = s => String(s || '').replace(/\D/g, '');
@@ -63,7 +64,8 @@ function readJson(req, limit = 64 * 1024) {
   });
 }
 
-// `wa` exposes { status(): {connected, paired, accountOk}, send(jid, text): Promise<id> }.
+// `wa` exposes { status(): {connected, paired, accountOk}, send(jid, text): Promise<id>,
+// sendImage(jid, jpeg, caption): Promise<id>, groups(): Promise<[{id, name, size}]> }.
 // `events` (optional) records rejected requests and send results for the dashboard.
 export function createHandler({ options, ledger, wa, events }) {
   const note = (type, detail) => events?.add(type, detail);
@@ -74,20 +76,40 @@ export function createHandler({ options, ledger, wa, events }) {
       const s = wa.status();
       return reply(res, 200, { ok: s.connected && s.accountOk, connected: s.connected, paired: s.paired });
     }
-    if (req.method !== 'POST' || url.pathname !== '/send') return reply(res, 404, { status: 'not_found' });
+    const route = `${req.method} ${url.pathname}`;
+    if (!['POST /send', 'POST /send-image', 'GET /chats'].includes(route)) return reply(res, 404, { status: 'not_found' });
     if (!tokenMatches(req.headers.authorization, options.token)) {
-      note('rejected', 'Send request with a wrong or missing token');
+      note('rejected', 'Request with a wrong or missing token');
       return reply(res, 401, { status: 'unauthorized' });
     }
 
+    // Chats a sender may pick: the configured recipient plus the groups this account is in.
+    if (route === 'GET /chats') {
+      if (!wa.status().connected) return reply(res, 503, { status: 'unavailable' });
+      try {
+        const groups = (await wa.groups()).map(g => ({ id: g.id, name: g.name, size: g.size })).sort((a, b) => a.name.localeCompare(b.name));
+        return reply(res, 200, { recipient: `+${options.recipient}`, groups });
+      } catch (e) { return reply(res, 502, { status: 'unknown', error: String(e?.message || e).slice(0, 200) }); }
+    }
+
+    const image = route === 'POST /send-image';
     let body;
-    try { body = await readJson(req); } catch (e) { return reply(res, e.message === 'too_large' ? 413 : 400, { status: 'bad_request' }); }
-    const text = typeof body?.text === 'string' ? body.text : '';
+    try { body = await readJson(req, image ? MAX_IMAGE_BODY : undefined); } catch (e) { return reply(res, e.message === 'too_large' ? 413 : 400, { status: 'bad_request' }); }
+    const text = typeof (image ? body?.caption : body?.text) === 'string' ? (image ? body.caption : body.text) : '';
     const key = typeof body?.idempotencyKey === 'string' ? body.idempotencyKey : '';
-    if (!text.trim() || text.length > MAX_TEXT || !/^[\w:.-]{1,120}$/.test(key)) return reply(res, 400, { status: 'bad_request' });
-    // A leaked token must never let anyone message arbitrary numbers.
-    if (digits(body.to) !== options.recipient) {
-      note('rejected', 'Send request for a number other than the recipient');
+    const media = image && typeof body?.image === 'string' ? Buffer.from(body.image, 'base64') : null;
+    if ((!image && !text.trim()) || text.length > MAX_TEXT || !/^[\w:.-]{1,120}$/.test(key)) return reply(res, 400, { status: 'bad_request' });
+    if (image && (!media || media.length < 100 || media[0] !== 0xff || media[1] !== 0xd8)) return reply(res, 400, { status: 'bad_request', error: 'image must be a base64 JPEG' });
+    // A leaked token must never let anyone message arbitrary numbers: only the recipient,
+    // or (for images) a group this account is already a member of.
+    let jid = null;
+    if (digits(body.to) === options.recipient && !String(body.to).includes('@')) jid = `${options.recipient}@s.whatsapp.net`;
+    else if (image && /^[\d-]{5,40}@g\.us$/.test(String(body.to))) {
+      const groups = await wa.groups().catch(() => []);
+      if (groups.some(g => g.id === body.to)) jid = body.to;
+    }
+    if (!jid) {
+      note('rejected', 'Send request for a chat other than the recipient or a joined group');
       return reply(res, 403, { status: 'recipient_not_allowed' });
     }
 
@@ -99,9 +121,9 @@ export function createHandler({ options, ledger, wa, events }) {
     const s = wa.status();
     if (!s.connected || !s.accountOk) return reply(res, 503, { status: 'unavailable', connected: s.connected, paired: s.paired });
 
-    ledger.set(key, { state: 'sending', text, to: options.recipient, sentAt: null, error: null });
+    ledger.set(key, { state: 'sending', text: image ? `[image] ${text}`.trim() : text, to: jid.endsWith('@g.us') ? jid : options.recipient, sentAt: null, error: null });
     try {
-      const id = await wa.send(`${options.recipient}@s.whatsapp.net`, text);
+      const id = image ? await wa.sendImage(jid, media, text) : await wa.send(jid, text);
       ledger.set(key, { state: 'sent', id, sentAt: Date.now() });
       log(`sent ${key}`);
       return reply(res, 200, { status: 'sent', id });

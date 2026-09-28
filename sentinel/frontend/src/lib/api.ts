@@ -12,6 +12,7 @@ export type Camera = {
   audio: boolean;
   motion: boolean;
   retain_days: number;
+  motion_retain_days: number;
   motion_sensitivity: number;
   motion_masks: Rect[];
 };
@@ -24,6 +25,51 @@ export type Settings = {
   quiet_windows: string[];
   mqtt_enabled: boolean;
   clip_retention_days: number;
+  night_alerts: {
+    enabled: boolean;
+    from: string;
+    to: string;
+    cameras: string[];
+    cooldown_minutes: number;
+    min_seconds: number;
+    close_up: boolean;
+    save_clip: boolean;
+  };
+  whatsapp: { to: string; to_name: string; bridge_url: string };
+  drive: { mode: "off" | "alerts" | "all"; retention_days: number };
+};
+
+export type WhatsAppInfo = {
+  token_set: boolean;
+  error?: string;
+  chats?: { recipient: string; groups: { id: string; name: string; size: number }[] };
+};
+
+export type AlertRecord = {
+  id: string;
+  camera: string;
+  camera_name: string;
+  at: number;
+  event?: string;
+  status: "sending" | "sent" | "failed";
+  error?: string;
+  clip?: string;
+  test?: boolean;
+};
+
+export type DriveStatus = {
+  configured: boolean;
+  connected: boolean;
+  account?: string;
+  folder_url?: string;
+  client_id?: string;
+  auth?: { user_code: string; url: string; expires: number; error?: string };
+  last_error?: string;
+  last_ok?: number;
+  pending: number;
+  uploading: number;
+  failed: number;
+  done: number;
 };
 
 export type StreamInfo = { video_codec: string; width: number; height: number; fps: number; audio_codec: string };
@@ -79,6 +125,8 @@ export type Status = {
   };
   clock: ClockStatus;
   live: boolean;
+  alerts: { enabled: boolean; active: boolean };
+  drive: { connected: boolean; mode: string };
   mqtt: { connected: boolean; error: string };
   health: boolean;
 };
@@ -97,6 +145,8 @@ export type Clip = {
   error?: string;
   size: number;
   pinned: boolean;
+  alert?: boolean;
+  backup?: { state: "pending" | "uploading" | "done" | "failed"; progress: number; file_id?: string; error?: string; at: number; tries: number };
 };
 export type Incident = { t: number; level: "info" | "warn" | "error"; camera?: string; message: string };
 
@@ -136,6 +186,15 @@ export const api = {
   createClip: (camera: string, from: number, to: number, name: string) => request<Clip>("POST", "api/clips", { camera, from: Math.round(from), to: Math.round(to), name }),
   patchClip: (id: string, patch: { name?: string; pinned?: boolean }) => request<Clip>("PATCH", `api/clips/${id}`, patch),
   deleteClip: (id: string) => request<{ ok: boolean }>("DELETE", `api/clips/${id}`),
+  backupClip: (id: string) => request<{ ok: boolean }>("POST", `api/clips/${id}/backup`),
+  alerts: () => request<AlertRecord[]>("GET", "api/alerts"),
+  testAlert: (camera: string) => request<{ ok: boolean }>("POST", "api/alerts/test", { camera }),
+  whatsapp: () => request<WhatsAppInfo>("GET", "api/whatsapp"),
+  setWhatsAppToken: (token: string) => request<{ ok: boolean }>("PUT", "api/whatsapp/token", { token }),
+  drive: () => request<DriveStatus>("GET", "api/drive"),
+  driveConnect: (client_id: string, client_secret: string) =>
+    request<{ user_code: string; url: string; expires: number }>("POST", "api/drive/connect", { client_id, client_secret }),
+  driveDisconnect: () => request<{ ok: boolean }>("POST", "api/drive/disconnect"),
   deleteRecordings: (id: string) => request<{ ok: boolean }>("DELETE", `api/recordings/${id}`),
 };
 

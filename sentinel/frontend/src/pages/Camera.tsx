@@ -4,8 +4,9 @@ import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
 import {
   ArrowLeft, Camera as CamIcon, Save, Expand, PlayCircle, Loader2, Pause, Play, Radio, RotateCcw, RotateCw, Scissors, SkipBack, SkipForward,
-  Volume2, VolumeX, X, ZoomIn, ZoomOut, Zap, ImageOff,
+  Volume2, VolumeX, X, ZoomIn, ZoomOut, Zap, ImageOff, Columns2,
 } from "lucide-react";
+import { JumpTo } from "../components/JumpTo";
 import { LiveStream } from "../components/LiveStream";
 import { VodPlayer, type VodHandle } from "../components/VodPlayer";
 import { Scrubber, MIN_RANGE, MAX_RANGE } from "../components/Scrubber";
@@ -53,6 +54,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   const [range, setRange] = useState(HOUR);
   const [selection, setSelection] = useState<{ from: number; to: number } | null>(null);
   const [events, setEvents] = useState<SentinelEvent[]>([]);
+  const [jumpOpen, setJumpOpen] = useState(false);
   const vod = useRef<VodHandle>(null);
   const liveVideo = useRef<HTMLVideoElement | null>(null);
   const stage = useRef<HTMLDivElement>(null);
@@ -89,6 +91,15 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
     setPendingT(null);
   }, []);
 
+  const playAt = useCallback((p: number) => {
+    setMode("playback");
+    setCurT(p);
+    setPendingT(p);
+    window.clearTimeout(pendingTimer.current);
+    pendingTimer.current = window.setTimeout(() => setPendingT(null), 8000);
+    setSeek((s) => ({ t: p, n: s.n + 1 }));
+  }, []);
+
   const seekTo = useCallback(
     (t: number, quiet = false) => {
       if (t >= Date.now() - 4000) return goLive();
@@ -98,15 +109,24 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
         return goLive();
       }
       if (p - t > 5000 && !quiet) toast(`No recording at ${fmtTimeSec(t)} — jumped to ${fmtTimeSec(p)}`, "info");
-      setMode("playback");
-      setCurT(p);
-      setPendingT(p);
-      window.clearTimeout(pendingTimer.current);
-      pendingTimer.current = window.setTimeout(() => setPendingT(null), 8000);
-      setSeek((s) => ({ t: p, n: s.n + 1 }));
+      playAt(p);
     },
-    [spans, goLive, toast],
+    [spans, goLive, toast, playAt],
   );
+
+  // Jump to any moment, even far outside the loaded timeline.
+  const jumpTo = async (t: number) => {
+    if (t >= Date.now() - 4000) return goLive();
+    try {
+      const p = findPlayable(await api.coverage(id, t - 60_000, t + DAY), t);
+      if (p === null || p >= Date.now() - 4000) return toast(`No recording on or after ${fmtDay(t)}, ${fmtTimeSec(t)}`, "error");
+      if (p - t > 5000) toast(`Nothing recorded at ${fmtTimeSec(t)} — showing ${fmtDay(p)}, ${fmtTimeSec(p)}`, "info");
+      prefetchPreviews(id, p, range);
+      playAt(p);
+    } catch {
+      toast("Couldn't load the recordings", "error");
+    }
+  };
 
   // ---- scrubbing ----
   const onScrubStart = () => {
@@ -190,6 +210,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
       else if (e.key === "Escape") setSelection(null);
       else if (e.key === "l" || e.key === "L") goLive();
       else if (e.key === "f" || e.key === "F") fullscreen();
+      else if (e.key === "g" || e.key === "G") (e.preventDefault(), setJumpOpen(true));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -229,6 +250,16 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
               {cam && <span>· {fmtBytes(cam.storage.bytes)} stored</span>}
             </div>
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Link
+            to={`/playback?t=${Math.round(mode === "live" ? Date.now() - 60_000 : center)}`}
+            title="Play all cameras side by side from this moment"
+            className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+          >
+            <Columns2 className="size-4" /> <span className="hidden sm:inline">All cameras</span>
+          </Link>
+          <JumpTo onJump={jumpTo} oldest={cam?.storage.oldest || undefined} open={jumpOpen} setOpen={setJumpOpen} />
         </div>
       </div>
 
@@ -401,12 +432,13 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
               onScrub={setScrubT}
               onScrubEnd={onScrubEnd}
               onRange={setRange}
+              fullFrom={cam && cam.motion_retain_days > cam.retain_days ? now - cam.retain_days * DAY : undefined}
             />
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-gradient-to-r from-violet-500/70 to-cyan-400/40" /> Recorded</span>
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-amber-400" /> Motion</span>
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-rose-500/30" /> Not recorded</span>
-              <span className="ml-auto hidden md:inline">Drag to scrub · click to jump · scroll to zoom · scroll on the video to magnify</span>
+              <span className="ml-auto hidden md:inline">Drag to scrub · click to jump · scroll to zoom · scroll on the video to magnify · G to go to a time</span>
             </div>
             <AnimatePresence>
               {selection && (

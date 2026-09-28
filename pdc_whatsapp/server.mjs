@@ -48,6 +48,7 @@ export function startWhatsApp(options, events) {
   let sock = null, auth = null, connected = false, accountOk = false, paired = false;
   let retry = 0, reconnectTimer = null, offlineSince = Date.now(), notified = false, stopping = false;
   let pairingCode = null, pairingAt = null, user = null, connectedSince = null, reconnects = 0, lastDisconnect = null;
+  let groupCache = null;
 
   const schedule = delay => {
     clearTimeout(reconnectTimer);
@@ -161,6 +162,26 @@ export function startWhatsApp(options, events) {
         return msg.key.id;
       } finally { clearTimeout(timer); }
     },
+    async sendImage(jid, jpeg, caption) {
+      let timer;
+      try {
+        const msg = await Promise.race([
+          sock.sendMessage(jid, { image: jpeg, mimetype: 'image/jpeg', ...(caption ? { caption } : {}) }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('send timeout')), 60000); }),
+        ]);
+        if (!msg?.key?.id) throw new Error('no message id returned');
+        return msg.key.id;
+      } finally { clearTimeout(timer); }
+    },
+    // Groups this account is a member of (cached; WhatsApp rate-limits this query).
+    async groups() {
+      if (groupCache && Date.now() - groupCache.at < 5 * 60000) return groupCache.list;
+      if (!connected) throw new Error('not connected');
+      const all = await sock.groupFetchAllParticipating();
+      const list = Object.values(all).map(g => ({ id: g.id, name: g.subject || g.id, size: g.participants?.length || 0 }));
+      groupCache = { at: Date.now(), list };
+      return list;
+    },
     // Dashboard "Relink": unlink this device and start over with a fresh pairing code.
     async relink() {
       log('Relink requested from the dashboard');
@@ -171,7 +192,7 @@ export function startWhatsApp(options, events) {
       try { await current?.logout(); } catch { current?.end(undefined); }
       await auth?.flush().catch(() => {});
       await rm(AUTH_DIR, { recursive: true, force: true });
-      auth = null; paired = false; connected = false; accountOk = false; user = null; pairingCode = null;
+      auth = null; paired = false; connected = false; accountOk = false; user = null; pairingCode = null; groupCache = null;
       connectedSince = null; offlineSince = Date.now(); retry = 0; notified = false;
       schedule(500);
     },

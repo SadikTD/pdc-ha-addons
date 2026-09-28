@@ -207,7 +207,7 @@ function RecentMotion({ events }: { events: SentinelEvent[] }) {
   );
 }
 
-function CameraTile({ cam, index }: { cam: CameraStatus; index: number }) {
+export function CameraTile({ cam, index }: { cam: CameraStatus; index: number }) {
   const nav = useNavigate();
   const state = recState(cam.enabled, cam.record, cam.recorder);
   const motionOn = !!cam.motion?.active;

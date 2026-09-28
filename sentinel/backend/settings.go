@@ -21,15 +21,18 @@ type Rect struct {
 }
 
 type Camera struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	MainURL           string `json:"main_url"`
-	SubURL            string `json:"sub_url"`
-	Enabled           bool   `json:"enabled"`
-	Record            bool   `json:"record"`
-	Audio             bool   `json:"audio"`
-	Motion            bool   `json:"motion"`
-	RetainDays        int    `json:"retain_days"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	MainURL    string `json:"main_url"`
+	SubURL     string `json:"sub_url"`
+	Enabled    bool   `json:"enabled"`
+	Record     bool   `json:"record"`
+	Audio      bool   `json:"audio"`
+	Motion     bool   `json:"motion"`
+	RetainDays int    `json:"retain_days"`
+	// Footage with motion is kept this long (0 = same as RetainDays); the rest of the
+	// 24/7 recording is removed after RetainDays.
+	MotionRetainDays  int    `json:"motion_retain_days"`
 	MotionSensitivity int    `json:"motion_sensitivity"` // 1..100, higher = more sensitive
 	MotionMasks       []Rect `json:"motion_masks"`
 }
@@ -54,7 +57,44 @@ type Settings struct {
 	QuietWindows []string `json:"quiet_windows"`
 	MQTTEnabled  bool     `json:"mqtt_enabled"`
 	// Saved clips are deleted after this many days unless pinned (0 = keep forever).
-	ClipRetentionDays int `json:"clip_retention_days"`
+	ClipRetentionDays int         `json:"clip_retention_days"`
+	NightAlerts       NightAlerts `json:"night_alerts"`
+	WhatsApp          WhatsApp    `json:"whatsapp"`
+	Drive             DriveBackup `json:"drive"`
+}
+
+// NightAlerts sends a WhatsApp snapshot when motion starts inside a daily time window.
+type NightAlerts struct {
+	Enabled bool   `json:"enabled"`
+	From    string `json:"from"` // "23:00" local time
+	To      string `json:"to"`   // "06:00"
+	// Cameras that alert; empty = all.
+	Cameras []string `json:"cameras"`
+	// At most one alert per camera in this many minutes.
+	CooldownMinutes int `json:"cooldown_minutes"`
+	// Motion must last this many seconds (filters insects, rain and IR flicker).
+	MinSeconds int `json:"min_seconds"`
+	// Also send a zoomed-in picture of the area that moved.
+	CloseUp bool `json:"close_up"`
+	// Save a clip of each alerted event (and back it up if Drive backup is on).
+	SaveClip bool `json:"save_clip"`
+}
+
+// WhatsApp delivery through the PDC WhatsApp Bridge add-on. The API token is kept in
+// secrets.json, never in these settings.
+type WhatsApp struct {
+	// Group JID ("...@g.us") or the bridge's recipient number ("+880...").
+	To     string `json:"to"`
+	ToName string `json:"to_name"`
+	// Empty = find the bridge add-on automatically.
+	BridgeURL string `json:"bridge_url"`
+}
+
+// DriveBackup uploads clips to Google Drive; credentials live in secrets.json.
+type DriveBackup struct {
+	Mode string `json:"mode"` // off | alerts | all
+	// Files Sentinel uploaded are removed from Drive after this many days (0 = never).
+	RetentionDays int `json:"retention_days"`
 }
 
 func defaultSettings() Settings {
@@ -65,12 +105,17 @@ func defaultSettings() Settings {
 		QuietWindows:       []string{},
 		MQTTEnabled:        true,
 		ClipRetentionDays:  30,
+		NightAlerts: NightAlerts{
+			From: "23:00", To: "06:00", Cameras: []string{}, CooldownMinutes: 2, MinSeconds: 2, CloseUp: true, SaveClip: true,
+		},
+		Drive: DriveBackup{Mode: "alerts", RetentionDays: 90},
 	}
 }
 
 var (
 	idRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,31}$`)
 	windowRe = regexp.MustCompile(`^([01]?\d|2[0-3]):[0-5]\d-([01]?\d|2[0-3]):[0-5]\d$`)
+	waChatRe = regexp.MustCompile(`^(\+[1-9]\d{7,14}|[\d-]{5,40}@g\.us)$`)
 )
 
 func slugify(s string) string {
@@ -160,6 +205,10 @@ func (s *Settings) normalize() error {
 		if c.RetainDays > 365 {
 			c.RetainDays = 365
 		}
+		if c.MotionRetainDays != 0 && c.MotionRetainDays <= c.RetainDays {
+			c.MotionRetainDays = 0
+		}
+		c.MotionRetainDays = min(max(c.MotionRetainDays, 0), 365)
 		if c.MotionSensitivity < 1 || c.MotionSensitivity > 100 {
 			c.MotionSensitivity = 50
 		}
@@ -167,6 +216,35 @@ func (s *Settings) normalize() error {
 			c.MotionMasks = []Rect{}
 		}
 	}
+	n := &s.NightAlerts
+	if n.Cameras == nil {
+		n.Cameras = []string{}
+	}
+	if n.From == "" {
+		n.From = "23:00"
+	}
+	if n.To == "" {
+		n.To = "06:00"
+	}
+	if !windowRe.MatchString(n.From + "-" + n.To) {
+		return fmt.Errorf("night alert hours must look like 23:00 and 06:00")
+	}
+	n.CooldownMinutes = min(max(n.CooldownMinutes, 0), 240)
+	n.MinSeconds = min(max(n.MinSeconds, 0), 30)
+	w := &s.WhatsApp
+	w.To, w.BridgeURL = strings.TrimSpace(w.To), strings.TrimRight(strings.TrimSpace(w.BridgeURL), "/")
+	if w.To != "" && !waChatRe.MatchString(w.To) {
+		return fmt.Errorf("WhatsApp chat must be a group or a +international number")
+	}
+	if w.BridgeURL != "" && !strings.HasPrefix(w.BridgeURL, "http://") && !strings.HasPrefix(w.BridgeURL, "https://") {
+		return fmt.Errorf("bridge address must start with http://")
+	}
+	switch s.Drive.Mode {
+	case "off", "alerts", "all":
+	default:
+		s.Drive.Mode = "off"
+	}
+	s.Drive.RetentionDays = max(s.Drive.RetentionDays, 0)
 	for _, w := range s.QuietWindows {
 		if !windowRe.MatchString(w) {
 			return fmt.Errorf("quiet window %q must look like 03:55-04:15", w)

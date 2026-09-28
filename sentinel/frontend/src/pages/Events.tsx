@@ -6,13 +6,19 @@ import { Play, Zap } from "lucide-react";
 import { Empty, PageHeader } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { api, thumbURL, type SentinelEvent } from "../lib/api";
-import { DAY, fmtDay, fmtDuration, fmtTimeSec, startOfDay } from "../lib/format";
+import { DAY, HOUR, fmtDay, fmtDuration, fmtTimeSec, startOfDay } from "../lib/format";
 
 const RANGES = [
   { label: "Today", from: () => startOfDay(Date.now()) },
   { label: "24 hours", from: () => Date.now() - DAY },
   { label: "7 days", from: () => Date.now() - 7 * DAY },
+  { label: "Custom", from: () => 0 },
 ];
+const CUSTOM = 3;
+
+function toLocalInput(ms: number) {
+  return new Date(ms - new Date(ms).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
 
 export function EventsPage() {
   const { status } = useStatus();
@@ -20,14 +26,18 @@ export function EventsPage() {
   const [cams, setCams] = useState<string[]>([]);
   const [range, setRange] = useState(1);
   const [minPeak, setMinPeak] = useState(0);
+  const [custom, setCustom] = useState(() => ({ from: toLocalInput(startOfDay(Date.now()) - DAY + 22 * HOUR), to: toLocalInput(startOfDay(Date.now()) + 6 * HOUR) }));
   const [events, setEvents] = useState<SentinelEvent[] | null>(null);
   const names = Object.fromEntries((status?.cameras ?? []).map((c) => [c.id, c.name]));
 
   useEffect(() => {
     let alive = true;
+    const from = range === CUSTOM ? new Date(custom.from).getTime() : RANGES[range].from();
+    const to = range === CUSTOM ? new Date(custom.to).getTime() : Date.now() + HOUR;
+    if (!(from < to)) return setEvents([]);
     const load = () =>
       api
-        .events({ cameras: cams, from: RANGES[range].from(), limit: 1000 })
+        .events({ cameras: cams, from, to, limit: 2000 })
         .then((e) => alive && setEvents(e))
         .catch(() => {});
     load();
@@ -36,7 +46,7 @@ export function EventsPage() {
       alive = false;
       window.clearInterval(t);
     };
-  }, [cams.join(), range]);
+  }, [cams.join(), range, custom.from, custom.to]);
 
   const groups = useMemo(() => {
     const out: { day: number; items: SentinelEvent[] }[] = [];
@@ -53,7 +63,7 @@ export function EventsPage() {
 
   return (
     <>
-      <PageHeader title="Events" sub={events ? `${total} motion events` : "Loading…"} />
+      <PageHeader title="Events" sub={events ? `${total} motion event${total === 1 ? "" : "s"}${range === CUSTOM ? " in this range" : ""}${cams.length ? ` on ${cams.length} camera${cams.length > 1 ? "s" : ""}` : ""}` : "Loading…"} />
       <div className="mb-6 flex flex-wrap items-center gap-2">
         <div className="glass flex rounded-xl p-1">
           {RANGES.map((r, i) => (
@@ -74,6 +84,13 @@ export function EventsPage() {
             </button>
           );
         })}
+        {range === CUSTOM && (
+          <div className="glass flex flex-wrap items-center gap-2 rounded-xl px-2 py-1">
+            <input type="datetime-local" value={custom.from} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))} className="h-8 rounded-lg border border-white/10 bg-ink-950 px-2 text-xs text-white [color-scheme:dark]" />
+            <span className="text-xs text-slate-500">to</span>
+            <input type="datetime-local" value={custom.to} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))} className="h-8 rounded-lg border border-white/10 bg-ink-950 px-2 text-xs text-white [color-scheme:dark]" />
+          </div>
+        )}
         <label className="ml-auto flex items-center gap-2 text-xs text-slate-400">
           Min. size
           <input type="range" min={0} max={10} step={0.5} value={minPeak} onChange={(e) => setMinPeak(Number(e.target.value))} className="w-28" />

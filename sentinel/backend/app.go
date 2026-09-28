@@ -21,6 +21,9 @@ type App struct {
 	activity  *ActivityStore
 	previews  *PreviewStore
 	clips     *ClipStore
+	secrets   *SecretStore
+	alerts    *Alerter
+	drive     *Drive
 	breakdown atomic.Value // map[string]int64: bytes per data type
 	incidents *IncidentLog
 	go2rtc    *Go2RTC
@@ -135,6 +138,7 @@ func (a *App) MotionStart(cam string, score float64) {
 	e := a.events.Start(cam, a.clock.Now(), score)
 	a.mqtt.Motion(cam, true)
 	go a.captureThumb(cam, e.ID)
+	a.alerts.MotionStart(cam, *e)
 }
 
 func (a *App) MotionUpdate(cam string, score float64) { a.events.Update(cam, score) }
@@ -144,7 +148,11 @@ func (a *App) MotionEnd(cam string) {
 	a.mqtt.Motion(cam, false)
 }
 
-func (a *App) Activity(cam string, score float64) { a.activity.Record(cam, a.clock.Now(), score) }
+func (a *App) Activity(cam string, score float64, box Rect) {
+	now := a.clock.Now()
+	a.activity.Record(cam, now, score)
+	a.alerts.Sample(cam, now, score, box)
+}
 
 func (a *App) Preview(cam string, jpeg []byte) { a.previews.Add(cam, a.clock.Now(), jpeg) }
 
@@ -322,26 +330,37 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
-func (a *App) retention() (map[string]int, int) {
+// retention returns each camera's policy, plus a default (the longest configured) for
+// footage of cameras that were removed.
+func (a *App) retention() (map[string]Retention, Retention) {
 	s := a.settings.Get()
-	retain := map[string]int{}
-	def := 2
+	pol := map[string]Retention{}
+	def := Retention{Days: 2}
 	for _, c := range s.Cameras {
-		retain[c.ID] = c.RetainDays
-		if c.RetainDays > def {
-			def = c.RetainDays
-		}
+		r := Retention{Days: c.RetainDays, MotionDays: c.MotionRetainDays}
+		pol[c.ID] = r
+		def.Days = max(def.Days, r.Days)
+		def.MotionDays = max(def.MotionDays, r.MotionDays)
 	}
-	return retain, def
+	return pol, def
 }
 
+// motionPad is how much footage around each motion event is kept with it.
+const motionPad = 15 * time.Second
+
 func (a *App) cleanup() {
-	retain, def := a.retention()
+	pol, def := a.retention()
 	s := a.settings.Get()
-	a.store.Cleanup(retain, def, s.MinFreeGB)
-	a.events.Cleanup(retain, def)
-	a.activity.Cleanup(retain, def)
-	a.previews.Cleanup(retain, def)
+	a.store.Cleanup(pol, def, s.MinFreeGB, a.events.Spans(motionPad))
+	// Events and the heatmap are kept as long as any footage is; timeline previews only as
+	// long as the 24/7 footage (older moments are previewed from the recording itself).
+	longest, days := map[string]int{}, map[string]int{}
+	for cam, r := range pol {
+		longest[cam], days[cam] = r.Longest(), r.Days
+	}
+	a.events.Cleanup(longest, def.Longest())
+	a.activity.Cleanup(longest, def.Longest())
+	a.previews.Cleanup(days, def.Days)
 	a.clips.Cleanup(s.ClipRetentionDays)
 }
 

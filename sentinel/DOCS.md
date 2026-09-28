@@ -25,6 +25,8 @@ through router restarts, power cuts and flaky cameras.
   restarts the add-on if the main loop or a recorder loop gets stuck.
 - **Never fills the disk.** Recordings older than each camera's retention are
   deleted, and the oldest are removed early if free space drops below the minimum.
+  Each camera can keep the minutes that contain motion (plus 15 s around them)
+  longer than its 24/7 footage, e.g. everything for 2 days and motion for 7.
 
 ## Pages
 
@@ -44,9 +46,16 @@ through router restarts, power cuts and flaky cameras.
   timeline (or scrub and press I / O, or type exact times with ±1 s buttons),
   preview it, name it and save. Clips are cut from the recordings without
   re-encoding, so saving is fast and full quality.
+- **Playback:** every camera playing the same moment side by side on one clock, to
+  follow someone from camera to camera. One timeline for all of them, previous/next
+  motion on any camera, speeds up to 8×, enlarge one camera, listen to one camera.
+- **Go to (G):** on a camera or in Playback, type a moment the way you'd say it
+  ("yesterday 3:15 pm", "22:40", "mon 9am", "27 sep 2pm", "10 min ago") or pick a
+  date and time.
 - **Timeline:** every camera on one timeline with recording gaps and motion, plus
   recorded percentage per camera.
-- **Events:** motion events with thumbnails, by day, filterable by camera and size.
+- **Events:** motion events with thumbnails, by day, filterable by camera, size and
+  time range (today, 24 hours, 7 days or any custom from–to range).
 - **Clips:** every saved clip with thumbnail, progress while saving, player,
   download, rename, pin and delete. Files are in `/media/sentinel/exports` (also
   in Home Assistant's Media panel). Unpinned clips are removed after the clip
@@ -55,6 +64,52 @@ through router restarts, power cuts and flaky cameras.
   storage with a days-of-capacity forecast, clock status, and an activity log.
 - **Settings:** add/edit/remove cameras (with a connection test), retention, audio,
   motion sensitivity and ignore zones, alerts and quiet windows, disk floor.
+
+## Night alerts on WhatsApp
+
+Between the hours you choose (default 23:00–06:00), motion on the selected cameras
+sends WhatsApp pictures: a close-up of the area that moved and the full scene, both
+taken from the full-quality recording at the moment with the most movement. Motion
+shorter than the minimum length (insects, rain, IR flicker) is ignored, and each camera
+waits the cooldown before alerting again. Optionally each alert is saved as a clip.
+This is motion only; there is no person or face recognition.
+
+Messages go through the **PDC WhatsApp Bridge** add-on (2.1.0 or newer). In Settings,
+paste the bridge's `api_token`, then choose the chat: the bridge's recipient number or
+any WhatsApp group the bridge's number is a member of. **Send a test picture** checks
+the whole path. If WhatsApp is briefly offline (e.g. a router restart), alerts are
+retried for 15 minutes.
+
+## Google Drive backup
+
+Clips can be copied to your Google Drive (automatically for night alert clips or all
+clips, or with the cloud button on a clip). Setup, once:
+
+1. In the Google Cloud Console create a project and enable the Google Drive API.
+2. In Google Auth Platform, set an app name, choose External and **Publish app**
+   (unpublished apps are disconnected after 7 days).
+3. Create an OAuth client of type **TVs and Limited Input devices**.
+4. Paste its client ID and secret in Sentinel's Settings, press Connect and enter the
+   code Google shows you.
+
+Sentinel uses the `drive.file` permission, so it can only see the files it uploads
+(into a "Sentinel" folder). Uploads resume after network drops, and old backups can be
+removed from Drive automatically.
+
+## Home Assistant dashboard card
+
+Sentinel installs a dashboard card at `/local/sentinel/sentinel-card.js`. Add it as a
+dashboard resource (JavaScript module), then use:
+
+```yaml
+type: custom:sentinel-card
+height: calc(100vh - var(--header-height))   # optional, default 75vh
+```
+
+It shows every camera live (sized to fit), recording status and the latest motion,
+and opens cameras, playback and events inside the card. Cameras you add in Sentinel
+appear automatically. It uses Home Assistant's own login (an ingress session), so no
+port is exposed.
 
 ## Adding a camera
 

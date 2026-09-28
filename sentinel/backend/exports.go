@@ -38,6 +38,19 @@ type Clip struct {
 	Pinned     bool    `json:"pinned"`
 	// File name in the exports folder, e.g. "Roof front gate_1a2b3c4d.mp4".
 	File string `json:"file"`
+	// Saved automatically for a night alert.
+	Alert bool `json:"alert,omitempty"`
+	// Google Drive copy, if any.
+	Backup *ClipBackup `json:"backup,omitempty"`
+}
+
+type ClipBackup struct {
+	State    string  `json:"state"` // pending | uploading | done | failed
+	Progress float64 `json:"progress"`
+	FileID   string  `json:"file_id,omitempty"`
+	Error    string  `json:"error,omitempty"`
+	At       int64   `json:"at"`
+	Tries    int     `json:"tries"`
 }
 
 type ClipStore struct {
@@ -65,6 +78,9 @@ func newClipStore(dir string, app *App) *ClipStore {
 			// Interrupted by a restart or power cut.
 			c.Status, c.Error, c.Progress = "failed", "interrupted by a restart — save it again", 0
 			_ = os.Remove(cs.partPath(c.ID))
+		}
+		if c.Backup != nil && c.Backup.State == "uploading" {
+			c.Backup.State = "pending" // start the upload over
 		}
 		cs.clips[c.ID] = &c
 		cs.persist(&c)
@@ -130,6 +146,10 @@ func (cs *ClipStore) update(id string, f func(c *Clip)) {
 }
 
 func (cs *ClipStore) Create(cam Camera, from, to time.Time, name string) (*Clip, error) {
+	return cs.create(cam, from, to, name, false)
+}
+
+func (cs *ClipStore) create(cam Camera, from, to time.Time, name string, alert bool) (*Clip, error) {
 	if !to.After(from) {
 		return nil, errors.New("the end must be after the start")
 	}
@@ -145,7 +165,7 @@ func (cs *ClipStore) Create(cam Camera, from, to time.Time, name string) (*Clip,
 	if name == "" {
 		name = fmt.Sprintf("%s · %s", cam.Name, from.In(time.Local).Format("Jan 2, 15:04:05"))
 	}
-	c := &Clip{ID: hex.EncodeToString(b), Name: name, Camera: cam.ID, CameraName: cam.Name, From: from.UnixMilli(), To: to.UnixMilli(), Created: time.Now().UnixMilli(), Status: "queued"}
+	c := &Clip{ID: hex.EncodeToString(b), Name: name, Camera: cam.ID, CameraName: cam.Name, From: from.UnixMilli(), To: to.UnixMilli(), Created: time.Now().UnixMilli(), Status: "queued", Alert: alert}
 	c.File = clipFileName(name, c.ID)
 	cs.mu.Lock()
 	cs.clips[c.ID] = c
@@ -259,6 +279,7 @@ func (cs *ClipStore) render(ctx context.Context, id string) {
 		}
 	})
 	cs.app.incidents.Add("info", job.Camera, "Clip saved: %s", job.Name)
+	cs.app.drive.ClipReady(id)
 }
 
 func (cs *ClipStore) List() []Clip {
@@ -334,6 +355,16 @@ func (cs *ClipStore) Cleanup(days int) {
 			cs.Delete(c.ID)
 		}
 	}
+}
+
+// SetBackup changes a clip's Drive backup state (nil f result removes it).
+func (cs *ClipStore) SetBackup(id string, f func(b *ClipBackup)) {
+	cs.update(id, func(c *Clip) {
+		if c.Backup == nil {
+			c.Backup = &ClipBackup{}
+		}
+		f(c.Backup)
+	})
 }
 
 func (cs *ClipStore) Bytes() int64 {

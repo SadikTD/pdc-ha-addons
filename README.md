@@ -8,6 +8,10 @@ Reliable 24/7 camera recorder (NVR) with a modern UI, built to keep recording th
 - Corrects timestamps itself when the host clock is wrong (e.g. after a power cut with the internet down); file names are unique, so nothing is ever overwritten.
 - Sidebar app: live grid, full-quality live view, zoomable recordings timeline with motion heatmap, events with thumbnails, clip export, system health and storage forecast, and a Settings page to add or edit any number of cameras.
 - Motion detection on the substream, with ignore zones; MQTT motion/recording sensors and snapshot cameras; outage alerts with quiet windows.
+- Synchronized multi-camera playback, "go to" any moment in plain words ("yesterday 3:15 pm"), event search by camera and time range.
+- Night alerts: WhatsApp pictures (close-up of the moving area plus the full scene) through the PDC WhatsApp Bridge; optional clip of each alert.
+- Keeps motion footage longer than 24/7 footage (e.g. 2 days of everything, 7 days of motion); clips backed up to Google Drive.
+- A Lovelace card (`custom:sentinel-card`) with the live grid and latest motion.
 
 See [sentinel/DOCS.md](sentinel/DOCS.md). UI source is in `sentinel/frontend` (`npm run build` writes `sentinel/www`).
 
@@ -17,7 +21,7 @@ Self-hosted [Baileys](https://github.com/WhiskeySockets/Baileys) sender used by 
 
 - Logs in once with a pairing code shown in the add-on log.
 - Exposes `POST /send` (bearer token, JSON `{to, text, idempotencyKey}`) and `GET /health` on port 8787 inside the Supervisor network only. No host port is published.
-- Only the configured recipient number can be messaged.
+- Only the configured recipient number can be messaged; `POST /send-image` (JPEG + caption, used by Sentinel's night alerts) may also go to WhatsApp groups the sender number is a member of (`GET /chats` lists them).
 - Each idempotency key is sent at most once, including across restarts.
 - Session files are written atomically (temp file, fsync, rename), so a power cut can't corrupt the login.
 - Raises a Home Assistant notification if WhatsApp is unlinked, restricted, or offline for 10+ minutes.

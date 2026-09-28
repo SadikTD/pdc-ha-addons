@@ -148,6 +148,18 @@ func (es *EventStore) List(cams []string, from, to int64, limit int) []Event {
 	return out
 }
 
+func (es *EventStore) Get(cam, id string) (Event, bool) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	list := es.events[cam]
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].ID == id {
+			return *list[i], true
+		}
+	}
+	return Event{}, false
+}
+
 func (es *EventStore) Last(cam string) *Event {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -165,6 +177,33 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// Spans returns each camera's motion as merged [start-pad, end+pad] spans, for keeping
+// the recordings that contain motion longer than the rest.
+func (es *EventStore) Spans(pad time.Duration) map[string][]Span {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	out := map[string][]Span{}
+	p := pad.Milliseconds()
+	now := time.Now().UnixMilli()
+	for cam, list := range es.events {
+		var spans []Span
+		for _, e := range list {
+			end := e.End
+			if end == 0 {
+				end = now
+			}
+			a, b := e.Start-p, end+p
+			if n := len(spans); n > 0 && a <= spans[n-1].End {
+				spans[n-1].End = max(spans[n-1].End, b)
+				continue
+			}
+			spans = append(spans, Span{a, b})
+		}
+		out[cam] = spans
+	}
+	return out
 }
 
 func (es *EventStore) Cleanup(retain map[string]int, defaultDays int) {

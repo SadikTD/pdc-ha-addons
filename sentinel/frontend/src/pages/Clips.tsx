@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
-import { Download, Film, Loader2, Pencil, Pin, PinOff, Play, Trash2, X, AlertTriangle, FolderOpen, Check } from "lucide-react";
+import { Download, Film, Loader2, Pencil, Pin, PinOff, Play, Trash2, X, AlertTriangle, FolderOpen, Check, CloudUpload, CloudCheck, CloudAlert, Moon } from "lucide-react";
 import { Button, Card, Empty, IconButton, PageHeader } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
@@ -22,7 +22,7 @@ export function ClipsPage() {
     api.settings().then((s) => setRetention(s.clip_retention_days)).catch(() => {});
   }, []);
   // Poll faster while something is saving.
-  const busy = clips?.some((c) => c.status === "saving" || c.status === "queued");
+  const busy = clips?.some((c) => c.status === "saving" || c.status === "queued" || c.backup?.state === "uploading");
   useEffect(() => {
     const t = window.setInterval(load, busy ? 1000 : 10_000);
     return () => window.clearInterval(t);
@@ -46,7 +46,18 @@ export function ClipsPage() {
     }
   };
 
+  const backup = async (c: Clip) => {
+    try {
+      await api.backupClip(c.id);
+      toast("Uploading to Google Drive…", "info");
+      load();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  };
+
   const total = clips?.reduce((n, c) => n + c.size, 0) ?? 0;
+  const drive = !!status?.drive.connected;
 
   return (
     <>
@@ -80,7 +91,7 @@ export function ClipsPage() {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {!clips
             ? [0, 1, 2].map((i) => <div key={i} className="skeleton aspect-video rounded-2xl" />)
-            : clips.map((c, i) => <ClipCard key={c.id} clip={c} index={i} cameraName={status?.cameras.find((x) => x.id === c.camera)?.name ?? c.camera_name} onPlay={() => setPlaying(c)} onPatch={(p) => patch(c, p)} onDelete={() => remove(c)} />)}
+            : clips.map((c, i) => <ClipCard key={c.id} clip={c} index={i} cameraName={status?.cameras.find((x) => x.id === c.camera)?.name ?? c.camera_name} onPlay={() => setPlaying(c)} onPatch={(p) => patch(c, p)} onDelete={() => remove(c)} onBackup={drive ? () => backup(c) : undefined} />)}
         </div>
       )}
 
@@ -89,7 +100,24 @@ export function ClipsPage() {
   );
 }
 
-function ClipCard({ clip: c, index, cameraName, onPlay, onPatch, onDelete }: { clip: Clip; index: number; cameraName: string; onPlay: () => void; onPatch: (p: { name?: string; pinned?: boolean }) => void; onDelete: () => void }) {
+function ClipCard({
+  clip: c,
+  index,
+  cameraName,
+  onPlay,
+  onPatch,
+  onDelete,
+  onBackup,
+}: {
+  clip: Clip;
+  index: number;
+  cameraName: string;
+  onPlay: () => void;
+  onPatch: (p: { name?: string; pinned?: boolean }) => void;
+  onDelete: () => void;
+  onBackup?: () => void;
+}) {
+  const b = c.backup;
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(c.name);
   const [confirm, setConfirm] = useState(false);
@@ -122,11 +150,33 @@ function ClipCard({ clip: c, index, cameraName, onPlay, onPatch, onDelete }: { c
         )}
         <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur">{cameraName}</span>
         <span className="absolute bottom-2 right-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white backdrop-blur">{fmtDuration(c.to - c.from)}</span>
-        {c.pinned && (
-          <span className="absolute right-2 top-2 rounded-md bg-violet-500 p-1 text-white" title="Pinned: never deleted automatically">
-            <Pin className="size-3" />
-          </span>
-        )}
+        <span className="absolute right-2 top-2 flex gap-1">
+          {c.alert && (
+            <span className="flex items-center gap-1 rounded-md bg-indigo-500/90 px-1.5 py-0.5 text-[10px] font-semibold text-white" title="Saved automatically for a night alert">
+              <Moon className="size-3" /> Alert
+            </span>
+          )}
+          {b?.state === "done" && (
+            <span className="rounded-md bg-emerald-500/90 p-1 text-white" title="Backed up to Google Drive">
+              <CloudCheck className="size-3" />
+            </span>
+          )}
+          {(b?.state === "uploading" || b?.state === "pending") && (
+            <span className="flex items-center gap-1 rounded-md bg-cyan-500/90 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white" title="Uploading to Google Drive">
+              <CloudUpload className="size-3" /> {b.state === "pending" ? "Queued" : `${Math.round(b.progress)}%`}
+            </span>
+          )}
+          {b?.state === "failed" && (
+            <span className="rounded-md bg-rose-500/90 p-1 text-white" title={`Drive backup failed: ${b.error ?? ""} (retrying)`}>
+              <CloudAlert className="size-3" />
+            </span>
+          )}
+          {c.pinned && (
+            <span className="rounded-md bg-violet-500 p-1 text-white" title="Pinned: never deleted automatically">
+              <Pin className="size-3" />
+            </span>
+          )}
+        </span>
       </button>
       <div className="p-3">
         {editing ? (
@@ -171,6 +221,11 @@ function ClipCard({ clip: c, index, cameraName, onPlay, onPatch, onDelete }: { c
                 </Button>
               </a>
               <div className="ml-auto flex">
+                {onBackup && ready && b?.state !== "done" && b?.state !== "uploading" && (
+                  <IconButton title={b?.state === "failed" ? "Retry the Google Drive backup" : "Back up to Google Drive"} onClick={onBackup} className="size-8">
+                    <CloudUpload className="size-3.5" />
+                  </IconButton>
+                )}
                 <IconButton title="Rename" onClick={() => setEditing((e) => !e)} className="size-8">
                   <Pencil className="size-3.5" />
                 </IconButton>

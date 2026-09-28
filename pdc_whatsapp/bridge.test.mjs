@@ -86,3 +86,33 @@ test('options require a long token and international numbers', () => {
   writeFileSync(file, JSON.stringify({ api_token: 'short', sender_number: '+15550000001', recipient_number: '+15550000002' }));
   assert.throws(() => loadOptions(file));
 });
+
+const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(200, 1)]).toString('base64');
+const withGroups = (onImage = async () => 'IMG1') => ({
+  ...online(), sendImage: onImage, groups: async () => [{ id: '120363000000000001@g.us', name: 'Home', size: 3 }],
+});
+const post = (s, path, body) => fetch(s.base + path, {
+  method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+});
+
+test('images go to the recipient or a joined group only', async () => {
+  const sent = []; const s = await serve(withGroups(async (jid, buf, caption) => { sent.push([jid, buf.length, caption]); return 'IMG1'; }));
+  const img = { image: jpeg, caption: 'Motion', idempotencyKey: 'sentinel:e1:1' };
+  assert.equal((await post(s, '/send-image', { ...img, to: '120363000000000001@g.us' })).status, 200);
+  assert.equal((await post(s, '/send-image', { ...img, to: '+15550000002', idempotencyKey: 'sentinel:e1:2' })).status, 200);
+  assert.equal((await post(s, '/send-image', { ...img, to: '120363999999999999@g.us', idempotencyKey: 'sentinel:e1:3' })).status, 403);
+  assert.equal((await post(s, '/send-image', { ...img, to: '+15550000003', idempotencyKey: 'sentinel:e1:4' })).status, 403);
+  assert.equal((await post(s, '/send-image', { ...img, image: 'aGVsbG8=', to: '+15550000002', idempotencyKey: 'sentinel:e1:5' })).status, 400);
+  assert.deepEqual(sent.map(x => x[0]), ['120363000000000001@g.us', '15550000002@s.whatsapp.net']);
+  // Text sends still refuse groups.
+  assert.equal((await post(s, '/send', { to: '120363000000000001@g.us', text: 'hi', idempotencyKey: 'k9' })).status, 403);
+  s.close();
+});
+
+test('lists chats for authorised callers', async () => {
+  const s = await serve(withGroups());
+  const r = await fetch(s.base + '/chats', { headers: { Authorization: `Bearer ${token}` } });
+  assert.deepEqual(await r.json(), { recipient: '+15550000002', groups: [{ id: '120363000000000001@g.us', name: 'Home', size: 3 }] });
+  assert.equal((await fetch(s.base + '/chats')).status, 401);
+  s.close();
+});
