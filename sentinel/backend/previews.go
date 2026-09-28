@@ -26,13 +26,13 @@ type previewEntry struct {
 }
 
 type PreviewStore struct {
-	mu      sync.Mutex
-	root    string
-	files   map[string]*os.File         // cam -> open file for the current hour
-	hourOf  map[string]string           // cam -> hour key of the open file
-	index   map[string][]previewEntry   // cam/hour -> entries
-	latest  map[string][]byte           // cam -> newest frame
-	lastAt  map[string]time.Time
+	mu     sync.Mutex
+	root   string
+	files  map[string]*os.File       // cam -> open file for the current hour
+	hourOf map[string]string         // cam -> hour key of the open file
+	index  map[string][]previewEntry // cam/hour -> entries
+	latest map[string][]byte         // cam -> newest frame
+	lastAt map[string]time.Time
 }
 
 func newPreviewStore(root string) *PreviewStore {

@@ -23,6 +23,7 @@ export type Settings = {
   notify_after_minutes: number;
   quiet_windows: string[];
   mqtt_enabled: boolean;
+  clip_retention_days: number;
 };
 
 export type StreamInfo = { video_codec: string; width: number; height: number; fps: number; audio_codec: string };
@@ -73,6 +74,8 @@ export type Status = {
     capacity_days: number;
     min_free_gb: number;
     orphans: { id: string; bytes: number; count: number }[] | null;
+    breakdown: Record<string, number> | null;
+    clips: number;
   };
   clock: ClockStatus;
   live: boolean;
@@ -81,6 +84,20 @@ export type Status = {
 };
 
 export type Span = { s: number; e: number };
+export type Clip = {
+  id: string;
+  name: string;
+  camera: string;
+  camera_name: string;
+  from: number;
+  to: number;
+  created: number;
+  status: "queued" | "saving" | "ready" | "failed";
+  progress: number;
+  error?: string;
+  size: number;
+  pinned: boolean;
+};
 export type Incident = { t: number; level: "info" | "warn" | "error"; camera?: string; message: string };
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -115,6 +132,10 @@ export const api = {
   },
   incidents: (limit = 200) => request<Incident[]>("GET", `api/incidents?limit=${limit}`),
   restartCamera: (id: string) => request<{ ok: boolean }>("POST", `api/cameras/${id}/restart`),
+  clips: () => request<Clip[]>("GET", "api/clips"),
+  createClip: (camera: string, from: number, to: number, name: string) => request<Clip>("POST", "api/clips", { camera, from: Math.round(from), to: Math.round(to), name }),
+  patchClip: (id: string, patch: { name?: string; pinned?: boolean }) => request<Clip>("PATCH", `api/clips/${id}`, patch),
+  deleteClip: (id: string) => request<{ ok: boolean }>("DELETE", `api/clips/${id}`),
   deleteRecordings: (id: string) => request<{ ok: boolean }>("DELETE", `api/recordings/${id}`),
 };
 
@@ -122,4 +143,5 @@ export const snapshotURL = (cam: string, hq = false, bust = 0) => `api/cameras/$
 export const latestFrameURL = (cam: string) => `api/cameras/${cam}/latest.jpg`;
 export const thumbURL = (e: SentinelEvent) => `api/events/${e.camera}/${e.id}/thumb.jpg`;
 export const vodURL = (cam: string, from: number, to: number) => `api/vod.m3u8?camera=${cam}&from=${Math.round(from)}&to=${Math.round(to)}`;
-export const exportURL = (cam: string, from: number, to: number) => `api/export/${cam}?from=${Math.round(from)}&to=${Math.round(to)}`;
+export const clipVideoURL = (id: string, download = false) => `api/clips/${id}/video${download ? "?download=1" : ""}`;
+export const clipThumbURL = (c: Clip) => `api/clips/${c.id}/thumb.jpg?v=${c.status}`;

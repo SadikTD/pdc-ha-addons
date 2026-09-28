@@ -53,6 +53,8 @@ type Settings struct {
 	// Daily "HH:MM-HH:MM" windows (local time) with no outage alerts, e.g. a scheduled router restart.
 	QuietWindows []string `json:"quiet_windows"`
 	MQTTEnabled  bool     `json:"mqtt_enabled"`
+	// Saved clips are deleted after this many days unless pinned (0 = keep forever).
+	ClipRetentionDays int `json:"clip_retention_days"`
 }
 
 func defaultSettings() Settings {
@@ -62,6 +64,7 @@ func defaultSettings() Settings {
 		NotifyAfterMinutes: 5,
 		QuietWindows:       []string{},
 		MQTTEnabled:        true,
+		ClipRetentionDays:  30,
 	}
 }
 
@@ -115,6 +118,9 @@ func (s *Settings) normalize() error {
 	}
 	if s.MinFreeGB < 1 {
 		s.MinFreeGB = 1
+	}
+	if s.ClipRetentionDays < 0 {
+		s.ClipRetentionDays = 0
 	}
 	if s.NotifyAfterMinutes < 1 {
 		s.NotifyAfterMinutes = 1

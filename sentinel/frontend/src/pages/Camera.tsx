@@ -1,25 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
 import {
-  ArrowLeft, Camera as CamIcon, Download, Expand, Loader2, Pause, Play, Radio, RotateCcw, RotateCw, Scissors, SkipBack, SkipForward,
+  ArrowLeft, Camera as CamIcon, Save, Expand, PlayCircle, Loader2, Pause, Play, Radio, RotateCcw, RotateCw, Scissors, SkipBack, SkipForward,
   Volume2, VolumeX, X, ZoomIn, ZoomOut, Zap, ImageOff,
 } from "lucide-react";
 import { LiveStream } from "../components/LiveStream";
 import { VodPlayer, type VodHandle } from "../components/VodPlayer";
 import { Scrubber, MIN_RANGE, MAX_RANGE } from "../components/Scrubber";
+import { ZoomPan } from "../components/ZoomPan";
 import { Button, Card, IconButton, StatePill, recState } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { useTimeline } from "../lib/useTimeline";
 import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
-import { api, exportURL, thumbURL, type SentinelEvent, type Span } from "../lib/api";
+import { api, thumbURL, type SentinelEvent, type Span } from "../lib/api";
 import { DAY, HOUR, fmtBitrate, fmtBytes, fmtDay, fmtDuration, fmtTimeSec } from "../lib/format";
 
 const RATES = [1, 2, 4, 8, 16];
 const ZOOMS: [string, number][] = [["5m", 5 * 60_000], ["30m", 30 * 60_000], ["1h", HOUR], ["6h", 6 * HOUR], ["24h", DAY]];
-const CLIP_LENGTHS: [string, number][] = [["15s", 15_000], ["30s", 30_000], ["1m", 60_000], ["2m", 120_000], ["5m", 300_000], ["15m", 900_000]];
 
 function findPlayable(spans: Span[], t: number): number | null {
   for (const s of spans) {
@@ -57,6 +57,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   const liveVideo = useRef<HTMLVideoElement | null>(null);
   const stage = useRef<HTMLDivElement>(null);
   const pendingTimer = useRef(0);
+  const previewUntil = useRef<number | null>(null);
 
   const center = scrubT ?? pendingT ?? (mode === "live" ? now : (curT ?? now));
   const live = mode === "live" && scrubT === null && pendingT === null;
@@ -157,8 +158,16 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   };
 
   const startClip = () => {
-    const from = Math.min(center, Date.now() - 30_000);
-    setSelection({ from, to: from + 30_000 });
+    const mid = Math.min(center, Date.now() - 20_000);
+    setSelection({ from: mid - 15_000, to: Math.min(Date.now() - 2000, mid + 15_000) });
+    setRange((r) => Math.min(r, 10 * 60_000));
+  };
+  const markIn = () => setSelection((s) => (s ? { from: Math.min(center, s.to - 1000), to: s.to } : { from: center, to: Math.min(Date.now() - 2000, center + 30_000) }));
+  const markOut = () => setSelection((s) => (s ? { from: s.from, to: Math.max(center, s.from + 1000) } : { from: center - 30_000, to: center }));
+  const previewClip = () => {
+    if (!selection) return;
+    previewUntil.current = selection.to;
+    seekTo(selection.from, true);
   };
 
   const fullscreen = () => {
@@ -176,6 +185,9 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
       else if (e.key === "ArrowRight") nudge(e.shiftKey ? 60 : 10);
       else if (e.key === "[") jumpEvent(-1);
       else if (e.key === "]") jumpEvent(1);
+      else if (e.key === "i" || e.key === "I") markIn();
+      else if (e.key === "o" || e.key === "O") markOut();
+      else if (e.key === "Escape") setSelection(null);
       else if (e.key === "l" || e.key === "L") goLive();
       else if (e.key === "f" || e.key === "F") fullscreen();
     };
@@ -224,6 +236,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
         <div className="flex min-w-0 flex-col gap-3">
           {/* Player stage */}
           <div ref={stage} className="group relative aspect-video overflow-hidden rounded-2xl border border-white/[0.07] bg-black shadow-2xl shadow-black/50">
+            <ZoomPan resetKey={id}>
             <div className="absolute inset-0">
               {mode === "live" ? (
                 <LiveStream camera={id} hq audio={audio} className="h-full w-full" onVideo={(v) => (liveVideo.current = v)} />
@@ -233,7 +246,14 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
                   camera={id}
                   seek={seek}
                   rate={rate}
-                  onTime={(t) => pendingT === null && scrubT === null && setCurT(t)}
+                  onTime={(t) => {
+                    if (pendingT !== null || scrubT !== null) return;
+                    setCurT(t);
+                    if (previewUntil.current && t >= previewUntil.current) {
+                      previewUntil.current = null;
+                      vod.current?.video?.pause();
+                    }
+                  }}
                   onPlaying={(p) => {
                     setPlaying(p);
                     if (p) setPendingT(null);
@@ -274,6 +294,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
                 </motion.div>
               )}
             </AnimatePresence>
+            </ZoomPan>
 
             {/* Top overlay */}
             <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between bg-gradient-to-b from-black/60 to-transparent p-3">
@@ -375,6 +396,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
               range={range}
               live={live}
               selection={selection}
+              onSelection={setSelection}
               onScrubStart={onScrubStart}
               onScrub={setScrubT}
               onScrubEnd={onScrubEnd}
@@ -384,9 +406,21 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-gradient-to-r from-violet-500/70 to-cyan-400/40" /> Recorded</span>
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-amber-400" /> Motion</span>
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-rose-500/30" /> Not recorded</span>
-              <span className="ml-auto hidden md:inline">Drag or flick to scrub · click to jump · scroll to zoom</span>
+              <span className="ml-auto hidden md:inline">Drag to scrub · click to jump · scroll to zoom · scroll on the video to magnify</span>
             </div>
-            <AnimatePresence>{selection && <ClipPanel id={id} selection={selection} setSelection={setSelection} center={center} onDone={() => toast("Preparing your clip…", "info")} />}</AnimatePresence>
+            <AnimatePresence>
+              {selection && (
+                <ClipEditor
+                  cameraId={id}
+                  cameraName={cam?.name ?? id}
+                  selection={selection}
+                  setSelection={setSelection}
+                  onMarkIn={markIn}
+                  onMarkOut={markOut}
+                  onPreview={previewClip}
+                />
+              )}
+            </AnimatePresence>
           </Card>
         </div>
 
@@ -436,50 +470,113 @@ function toTimeInput(ms: number) {
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
-function ClipPanel({ id, selection, setSelection, center, onDone }: { id: string; selection: { from: number; to: number }; setSelection: (s: { from: number; to: number } | null) => void; center: number; onDone: () => void }) {
+function ClipEditor({
+  cameraId,
+  cameraName,
+  selection,
+  setSelection,
+  onMarkIn,
+  onMarkOut,
+  onPreview,
+}: {
+  cameraId: string;
+  cameraName: string;
+  selection: { from: number; to: number };
+  setSelection: (s: { from: number; to: number } | null) => void;
+  onMarkIn: () => void;
+  onMarkOut: () => void;
+  onPreview: () => void;
+}) {
+  const toast = useToast();
+  const nav = useNavigate();
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
   const len = selection.to - selection.from;
-  const setStart = (from: number) => setSelection({ from, to: from + len });
+  const defaultName = `${cameraName} · ${fmtTimeSec(selection.from)}`;
+
+  const nudge = (edge: "from" | "to", ms: number) => {
+    const s = { ...selection, [edge]: selection[edge] + ms };
+    if (s.to - s.from < 1000 || s.to > Date.now()) return;
+    setSelection(s);
+  };
+  const setTime = (edge: "from" | "to", value: string) => {
+    const [h, m, sec] = value.split(":").map(Number);
+    const d = new Date(selection[edge]);
+    d.setHours(h, m, sec || 0, 0);
+    const s = { ...selection, [edge]: d.getTime() };
+    if (s.to - s.from >= 1000) setSelection(s);
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.createClip(cameraId, selection.from, selection.to, name || defaultName);
+      toast("Saving clip — it will be in Clips in a moment", "success", { label: "Open Clips", onClick: () => nav("/clips") });
+      setSelection(null);
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const edgeRow = (edge: "from" | "to", label: string, onMark: () => void, kbd: string) => (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="w-10 text-[11px] font-semibold uppercase tracking-wider text-cyan-300/80">{label}</span>
+      <button onClick={() => nudge(edge, -1000)} className="rounded-md px-1.5 py-1 text-xs text-slate-400 hover:bg-white/10 hover:text-white" title="1 s earlier">
+        −1s
+      </button>
+      <input
+        type="time"
+        step={1}
+        value={toTimeInput(selection[edge])}
+        onChange={(e) => setTime(edge, e.target.value)}
+        className="h-8 rounded-lg border border-white/10 bg-ink-900 px-2 font-mono text-sm text-white"
+      />
+      <button onClick={() => nudge(edge, 1000)} className="rounded-md px-1.5 py-1 text-xs text-slate-400 hover:bg-white/10 hover:text-white" title="1 s later">
+        +1s
+      </button>
+      <button onClick={onMark} className="rounded-lg border border-cyan-400/30 px-2 py-1 text-xs font-medium text-cyan-200 hover:bg-cyan-400/10" title={`Set to the playhead (${kbd})`}>
+        Set to playhead <kbd className="ml-1 rounded bg-white/10 px-1 text-[10px]">{kbd}</kbd>
+      </button>
+    </div>
+  );
+
   return (
     <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
-      <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-cyan-400/20 bg-cyan-400/5 px-3 py-3 text-sm">
-        <Scissors className="size-4 text-cyan-300" />
-        <label className="flex items-center gap-2 text-slate-300">
-          Start
+      <div className="mt-4 rounded-2xl border border-cyan-400/25 bg-gradient-to-br from-cyan-400/[0.07] to-violet-500/[0.05] p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <Scissors className="size-4 text-cyan-300" /> New clip
+            <span className="rounded-full bg-cyan-400/15 px-2 py-0.5 text-xs font-semibold text-cyan-200">{fmtDuration(len)}</span>
+          </div>
+          <IconButton title="Cancel (Esc)" onClick={() => setSelection(null)} className="size-8">
+            <X className="size-4" />
+          </IconButton>
+        </div>
+        <p className="mb-3 text-xs text-slate-400">
+          Drag the cyan handles on the timeline, or scrub to a moment and press <b className="text-slate-200">I</b> for the start and <b className="text-slate-200">O</b> for the end.
+        </p>
+        <div className="flex flex-col gap-2">
+          {edgeRow("from", "Start", onMarkIn, "I")}
+          {edgeRow("to", "End", onMarkOut, "O")}
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           <input
-            type="time"
-            step={1}
-            value={toTimeInput(selection.from)}
-            onChange={(e) => {
-              const [h, m, s] = e.target.value.split(":").map(Number);
-              const d = new Date(selection.from);
-              d.setHours(h, m, s || 0, 0);
-              setStart(d.getTime());
-            }}
-            className="h-8 rounded-lg border border-white/10 bg-ink-900 px-2 text-sm text-white"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={defaultName}
+            className="h-9 min-w-48 flex-1 rounded-xl border border-white/10 bg-ink-900 px-3 text-sm text-white placeholder:text-slate-600"
           />
-        </label>
-        <button onClick={() => setStart(center)} className="rounded-lg px-2 py-1 text-xs text-cyan-200 hover:bg-white/5">Start at playhead</button>
-        <div className="flex rounded-lg bg-white/5 p-0.5">
-          {CLIP_LENGTHS.map(([l, ms]) => (
-            <button key={l} onClick={() => setSelection({ from: selection.from, to: selection.from + ms })} className={clsx("rounded-md px-2 py-1 text-xs font-medium", len === ms ? "bg-cyan-500 text-ink-950" : "text-slate-400 hover:text-white")}>
-              {l}
-            </button>
-          ))}
-        </div>
-        <span className="text-xs text-slate-500">
-          {fmtTimeSec(selection.from)} → {fmtTimeSec(selection.to)}
-        </span>
-        <div className="ml-auto flex gap-2">
-          <Button size="sm" variant="ghost" onClick={() => setSelection(null)}>
-            <X className="size-3.5" /> Cancel
+          <Button size="sm" onClick={onPreview}>
+            <PlayCircle className="size-4" /> Preview
           </Button>
-          <a href={exportURL(id, selection.from, selection.to)} download onClick={onDone}>
-            <Button size="sm" variant="primary">
-              <Download className="size-3.5" /> Download MP4
-            </Button>
-          </a>
+          <Button size="sm" variant="primary" onClick={save} disabled={saving || len > 3 * HOUR}>
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Save clip
+          </Button>
         </div>
+        {len > 3 * HOUR && <p className="mt-2 text-xs text-rose-300">Clips can be up to 3 hours long.</p>}
       </div>
     </motion.div>
   );
 }
+

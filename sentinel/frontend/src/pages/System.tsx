@@ -121,6 +121,22 @@ export function SystemPage() {
             <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-slate-500" /> Other {fmtBytes(Math.max(0, s.disk.used - s.used))}</span>
             <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-white/10" /> Free {fmtBytes(s.disk.free)}</span>
           </div>
+          {s.breakdown && (
+            <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {[
+                ["recordings", "Recordings", "Deleted after each camera's retention"],
+                ["previews", "Timeline previews", "Same retention as recordings"],
+                ["events", "Motion events", "Same retention as recordings"],
+                ["activity", "Motion heatmap", "Same retention as recordings"],
+                ["exports", "Saved clips", "Kept until they expire or you delete them"],
+              ].map(([k, label, hint]) => (
+                <div key={k} className="rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2" title={hint}>
+                  <div className="text-[11px] text-slate-500">{label}</div>
+                  <div className="text-sm font-semibold tabular-nums text-white">{fmtBytes(s.breakdown?.[k] ?? 0)}</div>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Stat label="Write rate" value={`${fmtBytes(s.rate_bph * 24)}/day`} />
             <Stat label="Capacity" value={s.capacity_days ? `${s.capacity_days.toFixed(1)} days` : "—"} sub="at current rate" />

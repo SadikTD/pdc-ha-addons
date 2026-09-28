@@ -63,7 +63,10 @@ func main() {
 		started:   time.Now(),
 	}
 	app.heartbeat.Store(time.Now().UnixMilli())
+	app.clips = newClipStore(filepath.Join(media, "exports"), app)
 	app.Init()
+	go app.clips.Run(ctx)
+	go app.measureSizes()
 
 	go clock.Run(ctx)
 	go app.go2rtc.Run(ctx)

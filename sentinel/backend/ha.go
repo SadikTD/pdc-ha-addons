@@ -127,8 +127,8 @@ func (m *MQTT) Run(ctx context.Context) {
 			SetClientID("sentinel-nvr").
 			SetUsername(svc.Data.Username).SetPassword(svc.Data.Password).
 			SetAutoReconnect(true).SetConnectRetry(true).
-			SetConnectRetryInterval(10 * time.Second).SetMaxReconnectInterval(30 * time.Second).
-			SetKeepAlive(30 * time.Second).
+			SetConnectRetryInterval(10*time.Second).SetMaxReconnectInterval(30*time.Second).
+			SetKeepAlive(30*time.Second).
 			SetWill(availTopic, "offline", 1, true)
 		opts.SetOnConnectHandler(func(c mqtt.Client) {
 			m.connected.Store(true)

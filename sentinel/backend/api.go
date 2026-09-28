@@ -76,7 +76,21 @@ func (a *App) Routes(www string) http.Handler {
 	})
 	mux.HandleFunc("GET /api/vod.m3u8", a.handleVOD)
 	mux.HandleFunc("GET /api/seg/{cam}/{id}", a.handleSegment)
-	mux.HandleFunc("GET /api/export/{id}", a.handleExport)
+	mux.HandleFunc("GET /api/clips", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, a.clips.List()) })
+	mux.HandleFunc("POST /api/clips", a.handleCreateClip)
+	mux.HandleFunc("PATCH /api/clips/{id}", a.handlePatchClip)
+	mux.HandleFunc("DELETE /api/clips/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !a.clips.Delete(r.PathValue("id")) {
+			writeErr(w, 409, "clip is still being saved")
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("GET /api/clips/{id}/video", a.handleClipVideo)
+	mux.HandleFunc("GET /api/clips/{id}/thumb.jpg", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		http.ServeFile(w, r, a.clips.thumbPath(filepath.Base(r.PathValue("id"))))
+	})
 	mux.HandleFunc("GET /api/incidents", func(w http.ResponseWriter, r *http.Request) {
 		n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		writeJSON(w, 200, a.incidents.List(max(n, 100)))
@@ -179,7 +193,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"cameras":   cams,
 		"storage": map[string]any{
 			"disk": du, "used": used, "rate_bph": rate, "capacity_days": capacityDays,
-			"min_free_gb": s.MinFreeGB, "orphans": orphans,
+			"min_free_gb": s.MinFreeGB, "orphans": orphans, "breakdown": a.breakdown.Load(), "clips": a.clips.Bytes(),
 		},
 		"clock":  a.clock.Status(),
 		"live":   a.go2rtc.running.Load(),
@@ -403,73 +417,6 @@ func (a *App) handleSegment(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "", st.ModTime(), f)
 }
 
-// handleExport joins the recordings of a time range into one MP4 download (no re-encoding).
-func (a *App) handleExport(w http.ResponseWriter, r *http.Request) {
-	cam := r.PathValue("id")
-	from := msParam(r, "from", time.Time{})
-	to := msParam(r, "to", time.Time{})
-	if from.IsZero() || !to.After(from) {
-		writeErr(w, 400, "choose a start and end time")
-		return
-	}
-	if to.Sub(from) > 3*time.Hour {
-		writeErr(w, 400, "exports are limited to 3 hours")
-		return
-	}
-	segs := a.store.Range(cam, from, to)
-	if len(segs) == 0 {
-		writeErr(w, 404, "no recordings in that range")
-		return
-	}
-	tmp, err := os.MkdirTemp("", "export")
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	defer os.RemoveAll(tmp)
-	var list strings.Builder
-	for _, s := range segs {
-		p := a.store.Path(cam, s.ID)
-		if p == "" {
-			continue
-		}
-		fmt.Fprintf(&list, "file '%s'\n", strings.ReplaceAll(p, "'", `'\''`))
-		if in := from.Sub(s.Start()); in > 0 {
-			fmt.Fprintf(&list, "inpoint %.3f\n", in.Seconds())
-		}
-		if out := to.Sub(s.Start()); out < s.End().Sub(s.Start()) {
-			fmt.Fprintf(&list, "outpoint %.3f\n", out.Seconds())
-		}
-	}
-	listPath := filepath.Join(tmp, "list.txt")
-	_ = os.WriteFile(listPath, []byte(list.String()), 0o600)
-	out := filepath.Join(tmp, "clip.mp4")
-	args := []string{"-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listPath, "-map", "0:v", "-map", "0:a?", "-c", "copy"}
-	a.mu.Lock()
-	if rec := a.recorders[cam]; rec != nil && rec.Status().Stream.VideoCodec == "hevc" {
-		args = append(args, "-tag:v", "hvc1")
-	}
-	a.mu.Unlock()
-	args = append(args, "-movflags", "+faststart", out)
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
-	defer cancel()
-	if msg, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
-		writeErr(w, 500, "export failed: "+strings.TrimSpace(string(msg)))
-		return
-	}
-	f, err := os.Open(out)
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	defer f.Close()
-	st, _ := f.Stat()
-	name := fmt.Sprintf("%s_%s.mp4", cam, from.In(time.Local).Format("2006-01-02_15-04-05"))
-	w.Header().Set("Content-Type", "video/mp4")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
-	http.ServeContent(w, r, name, st.ModTime(), f)
-}
-
 // handlePreview serves the preview frame nearest to a time (unix ms) for timeline scrubbing.
 func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 	ts, err := strconv.ParseInt(strings.TrimSuffix(r.PathValue("ts"), ".jpg"), 10, 64)
@@ -565,4 +512,72 @@ func (a *App) frameFromRecording(ctx context.Context, cam string, t time.Time) (
 	}
 	extractCache.Store(key, out)
 	return out, true
+}
+
+func (a *App) handleCreateClip(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Camera string `json:"camera"`
+		From   int64  `json:"from"`
+		To     int64  `json:"to"`
+		Name   string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		writeErr(w, 400, "bad request")
+		return
+	}
+	var cam *Camera
+	for _, c := range a.settings.Get().Cameras {
+		if c.ID == req.Camera {
+			cam = &c
+			break
+		}
+	}
+	if cam == nil {
+		cam = &Camera{ID: req.Camera, Name: req.Camera}
+	}
+	clip, err := a.clips.Create(*cam, time.UnixMilli(req.From), time.UnixMilli(req.To), req.Name)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, clip)
+}
+
+func (a *App) handlePatchClip(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name   *string `json:"name"`
+		Pinned *bool   `json:"pinned"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		writeErr(w, 400, "bad request")
+		return
+	}
+	c, ok := a.clips.Patch(r.PathValue("id"), req.Name, req.Pinned)
+	if !ok {
+		writeErr(w, 404, "clip not found")
+		return
+	}
+	writeJSON(w, 200, c)
+}
+
+// handleClipVideo streams a saved clip (seekable); ?download=1 makes the browser save it.
+func (a *App) handleClipVideo(w http.ResponseWriter, r *http.Request) {
+	c, ok := a.clips.Get(r.PathValue("id"))
+	if !ok || c.Status != "ready" {
+		writeErr(w, 404, "clip not ready")
+		return
+	}
+	f, err := os.Open(a.clips.videoPath(c.ID))
+	if err != nil {
+		writeErr(w, 404, "clip file missing")
+		return
+	}
+	defer f.Close()
+	st, _ := f.Stat()
+	name := safeFileName(c.Name) + ".mp4"
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	}
+	w.Header().Set("Content-Type", "video/mp4")
+	http.ServeContent(w, r, name, st.ModTime(), f)
 }

@@ -3,15 +3,16 @@ import { AnimatePresence, motion } from "motion/react";
 import { CheckCircle2, AlertTriangle, Info } from "lucide-react";
 
 type Kind = "success" | "error" | "info";
-type Toast = { id: number; kind: Kind; text: string };
-const ToastContext = createContext<(text: string, kind?: Kind) => void>(() => {});
+type Action = { label: string; onClick: () => void };
+type Toast = { id: number; kind: Kind; text: string; action?: Action };
+const ToastContext = createContext<(text: string, kind?: Kind, action?: Action) => void>(() => {});
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const push = useCallback((text: string, kind: Kind = "success") => {
+  const push = useCallback((text: string, kind: Kind = "success", action?: Action) => {
     const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, kind, text }]);
-    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 6000 : 3500);
+    setToasts((t) => [...t, { id, kind, text, action }]);
+    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" || action ? 7000 : 3500);
   }, []);
   const Icon = { success: CheckCircle2, error: AlertTriangle, info: Info };
   const color = { success: "text-emerald-400", error: "text-rose-400", info: "text-cyan-300" };
@@ -33,6 +34,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               >
                 <I className={`size-4 shrink-0 ${color[t.kind]}`} />
                 <span>{t.text}</span>
+                {t.action && (
+                  <button
+                    onClick={() => {
+                      t.action!.onClick();
+                      setToasts((all) => all.filter((x) => x.id !== t.id));
+                    }}
+                    className="ml-1 shrink-0 rounded-lg bg-white/10 px-2.5 py-1 text-xs font-semibold text-white hover:bg-white/20"
+                  >
+                    {t.action.label}
+                  </button>
+                )}
               </motion.div>
             );
           })}

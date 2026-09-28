@@ -16,7 +16,7 @@ func logf(format string, args ...any) {
 
 // Incident is a notable event shown on the System page (reconnects, stalls, cleanups).
 type Incident struct {
-	Time    int64  `json:"t"` // unix ms
+	Time    int64  `json:"t"`     // unix ms
 	Level   string `json:"level"` // info | warn | error
 	Camera  string `json:"camera,omitempty"`
 	Message string `json:"message"`

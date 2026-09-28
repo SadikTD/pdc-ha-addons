@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
-import { LayoutGrid, GanttChart, Zap, HeartPulse, Settings2 } from "lucide-react";
+import { LayoutGrid, GanttChart, Zap, Film, HeartPulse, Settings2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useStatus } from "../lib/status";
 
@@ -9,6 +9,7 @@ const NAV = [
   { to: "/", label: "Live", icon: LayoutGrid },
   { to: "/timeline", label: "Timeline", icon: GanttChart },
   { to: "/events", label: "Events", icon: Zap },
+  { to: "/clips", label: "Clips", icon: Film },
   { to: "/system", label: "System", icon: HeartPulse },
   { to: "/settings", label: "Settings", icon: Settings2 },
 ];

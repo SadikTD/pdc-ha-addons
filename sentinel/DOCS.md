@@ -35,12 +35,22 @@ through router restarts, power cuts and flaky cameras.
   player shows preview frames of that moment as you go; let go to play from there.
   Click to jump, scroll or pinch to zoom (1 minute to 2 days). Motion events are
   bars above the track, missing footage is tinted red, and hovering shows a
-  thumbnail. Playback up to 16×, previous/next motion, ±10 s, snapshots,
-  fullscreen and clip export. Keys: space play/pause, ←/→ 10 s (Shift = 1 min),
-  [ / ] previous/next motion, L live, F fullscreen.
+  thumbnail. Playback up to 16×, previous/next motion, ±10 s, snapshots and
+  fullscreen. Scroll on the video to zoom into the picture (up to 8×), drag to pan,
+  double-click to zoom in or reset. Keys: space play/pause, ←/→ 10 s (Shift =
+  1 min), [ / ] previous/next motion, + / − / 0 video zoom, I / O clip start/end,
+  L live, F fullscreen.
+- **Saving a clip:** press the scissors button, then drag the cyan handles on the
+  timeline (or scrub and press I / O, or type exact times with ±1 s buttons),
+  preview it, name it and save. Clips are cut from the recordings without
+  re-encoding, so saving is fast and full quality.
 - **Timeline:** every camera on one timeline with recording gaps and motion, plus
   recorded percentage per camera.
 - **Events:** motion events with thumbnails, by day, filterable by camera and size.
+- **Clips:** every saved clip with thumbnail, progress while saving, player,
+  download, rename, pin and delete. Files are in `/media/sentinel/exports` (also
+  in Home Assistant's Media panel). Unpinned clips are removed after the clip
+  retention set in Settings (default 30 days).
 - **System:** health, per-camera recorder stats (bitrate, restarts, last write),
   storage with a days-of-capacity forecast, clock status, and an activity log.
 - **Settings:** add/edit/remove cameras (with a connection test), retention, audio,

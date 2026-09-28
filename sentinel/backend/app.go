@@ -20,6 +20,8 @@ type App struct {
 	events    *EventStore
 	activity  *ActivityStore
 	previews  *PreviewStore
+	clips     *ClipStore
+	breakdown atomic.Value // map[string]int64: bytes per data type
 	incidents *IncidentLog
 	go2rtc    *Go2RTC
 	mqtt      *MQTT
@@ -169,6 +171,7 @@ func (a *App) Background() {
 	lastCleanup := time.Time{}
 	lastFlush := time.Now()
 	lastStorage := time.Time{}
+	lastSizes := time.Time{}
 	for {
 		select {
 		case <-a.ctx.Done():
@@ -185,6 +188,10 @@ func (a *App) Background() {
 			if now.Sub(lastCleanup) > time.Minute {
 				a.cleanup()
 				lastCleanup = now
+			}
+			if now.Sub(lastSizes) > 5*time.Minute {
+				go a.measureSizes()
+				lastSizes = now
 			}
 			if now.Sub(lastStorage) > time.Minute {
 				a.publishStorage()
@@ -335,6 +342,7 @@ func (a *App) cleanup() {
 	a.events.Cleanup(retain, def)
 	a.activity.Cleanup(retain, def)
 	a.previews.Cleanup(retain, def)
+	a.clips.Cleanup(s.ClipRetentionDays)
 }
 
 func (a *App) publishStorage() {
@@ -374,4 +382,20 @@ func (a *App) Healthy() bool {
 		}
 	}
 	return true
+}
+
+// measureSizes adds up what each kind of Sentinel data uses on disk (System page).
+func (a *App) measureSizes() {
+	sizes := map[string]int64{}
+	for _, d := range []string{"recordings", "previews", "events", "activity", "exports"} {
+		_ = filepath.WalkDir(filepath.Join(a.media, d), func(_ string, e os.DirEntry, err error) error {
+			if err == nil && !e.IsDir() {
+				if info, err := e.Info(); err == nil {
+					sizes[d] += info.Size()
+				}
+			}
+			return nil
+		})
+	}
+	a.breakdown.Store(sizes)
 }

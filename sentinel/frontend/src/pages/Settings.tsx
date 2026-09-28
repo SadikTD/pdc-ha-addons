@@ -111,6 +111,18 @@ export function SettingsPage() {
               <span className="w-16 text-right text-sm tabular-nums text-white">{draft.min_free_gb} GB</span>
             </div>
           </Field>
+          <div className="mt-5">
+            <Field label="Keep saved clips for" hint="Pinned clips are never deleted automatically.">
+              <select value={draft.clip_retention_days} onChange={(e) => set("clip_retention_days", Number(e.target.value))} className={inputCls}>
+                {[7, 14, 30, 90, 365].map((d) => (
+                  <option key={d} value={d}>
+                    {d} days
+                  </option>
+                ))}
+                <option value={0}>Forever (until I delete them)</option>
+              </select>
+            </Field>
+          </div>
           <p className="mt-4 text-xs text-slate-500">How long to keep footage is set per camera. Recordings are stored in <code className="text-slate-400">/media/sentinel</code>.</p>
         </Card>
       </div>

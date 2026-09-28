@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"io"
-	"os"
 	"math"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"

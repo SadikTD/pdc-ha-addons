@@ -17,6 +17,7 @@ type Props = {
   range: number;
   live: boolean;
   selection?: { from: number; to: number } | null;
+  onSelection?: (s: { from: number; to: number }) => void;
   onScrubStart: () => void;
   onScrub: (t: number) => void;
   onScrubEnd: (t: number) => void;
@@ -39,9 +40,10 @@ export function Scrubber(p: Props) {
   const [width, setWidth] = useState(800);
   const [hover, setHover] = useState<{ x: number; t: number } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [onEdge, setOnEdge] = useState(false);
   const props = useRef(p);
   props.current = p;
-  const gesture = useRef<{ x: number; c0: number; moved: boolean; samples: { x: number; at: number }[]; pinch?: { d0: number; r0: number } } | null>(null);
+  const gesture = useRef<{ x: number; c0: number; moved: boolean; samples: { x: number; at: number }[]; pinch?: { d0: number; r0: number }; edge?: "from" | "to" } | null>(null);
   const pointers = useRef(new Map<number, number>());
   const anim = useRef(0);
   const wheelEnd = useRef(0);
@@ -171,8 +173,15 @@ export function Scrubber(p: Props) {
       g.fillStyle = "rgba(34,211,238,0.16)";
       g.fillRect(x0, AXIS, x1 - x0, HEIGHT - AXIS);
       g.fillStyle = "#22d3ee";
-      g.fillRect(x0 - 1, AXIS, 2, HEIGHT - AXIS);
-      g.fillRect(x1 - 1, AXIS, 2, HEIGHT - AXIS);
+      for (const x of [x0, x1]) {
+        g.fillRect(x - 1, AXIS, 2, HEIGHT - AXIS);
+        rr(g, x - 5, TRACK_Y + TRACK_H / 2 - 13, 10, 26, 4);
+        g.fill();
+        g.fillStyle = "#0b3440";
+        g.fillRect(x - 1.5, TRACK_Y + TRACK_H / 2 - 6, 1, 12);
+        g.fillRect(x + 0.5, TRACK_Y + TRACK_H / 2 - 6, 1, 12);
+        g.fillStyle = "#22d3ee";
+      }
     }
 
     // now marker (when not at the playhead)
@@ -223,7 +232,14 @@ export function Scrubber(p: Props) {
       gesture.current = { x: 0, c0: props.current.center, moved: true, samples: [], pinch: { d0: Math.max(20, Math.abs(a - b)), r0: props.current.range } };
       return;
     }
-    gesture.current = { x: e.clientX, c0: props.current.center, moved: false, samples: [{ x: e.clientX, at: performance.now() }] };
+    const sel = props.current.selection;
+    const lx = localX(e.clientX);
+    let edge: "from" | "to" | undefined;
+    if (sel && props.current.onSelection) {
+      if (Math.abs(lx - xOf(sel.from)) < 12) edge = "from";
+      else if (Math.abs(lx - xOf(sel.to)) < 12) edge = "to";
+    }
+    gesture.current = { x: e.clientX, c0: props.current.center, moved: false, samples: [{ x: e.clientX, at: performance.now() }], edge };
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -232,6 +248,8 @@ export function Scrubber(p: Props) {
     if (!g) {
       const x = localX(e.clientX);
       setHover({ x, t: tOf(x) });
+      const sel = props.current.selection;
+      setOnEdge(!!sel && (Math.abs(x - xOf(sel.from)) < 12 || Math.abs(x - xOf(sel.to)) < 12));
       return;
     }
     if (g.pinch && pointers.current.size === 2) {
@@ -241,6 +259,14 @@ export function Scrubber(p: Props) {
       return;
     }
     const dx = e.clientX - g.x;
+    if (g.edge) {
+      // Dragging a clip handle.
+      const sel = props.current.selection!;
+      const t = clampT(tOf(localX(e.clientX)));
+      props.current.onSelection!(g.edge === "from" ? { from: Math.min(t, sel.to - 1000), to: sel.to } : { from: sel.from, to: Math.max(t, sel.from + 1000) });
+      g.moved = true;
+      return;
+    }
     if (!g.moved && Math.abs(dx) > 4) {
       g.moved = true;
       setDragging(true);
@@ -259,7 +285,7 @@ export function Scrubber(p: Props) {
     if (pointers.current.size > 0) return;
     gesture.current = null;
     if (!g) return;
-    if (g.pinch) return;
+    if (g.pinch || g.edge) return;
     if (!g.moved) {
       // Click: jump there.
       animateTo(clampT(tOf(localX(e.clientX))));
@@ -318,7 +344,7 @@ export function Scrubber(p: Props) {
       <canvas
         ref={canvas}
         style={{ width, height: HEIGHT, touchAction: "none" }}
-        className={clsx("block", dragging ? "cursor-grabbing" : "cursor-grab")}
+        className={clsx("block", onEdge ? "cursor-ew-resize" : dragging ? "cursor-grabbing" : "cursor-grab")}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
