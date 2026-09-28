@@ -13,7 +13,15 @@ type SetFn = <K extends keyof Settings>(k: K, v: Settings[K]) => void;
 
 // ---------------------------------------------------------------- night alerts
 
-const secs = (v: number) => (v < 60 ? `${v} seconds` : v === 60 ? "1 minute" : `${v / 60} minutes`);
+const secs = (v: number) => {
+  if (v < 60) return v === 1 ? "1 second" : `${v} seconds`;
+  const m = Math.floor(v / 60), s = v % 60;
+  const min = m === 1 ? "1 minute" : `${m} minutes`;
+  return s ? `${min} ${s} s` : min;
+};
+
+// Preset gaps between alerts; any other number of seconds is "Custom".
+const GAPS = [0, 10, 20, 30, 60, 120, 300];
 
 // Plain-language summary of what the timing settings do together.
 function describeTiming(n: Settings["night_alerts"]) {
@@ -39,6 +47,7 @@ export function NightAlertsCard({ draft, set, cameras }: { draft: Settings; set:
   const [testing, setTesting] = useState(false);
   const [alerts, setAlerts] = useState<AlertRecord[]>([]);
   const [advanced, setAdvanced] = useState(!!draft.whatsapp.bridge_url);
+  const [customGap, setCustomGap] = useState(!GAPS.includes(n.cooldown_seconds));
 
   const loadWa = useCallback(async () => {
     setLoadingWa(true);
@@ -90,7 +99,7 @@ export function NightAlertsCard({ draft, set, cameras }: { draft: Settings; set:
 
   return (
     <Card className="p-5">
-      <SectionTitle sub="A WhatsApp picture of whatever moves at night: a close-up of the moving area and the full scene, taken from the full-quality recording.">
+      <SectionTitle sub="A WhatsApp picture of the full scene when a person or animal moves at night, taken from the full-quality recording.">
         <span className="flex items-center gap-2"><Moon className="size-4" /> Night alerts</span>
       </SectionTitle>
       <div className="space-y-5">
@@ -108,13 +117,38 @@ export function NightAlertsCard({ draft, set, cameras }: { draft: Settings; set:
 
           <div className="grid gap-4 rounded-xl border border-white/5 bg-white/[0.02] p-4 sm:grid-cols-2">
             <Field label="Gap between alerts (per camera)" hint="Motion during the gap isn't lost: it's sent the moment the gap ends.">
-              <select value={n.cooldown_seconds} onChange={(e) => setN({ cooldown_seconds: Number(e.target.value) })} className={inputCls}>
-                {[0, 10, 20, 30, 60, 120, 300].map((v) => (
-                  <option key={v} value={v}>
-                    {v === 0 ? "None: alert on every motion" : secs(v)}
-                  </option>
-                ))}
-              </select>
+              <div className="space-y-2">
+                <select
+                  value={customGap ? "custom" : n.cooldown_seconds}
+                  onChange={(e) => {
+                    if (e.target.value === "custom") return setCustomGap(true);
+                    setCustomGap(false);
+                    setN({ cooldown_seconds: Number(e.target.value) });
+                  }}
+                  className={inputCls}
+                >
+                  {GAPS.map((v) => (
+                    <option key={v} value={v}>
+                      {v === 0 ? "None: alert on every motion" : secs(v)}
+                    </option>
+                  ))}
+                  <option value="custom">Custom…</option>
+                </select>
+                {customGap && (
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="number"
+                      min={0}
+                      max={3600}
+                      autoFocus
+                      value={n.cooldown_seconds}
+                      onChange={(e) => setN({ cooldown_seconds: Math.min(3600, Math.max(0, Math.round(Number(e.target.value) || 0))) })}
+                      className={clsx(inputCls, "!w-24 text-center")}
+                    />
+                    <span className="text-sm text-slate-400">seconds</span>
+                  </div>
+                )}
+              </div>
             </Field>
             <Field label="While motion continues" hint="Someone lingering keeps sending fresh pictures instead of just one.">
               <select value={n.followup_seconds} onChange={(e) => setN({ followup_seconds: Number(e.target.value) })} className={inputCls}>
