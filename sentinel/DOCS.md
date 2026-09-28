@@ -30,8 +30,11 @@ through router restarts, power cuts and flaky cameras.
 
 ## Pages
 
-- **Live:** all cameras in a grid (substreams, low bandwidth), with a recording
-  badge and a glow on cameras that see motion.
+- **Live:** all cameras sized to fit the screen without scrolling (or 1–3 columns),
+  from the low-bandwidth substreams shown in the camera's real shape, with only small
+  labels over the picture and a glow on cameras that see motion. Cameras marked "Often
+  switched off" show as switched off instead of as a problem, and never raise
+  "not recording" alerts; they start recording by themselves when turned on.
 - **Camera:** full-quality live view with audio, and a scrubbing timeline: the
   playhead stays in the middle while you drag (or flick) the timeline, and the
   player shows preview frames of that moment as you go; let go to play from there.
@@ -80,7 +83,11 @@ shorter than the minimum length (insects, rain, IR flicker) is ignored, and each
 waits the chosen gap before alerting again; motion during the gap isn't dropped, it's
 sent as soon as the gap ends. While motion continues, a fresh picture can follow every
 15 s to 2 min, and an hourly limit per camera stops rain or a swaying tree from
-flooding the chat. Optionally each alert is saved as a clip. This is motion only;
+flooding the chat. The picture isn't just "the moment of most motion": Sentinel decodes
+several full-quality frames across the motion and sends the one where something stands
+out most from the empty scene just before, with the close-up around it. If nothing
+visible moved (a light change, a shadow, noise), no alert is sent and the reason shows
+under Recent alerts. Optionally each alert is saved as a clip. This is motion only;
 there is no person or face recognition.
 
 Messages go through the **PDC WhatsApp Bridge** add-on (2.1.0 or newer). In Settings,

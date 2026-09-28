@@ -32,9 +32,12 @@ type Camera struct {
 	RetainDays int    `json:"retain_days"`
 	// Footage with motion is kept this long (0 = same as RetainDays); the rest of the
 	// 24/7 recording is removed after RetainDays.
-	MotionRetainDays  int    `json:"motion_retain_days"`
-	MotionSensitivity int    `json:"motion_sensitivity"` // 1..100, higher = more sensitive
-	MotionMasks       []Rect `json:"motion_masks"`
+	MotionRetainDays  int `json:"motion_retain_days"`
+	MotionSensitivity int `json:"motion_sensitivity"` // 1..100, higher = more sensitive
+	// Switched on only now and then (e.g. a shop camera): no "not recording" alerts, and
+	// being offline isn't shown as a problem.
+	Occasional  bool   `json:"occasional"`
+	MotionMasks []Rect `json:"motion_masks"`
 	// Ignore zones drawn as polygons (normalised points); motion inside is ignored.
 	MotionZones []Zone `json:"motion_zones"`
 }

@@ -26,7 +26,7 @@ type AlertRecord struct {
 	CameraName string `json:"camera_name"`
 	At         int64  `json:"at"` // the moment in the pictures (unix ms)
 	Event      string `json:"event,omitempty"`
-	Status     string `json:"status"` // sending | sent | failed
+	Status     string `json:"status"` // sending | sent | failed | skipped
 	Error      string `json:"error,omitempty"`
 	Clip       string `json:"clip,omitempty"`
 	Test       bool   `json:"test,omitempty"`
@@ -210,11 +210,31 @@ func (al *Alerter) fire(cam string, e Event) {
 		return
 	}
 	name := cameraName(s, cam)
-	end := ev.End
-	if end == 0 {
-		end = time.Now().UnixMilli()
+	cfg := cameraConfig(s, cam)
+	bg := time.UnixMilli(ev.Start - 3000) // the scene just before anything moved
+	from := time.UnixMilli(ev.Start - 500)
+	var pic shotResult
+	found := false
+	// Keep looking while the motion lasts (up to 2 minutes) until a frame shows it.
+	for {
+		to := time.Now()
+		hint := al.best(cam, from.UnixMilli(), to.UnixMilli())
+		if pic, found = al.shot(cfg, bg, from, to, hint.t); found {
+			break
+		}
+		cur, ok := al.app.events.Get(cam, e.ID)
+		if !ok || cur.End != 0 && cur.End < to.UnixMilli() || time.Since(time.UnixMilli(ev.Start)) > 2*time.Minute {
+			break
+		}
+		from = to
+		if !sleepCtx(al.app.ctx, 3*time.Second) {
+			return
+		}
 	}
-	best := al.best(cam, ev.Start-1000, end)
+	if !found {
+		al.put(AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: ev.Start, Event: e.ID, Status: "skipped", Error: "nothing visible moved (light change or noise)"})
+		return
+	}
 
 	al.mu.Lock()
 	ok, note := al.allowLocked(cam, al.state(cam), n.MaxPerHour)
@@ -222,13 +242,13 @@ func (al *Alerter) fire(cam string, e Event) {
 	if !ok {
 		return
 	}
-	rec := AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: best.t.UnixMilli(), Event: e.ID, Status: "sending"}
+	rec := AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: pic.t.UnixMilli(), Event: e.ID, Status: "sending"}
 	al.put(rec)
-	err := al.deliver(cam, name, best.t, best.box, n.CloseUp, s.WhatsApp.To, e.ID, "", note, 15*time.Minute)
+	err := al.deliver(cam, name, pic.t, pic.box, n.CloseUp, s.WhatsApp.To, e.ID, "", note, 15*time.Minute)
 	al.finish(rec.ID, err)
 	if err != nil {
 		al.app.incidents.Add("error", cam, "Night alert not sent to WhatsApp: %v", err)
-		notifyHA("", "Sentinel: night alert not sent", fmt.Sprintf("Motion on %s at %s, but the WhatsApp alert failed: %v", name, best.t.In(time.Local).Format("15:04:05"), err), "whatsapp", false)
+		notifyHA("", "Sentinel: night alert not sent", fmt.Sprintf("Motion on %s at %s, but the WhatsApp alert failed: %v", name, pic.t.In(time.Local).Format("15:04:05"), err), "whatsapp", false)
 	} else {
 		al.app.incidents.Add("info", cam, "Night alert sent to WhatsApp (%s)", s.WhatsApp.ToName)
 		notifyHA("", "", "", "whatsapp", true)
@@ -247,7 +267,11 @@ func (al *Alerter) fire(cam string, e Event) {
 		if !ok || cur.End != 0 && cur.End < from.UnixMilli()+2000 {
 			return // the motion stopped; the next motion is a new alert
 		}
-		b := al.best(cam, from.UnixMilli(), time.Now().UnixMilli())
+		hint := al.best(cam, from.UnixMilli(), time.Now().UnixMilli())
+		b, seen := al.shot(cfg, bg, from, time.Now(), hint.t)
+		if !seen {
+			continue // nothing visible this time; look again next round
+		}
 		al.mu.Lock()
 		ok, note = al.allowLocked(cam, al.state(cam), n.MaxPerHour)
 		al.mu.Unlock()
@@ -260,6 +284,79 @@ func (al *Alerter) fire(cam string, e Event) {
 		al.finish(id, err)
 		n = al.app.settings.Get().NightAlerts
 	}
+}
+
+type shotResult struct {
+	t    time.Time
+	box  Rect
+	size int
+}
+
+const (
+	shotW, shotH = 160, 90
+	// The moving thing must cover at least this many cells of 160x90 (about 0.12% of
+	// the picture, e.g. a person far down a corridor).
+	minShotBlob = 18
+)
+
+// shot looks at several full-quality frames between from and to and picks the one that
+// differs most, as one solid shape, from the scene before the motion (bg). That is the
+// frame where the person or thing is most visible, and the shape gives the close-up.
+// found is false when nothing visible moved (a light change, noise, a shadow).
+func (al *Alerter) shot(cam Camera, bg, from, to, hint time.Time) (shotResult, bool) {
+	ctx := al.app.ctx
+	// The newest footage reaches the disk a few seconds late.
+	for deadline := time.Now().Add(20 * time.Second); ; {
+		if _, err := al.app.decodeGray(ctx, cam.ID, to, shotW, shotH); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			to = to.Add(-3 * time.Second) // use what is there
+			break
+		}
+		if !sleepCtx(ctx, time.Second) {
+			return shotResult{}, false
+		}
+	}
+	base, err := al.app.decodeGray(ctx, cam.ID, bg, shotW, shotH)
+	if err != nil {
+		// No recording to compare with: can't judge, so don't hold the alert back.
+		return shotResult{t: hint}, true
+	}
+	mask := maskGrid(cam, shotW, shotH)
+	span := to.Sub(from)
+	n := min(max(int(span/(700*time.Millisecond))+1, 3), 8)
+	times := []time.Time{}
+	for i := 0; i < n; i++ {
+		times = append(times, from.Add(span*time.Duration(i)/time.Duration(max(n-1, 1))))
+	}
+	if hint.After(from) && hint.Before(to) {
+		times = append(times, hint)
+	}
+	var best shotResult
+	for _, t := range times {
+		f, err := al.app.decodeGray(ctx, cam.ID, t, shotW, shotH)
+		if err != nil {
+			continue
+		}
+		b := biggestChange(f, base, mask, shotW, shotH)
+		if b.changed > 0.5 {
+			continue // the whole picture changed: lights or the camera switching to night mode
+		}
+		if b.size > best.size {
+			best = shotResult{t: t, box: b.box, size: b.size}
+		}
+	}
+	return best, best.size >= minShotBlob
+}
+
+func cameraConfig(s Settings, cam string) Camera {
+	for _, c := range s.Cameras {
+		if c.ID == cam {
+			return c
+		}
+	}
+	return Camera{ID: cam, Name: cam}
 }
 
 // deliver renders the pictures and sends them, retrying while the bridge or WhatsApp is

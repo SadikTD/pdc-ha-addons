@@ -293,7 +293,7 @@ func (a *App) checkOutages() {
 		if _, down := a.outage[id]; !down {
 			a.outage[id] = time.Now()
 		}
-		if !a.alerted[id] && time.Since(a.outage[id]) >= time.Duration(s.NotifyAfterMinutes)*time.Minute && !a.inQuietWindow(s.QuietWindows) {
+		if !a.alerted[id] && !cam.Occasional && time.Since(a.outage[id]) >= time.Duration(s.NotifyAfterMinutes)*time.Minute && !a.inQuietWindow(s.QuietWindows) {
 			a.alerted[id] = true
 			changes = append(changes, change{cam: cam, alert: true, down: time.Since(a.outage[id]), errMsg: st.LastError})
 		}

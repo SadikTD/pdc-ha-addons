@@ -8,19 +8,9 @@ import { CameraTile } from "./Live";
 import { useStatus } from "../lib/status";
 import { api, thumbURL, type SentinelEvent } from "../lib/api";
 import { DAY, fmtAgo, fmtTime } from "../lib/format";
+import { fitGrid } from "../lib/layout";
 
 const GAP = 10;
-
-// Largest 16:9 tile size that fits n tiles into w×h.
-function fit(n: number, w: number, h: number) {
-  let best = { cols: 1, tile: 0 };
-  for (let cols = 1; cols <= Math.max(1, n); cols++) {
-    const rows = Math.ceil(n / cols);
-    const tile = Math.min((w - GAP * (cols - 1)) / cols, ((h - GAP * (rows - 1)) / rows) * (16 / 9));
-    if (tile > best.tile) best = { cols, tile };
-  }
-  return best;
-}
 
 // The Home Assistant dashboard view (custom:sentinel-card): every camera live, sized to
 // fill the card, plus the latest motion. New cameras appear here automatically.
@@ -45,8 +35,8 @@ export function EmbedPage() {
     return () => window.clearInterval(t);
   }, []);
 
-  const { cols, tile } = fit(cams.length, size.w, size.h);
-  const recs = cams.filter((c) => c.record);
+  const { cols, tile } = fitGrid(cams.length, size.w, size.h, 260, GAP);
+  const recs = cams.filter((c) => c.record && !(c.occasional && c.recorder?.state !== "recording"));
   const ok = recs.filter((c) => c.recorder?.state === "recording").length;
   const names = Object.fromEntries(cams.map((c) => [c.id, c.name]));
 

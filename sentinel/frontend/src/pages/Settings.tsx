@@ -23,6 +23,7 @@ const blankCamera = (): Camera => ({
   motion_sensitivity: 50,
   motion_masks: [],
   motion_zones: [],
+  occasional: false,
 });
 
 export function SettingsPage() {
@@ -316,6 +317,7 @@ function CameraEditor({ initial, isNew, saving, onClose, onSave, onDelete }: { i
 
           <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
             <Toggle checked={cam.enabled} onChange={(v) => set("enabled", v)} label="Enabled" />
+            <Toggle checked={cam.occasional} onChange={(v) => set("occasional", v)} label="Often switched off" hint="No “not recording” alerts; recording starts by itself whenever the camera is on" />
             <Toggle checked={cam.record} onChange={(v) => set("record", v)} label="Record 24/7" hint="Continuous recording at full quality" />
             <Toggle checked={cam.audio} onChange={(v) => set("audio", v)} label="Record audio" hint="Converted to AAC when needed" />
             <Toggle checked={cam.motion} onChange={(v) => set("motion", v)} label="Motion detection" hint="Timeline heatmap, events, and HA motion sensor" />

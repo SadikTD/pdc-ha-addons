@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import clsx from "clsx";
-import { Camera as CamIcon, Grid2x2, Grid3x3, Square, Maximize2, HardDrive, ShieldCheck, Zap, AlertTriangle, ChevronRight } from "lucide-react";
+import { Camera as CamIcon, Grid2x2, Grid3x3, Square, Maximize2, HardDrive, ShieldCheck, Zap, AlertTriangle, ChevronRight, Scan, PowerOff } from "lucide-react";
+import { fitGrid } from "../lib/layout";
 import { LiveStream } from "../components/LiveStream";
 import { Button, Empty, PageHeader, StatePill, recState } from "../components/ui";
 import { useStatus } from "../lib/status";
@@ -10,10 +11,12 @@ import { fmtAgo, fmtBitrate, fmtBytes, fmtTime, startOfDay } from "../lib/format
 import { api, latestFrameURL, thumbURL, type CameraStatus, type SentinelEvent } from "../lib/api";
 
 const LAYOUTS = [
-  { cols: 0, icon: Grid2x2, label: "Auto" },
+  { cols: 0, icon: Scan, label: "Fit all cameras on screen" },
   { cols: 1, icon: Square, label: "1 column" },
+  { cols: 2, icon: Grid2x2, label: "2 columns" },
   { cols: 3, icon: Grid3x3, label: "3 columns" },
 ];
+const GAP = 8;
 
 // Today's motion events, shared by the summary card and the recent-motion strip.
 function useTodayEvents() {
@@ -47,6 +50,28 @@ export function LivePage() {
   };
 
   const motionNow = cams.filter((c) => c.motion?.active).length;
+
+  // "Fit": size the tiles so every camera is visible without scrolling.
+  const area = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 1000, h: 600 });
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = area.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const bottomNav = window.innerWidth < 768 ? 80 : 0;
+      setBox({ w: r.width, h: Math.max(240, window.innerHeight - r.top - 24 - bottomNav) });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (area.current) ro.observe(area.current);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [status === null]);
+  const fit = fitGrid(cams.length, box.w, box.h, 280, GAP);
 
   return (
     <>
@@ -88,12 +113,9 @@ export function LivePage() {
         />
       ) : (
         <div
-          className={clsx(
-            "grid gap-4",
-            cols === 0 && "grid-cols-1 md:grid-cols-2 2xl:grid-cols-3",
-            cols === 1 && "max-w-5xl grid-cols-1",
-            cols === 3 && "grid-cols-2 lg:grid-cols-3",
-          )}
+          ref={area}
+          className={clsx("grid", cols === 0 && "justify-center", cols === 1 && "mx-auto max-w-5xl grid-cols-1", cols === 2 && "grid-cols-1 md:grid-cols-2", cols === 3 && "grid-cols-2 lg:grid-cols-3")}
+          style={{ gap: GAP, ...(cols === 0 ? { gridTemplateColumns: `repeat(${fit.cols}, ${fit.tile}px)` } : {}) }}
         >
           {!status
             ? [0, 1, 2].map((i) => <div key={i} className="skeleton aspect-video rounded-2xl" />)
@@ -109,7 +131,7 @@ export function LivePage() {
 function SummaryCards({ events }: { events: SentinelEvent[] | null }) {
   const { status } = useStatus();
   if (!status) return null;
-  const recs = status.cameras.filter((c) => c.enabled && c.record);
+  const recs = status.cameras.filter((c) => c.enabled && c.record && !(c.occasional && c.recorder?.state !== "recording"));
   const down = recs.filter((c) => c.recorder?.state !== "recording");
   const measured = recs.filter((c) => c.storage.count > 0);
   const uptime = measured.length ? Math.min(...measured.map((c) => c.storage.uptime_24h)) : 100;
@@ -150,10 +172,10 @@ function SummaryCards({ events }: { events: SentinelEvent[] | null }) {
     violet: "bg-violet-500/10 text-violet-300",
   };
   return (
-    <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+    <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
       {cards.map(({ to, icon: I, tone, label, value, sub }, i) => (
         <motion.div key={label} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
-          <Link to={to} className="glass group flex items-center gap-3 rounded-2xl px-4 py-3 transition hover:border-white/15 hover:bg-white/[0.05]">
+          <Link to={to} className="glass group flex items-center gap-3 rounded-2xl px-3.5 py-2.5 transition hover:border-white/15 hover:bg-white/[0.05]">
             <div className={clsx("flex size-10 shrink-0 items-center justify-center rounded-xl", tones[tone])}>
               <I className="size-5" />
             </div>
@@ -211,36 +233,45 @@ export function CameraTile({ cam, index }: { cam: CameraStatus; index: number })
   const nav = useNavigate();
   const state = recState(cam.enabled, cam.record, cam.recorder);
   const motionOn = !!cam.motion?.active;
+  const off = cam.occasional && state !== "recording";
+  // The substream is often 4:3 (640x480) even when the camera's picture is 16:9: stretch it
+  // back to the real shape instead of cropping or letterboxing.
+  const s = cam.recorder?.stream;
+  const wide = !s?.width || Math.abs(s.width / s.height - 16 / 9) < 0.08;
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.97, y: 12 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      transition={{ delay: index * 0.06, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-      whileHover={{ y: -3 }}
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ delay: Math.min(index, 8) * 0.04, duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
       onClick={() => nav(`/camera/${cam.id}`)}
       className={clsx(
-        "group relative aspect-video cursor-pointer overflow-hidden rounded-2xl border border-white/[0.07] bg-black shadow-xl shadow-black/40 transition-shadow",
-        motionOn && "animate-glow",
+        "group relative aspect-video cursor-pointer overflow-hidden rounded-xl border bg-black shadow-lg shadow-black/40 transition-[border-color]",
+        motionOn ? "animate-glow border-amber-400/70" : "border-white/[0.07] hover:border-white/25",
       )}
     >
-      <LiveStream camera={cam.id} cover poster={latestFrameURL(cam.id)} className="h-full w-full" />
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/70" />
-      <div className="absolute inset-x-0 top-0 flex items-center justify-between p-3">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-white drop-shadow">{cam.name}</span>
-          {motionOn && (
-            <motion.span initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="rounded-full bg-amber-400/90 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-black">
-              Motion
-            </motion.span>
-          )}
+      {off ? (
+        <div className="flex h-full flex-col items-center justify-center gap-1.5 bg-ink-900 text-sm text-slate-500">
+          <PowerOff className="size-5" /> Camera is switched off
+          <span className="text-xs text-slate-600">Recording starts by itself when it's on</span>
         </div>
-        <StatePill state={state} compact />
+      ) : (
+        <LiveStream camera={cam.id} fill={wide} poster={latestFrameURL(cam.id)} className="h-full w-full" />
+      )}
+      {/* Small labels only: nothing darkens the picture. */}
+      <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1.5">
+        <span className="rounded-md bg-black/55 px-2 py-0.5 text-xs font-semibold text-white backdrop-blur-sm">{cam.name}</span>
+        {motionOn && <span className="rounded-md bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold uppercase text-black">Motion</span>}
       </div>
-      <div className="absolute inset-x-0 bottom-0 flex items-end justify-between p-3 text-xs text-white/75">
-        <span>{cam.last_event ? `Last motion ${fmtAgo(cam.last_event.start)}` : "No motion yet"}</span>
-        <span className="flex items-center gap-2">
+      {!off && (
+        <div className="pointer-events-none absolute right-2 top-2">
+          <StatePill state={state} compact />
+        </div>
+      )}
+      <div className="pointer-events-none absolute inset-x-2 bottom-2 flex items-end justify-between opacity-0 transition group-hover:opacity-100">
+        <span className="rounded-md bg-black/55 px-2 py-0.5 text-[11px] text-white/85 backdrop-blur-sm">{cam.last_event ? `Last motion ${fmtAgo(cam.last_event.start)}` : "No motion yet"}</span>
+        <span className="flex items-center gap-1.5 rounded-md bg-black/55 px-2 py-0.5 text-[11px] text-white/85 backdrop-blur-sm">
           {cam.recorder && cam.recorder.bitrate_kbps > 0 && <span className="tabular-nums">{fmtBitrate(cam.recorder.bitrate_kbps)}</span>}
-          <Maximize2 className="size-4 opacity-0 transition group-hover:opacity-100" />
+          <Maximize2 className="size-3.5" />
         </span>
       </div>
     </motion.div>

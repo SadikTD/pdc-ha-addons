@@ -20,6 +20,7 @@ export function LiveStream({
   hq = false,
   audio = false,
   cover = false,
+  fill = false,
   className,
   onVideo,
   poster,
@@ -28,6 +29,9 @@ export function LiveStream({
   hq?: boolean;
   audio?: boolean;
   cover?: boolean;
+  // Stretch to the box: for substreams whose shape differs from the camera's picture
+  // (e.g. 640x480 of a 16:9 camera).
+  fill?: boolean;
   className?: string;
   onVideo?: (v: HTMLVideoElement | null) => void;
   poster?: string;
@@ -77,8 +81,8 @@ export function LiveStream({
   }, [camera, hq, audio]);
 
   return (
-    <div className={clsx("relative overflow-hidden bg-black", cover && "cover", className)}>
-      {poster && state !== "playing" && <img src={poster} className={clsx("absolute inset-0 h-full w-full", cover ? "object-cover" : "object-contain")} onError={(e) => (e.currentTarget.style.display = "none")} />}
+    <div className={clsx("relative overflow-hidden bg-black", cover && "cover", fill && "fill", className)}>
+      {poster && state !== "playing" && <img src={poster} className={clsx("absolute inset-0 h-full w-full", fill ? "object-fill" : cover ? "object-cover" : "object-contain")} onError={(e) => (e.currentTarget.style.display = "none")} />}
       <div ref={host} className="absolute inset-0" />
       {state !== "playing" && (
         <div className={clsx("absolute inset-0 flex items-center justify-center", !poster && "bg-gradient-to-b from-ink-900/40 to-ink-950/70")}>

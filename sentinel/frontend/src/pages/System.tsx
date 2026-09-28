@@ -22,7 +22,7 @@ export function SystemPage() {
 
   if (!status) return <div className="skeleton h-64 rounded-2xl" />;
 
-  const recs = status.cameras.filter((c) => c.enabled && c.record);
+  const recs = status.cameras.filter((c) => c.enabled && c.record && !(c.occasional && c.recorder?.state !== "recording"));
   const bad = recs.filter((c) => c.recorder?.state !== "recording");
   const s = status.storage;
   const sentinelPct = (s.used / s.disk.total) * 100;

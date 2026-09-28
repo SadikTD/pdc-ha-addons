@@ -557,32 +557,22 @@ func (a *App) frameFromRecording(ctx context.Context, cam string, t time.Time) (
 
 var errNoFrame = errors.New("no recording at that moment yet")
 
-// decodeFrame decodes one frame of the recording at time t through the video filter vf.
-// Only the init section and the fragment containing t are fed to ffmpeg (each fragment
-// starts with a keyframe), so no seeking inside large files is needed. With exact, the
-// frame at t itself is decoded (not the fragment's keyframe) and the fragment must
-// already contain t.
-func (a *App) decodeFrame(ctx context.Context, cam string, t time.Time, vf string, q int, exact bool) ([]byte, error) {
+// fragmentAt returns the init section plus the fragment of the recording containing t
+// (each fragment starts with a keyframe), and how far into that fragment t is. With
+// exact, the fragment must already contain t (it may not be on disk yet).
+func (a *App) fragmentAt(cam string, t time.Time, exact bool) ([]byte, float64, error) {
 	segs := a.store.Range(cam, t, t.Add(time.Millisecond))
 	if len(segs) == 0 {
-		return nil, errNoFrame
+		return nil, 0, errNoFrame
 	}
 	s := segs[0]
 	p := a.store.Path(cam, s.ID)
 	if p == "" {
-		return nil, errNoFrame
+		return nil, 0, errNoFrame
 	}
-	select {
-	case extractSem <- struct{}{}:
-		defer func() { <-extractSem }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
 	idx, err := a.store.Index(&s)
 	if err != nil || len(idx.Fragments) == 0 {
-		return nil, errNoFrame
+		return nil, 0, errNoFrame
 	}
 	off := t.Sub(s.Start()).Seconds()
 	frag := idx.Fragments[0]
@@ -592,32 +582,62 @@ func (a *App) decodeFrame(ctx context.Context, cam string, t time.Time, vf strin
 		}
 	}
 	if exact && off > frag.Start+frag.Duration {
-		return nil, errNoFrame // not written to disk yet
+		return nil, 0, errNoFrame
 	}
 	file, err := os.Open(p)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer file.Close()
 	data := make([]byte, idx.InitLength+frag.Length)
 	if _, err := file.ReadAt(data[:idx.InitLength], 0); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if _, err := file.ReadAt(data[idx.InitLength:], frag.Offset); err != nil {
+		return nil, 0, err
+	}
+	return data, max(0, off-frag.Start), nil
+}
+
+func (a *App) runDecode(ctx context.Context, cam string, t time.Time, exact bool, out []string) ([]byte, error) {
+	data, into, err := a.fragmentAt(cam, t, exact)
+	if err != nil {
 		return nil, err
 	}
-	args := []string{"-v", "error", "-i", "pipe:0"}
-	if exact && off > frag.Start {
-		args = append(args, "-ss", fmt.Sprintf("%.3f", off-frag.Start))
+	select {
+	case extractSem <- struct{}{}:
+		defer func() { <-extractSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	args = append(args, "-frames:v", "1", "-vf", vf, "-q:v", strconv.Itoa(q), "-f", "image2", "-c:v", "mjpeg", "pipe:1")
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	args := []string{"-v", "error", "-i", "pipe:0"}
+	if exact && into > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%.3f", into))
+	}
+	args = append(append(args, "-frames:v", "1"), out...)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stdin = bytes.NewReader(data)
-	out, err := cmd.Output()
-	if err != nil || len(out) < 100 {
+	b, err := cmd.Output()
+	if err != nil || len(b) < 100 {
 		return nil, fmt.Errorf("could not decode a frame: %v", err)
 	}
-	return out, nil
+	return b, nil
+}
+
+// decodeFrame decodes the frame at t (exact) or the fragment's keyframe as a JPEG.
+func (a *App) decodeFrame(ctx context.Context, cam string, t time.Time, vf string, q int, exact bool) ([]byte, error) {
+	return a.runDecode(ctx, cam, t, exact, []string{"-vf", vf, "-q:v", strconv.Itoa(q), "-f", "image2", "-c:v", "mjpeg", "pipe:1"})
+}
+
+// decodeGray decodes the frame at t as a small w×h greyscale image, for comparing frames.
+func (a *App) decodeGray(ctx context.Context, cam string, t time.Time, w, h int) ([]byte, error) {
+	b, err := a.runDecode(ctx, cam, t, true, []string{"-vf", fmt.Sprintf("scale=%d:%d:flags=area,format=gray", w, h), "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"})
+	if err == nil && len(b) != w*h {
+		return nil, errNoFrame
+	}
+	return b, err
 }
 
 func (a *App) handleCreateClip(w http.ResponseWriter, r *http.Request) {

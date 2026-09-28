@@ -35,7 +35,7 @@ function Health() {
   const { status, error } = useStatus();
   if (error && !status) return <span className="text-rose-300">Can't reach Sentinel</span>;
   if (!status) return <span className="text-slate-500">Loading…</span>;
-  const recs = status.cameras.filter((c) => c.enabled && c.record);
+  const recs = status.cameras.filter((c) => c.enabled && c.record && !(c.occasional && c.recorder?.state !== "recording"));
   const ok = recs.filter((c) => c.recorder?.state === "recording").length;
   const all = ok === recs.length;
   return (

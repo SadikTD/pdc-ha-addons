@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
 import {
-  CheckCircle2, ChevronDown, CloudUpload, ExternalLink, KeyRound, Loader2, MessageCircle, Moon, RefreshCw, Send, Unplug, XCircle,
+  CheckCircle2, ChevronDown, EyeOff, CloudUpload, ExternalLink, KeyRound, Loader2, MessageCircle, Moon, RefreshCw, Send, Unplug, XCircle,
 } from "lucide-react";
 import { Button, Card, Field, SectionTitle, Toggle, inputCls } from "./ui";
 import { useToast } from "../lib/toast";
@@ -264,12 +264,12 @@ export function NightAlertsCard({ draft, set, cameras }: { draft: Settings; set:
             <div className="divide-y divide-white/5 rounded-xl border border-white/5">
               {alerts.slice(0, 8).map((a) => (
                 <div key={a.id} className="flex items-center gap-3 px-3 py-2 text-xs">
-                  {a.status === "sent" ? <CheckCircle2 className="size-4 shrink-0 text-emerald-400" /> : a.status === "failed" ? <XCircle className="size-4 shrink-0 text-rose-400" /> : <Loader2 className="size-4 shrink-0 animate-spin text-slate-400" />}
+                  {a.status === "sent" ? <CheckCircle2 className="size-4 shrink-0 text-emerald-400" /> : a.status === "skipped" ? <EyeOff className="size-4 shrink-0 text-slate-500" /> : a.status === "failed" ? <XCircle className="size-4 shrink-0 text-rose-400" /> : <Loader2 className="size-4 shrink-0 animate-spin text-slate-400" />}
                   <div className="min-w-0 flex-1">
                     <span className="font-medium text-white">{a.camera_name}</span>
                     {a.test && <span className="ml-1.5 rounded bg-white/10 px-1 text-[10px] text-slate-300">TEST</span>}
                     {a.clip && <span className="ml-1.5 rounded bg-cyan-400/15 px-1 text-[10px] text-cyan-200">CLIP</span>}
-                    {a.error && <div className="truncate text-rose-300" title={a.error}>{a.error}</div>}
+                    {a.error && <div className={clsx("truncate", a.status === "skipped" ? "text-slate-500" : "text-rose-300")} title={a.error}>{a.status === "skipped" ? `Not sent: ${a.error}` : a.error}</div>}
                   </div>
                   <span className="shrink-0 tabular-nums text-slate-500" title={new Date(a.at).toLocaleString()}>
                     {fmtDay(a.at)} {fmtTimeSec(a.at)}

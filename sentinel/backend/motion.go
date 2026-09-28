@@ -106,28 +106,11 @@ func threshold(sens int) float64 {
 	return 5.0 * math.Pow(0.02, float64(sens)/100)
 }
 
-func (m *MotionDetector) buildMask() []bool {
-	mask := make([]bool, motionW*motionH) // true = ignored
-	for _, r := range m.cam.MotionMasks {
-		x0, y0 := int(r.X*motionW), int(r.Y*motionH)
-		x1, y1 := int(math.Ceil((r.X+r.W)*motionW)), int(math.Ceil((r.Y+r.H)*motionH))
-		for y := max(0, y0); y < min(motionH, y1); y++ {
-			for x := max(0, x0); x < min(motionW, x1); x++ {
-				mask[y*motionW+x] = true
-			}
-		}
-	}
-	for _, z := range m.cam.MotionZones {
-		for y := 0; y < motionH; y++ {
-			for x := 0; x < motionW; x++ {
-				if inPolygon(z.Points, (float64(x)+0.5)/motionW, (float64(y)+0.5)/motionH) {
-					mask[y*motionW+x] = true
-				}
-			}
-		}
-	}
-	return mask
-}
+func (m *MotionDetector) buildMask() []bool { return maskGrid(m.cam, motionW, motionH) }
+
+// Changed areas smaller than this many cells (of 128x72) are sensor noise, compression
+// sparkle or insects close to an IR lamp, not something moving through the scene.
+const minBlob = 4
 
 func (m *MotionDetector) run(ctx context.Context) {
 	var bo backoff
@@ -236,20 +219,30 @@ func (m *MotionDetector) run(ctx context.Context) {
 				var cols [motionW]int
 				var rows [motionH]int
 				grid := make([]byte, len(f))
+				on := make([]bool, len(f))
 				for i, v := range f {
 					d := float32(v) - bg[i]
 					if d > pixelThreshold || d < -pixelThreshold {
 						if mask[i] {
 							grid[i] = 2
 						} else {
-							grid[i] = 1
-							changed++
-							cols[i%motionW]++
-							rows[i/motionW]++
+							on[i] = true
 						}
 					}
 					bg[i] += d * 0.08
 				}
+				// Only solid moving shapes count; scattered specks are noise.
+				components(on, motionW, motionH, func(cells []int) {
+					if len(cells) < minBlob {
+						return
+					}
+					for _, i := range cells {
+						grid[i] = 1
+						changed++
+						cols[i%motionW]++
+						rows[i/motionW]++
+					}
+				})
 				m.mu.Lock()
 				m.grid = grid
 				m.mu.Unlock()

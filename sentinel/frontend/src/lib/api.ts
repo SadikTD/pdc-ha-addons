@@ -16,6 +16,7 @@ export type Camera = {
   motion_sensitivity: number;
   motion_masks: Rect[];
   motion_zones: Zone[];
+  occasional: boolean;
 };
 
 export type Zone = { name: string; points: [number, number][] };
@@ -63,7 +64,7 @@ export type AlertRecord = {
   camera_name: string;
   at: number;
   event?: string;
-  status: "sending" | "sent" | "failed";
+  status: "sending" | "sent" | "failed" | "skipped";
   error?: string;
   clip?: string;
   test?: boolean;
