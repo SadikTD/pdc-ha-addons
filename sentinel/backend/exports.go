@@ -317,6 +317,9 @@ func (cs *ClipStore) Patch(id string, name *string, pinned *bool) (Clip, bool) {
 	}
 	if name != nil && strings.TrimSpace(*name) != "" {
 		c.Name = strings.TrimSpace(*name)
+		if r := []rune(c.Name); len(r) > 120 {
+			c.Name = string(r[:120])
+		}
 		if c.Status == "ready" {
 			newFile := clipFileName(c.Name, c.ID)
 			if err := os.Rename(cs.videoPath(c), filepath.Join(cs.dir, newFile)); err == nil {

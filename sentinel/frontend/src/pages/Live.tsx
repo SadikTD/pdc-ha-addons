@@ -5,7 +5,7 @@ import clsx from "clsx";
 import { Camera as CamIcon, Grid2x2, Grid3x3, Square, Maximize2, HardDrive, ShieldCheck, Zap, AlertTriangle, ChevronRight, Scan, PowerOff } from "lucide-react";
 import { fitGrid } from "../lib/layout";
 import { LiveStream } from "../components/LiveStream";
-import { Button, Empty, PageHeader, StatePill, recState } from "../components/ui";
+import { Empty, PageHeader, StatePill, buttonCls, recState } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { fmtAgo, fmtBitrate, fmtBytes, fmtTime, startOfDay } from "../lib/format";
 import { api, latestFrameURL, thumbURL, type CameraStatus, type SentinelEvent } from "../lib/api";
@@ -106,8 +106,8 @@ export function LivePage() {
           title="No cameras yet"
           sub="Add your first camera's RTSP stream in Settings and Sentinel starts recording right away."
           action={
-            <Link to="/settings">
-              <Button variant="primary">Add a camera</Button>
+            <Link to="/settings" className={buttonCls("primary")}>
+              Add a camera
             </Link>
           }
         />

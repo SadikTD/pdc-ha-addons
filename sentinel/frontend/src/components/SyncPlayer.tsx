@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { Loader2, VideoOff } from "lucide-react";
 import { vodURL } from "../lib/api";
+import { releaseVideo } from "./VodPlayer";
 
 // One camera's recording, kept in step with a shared clock. Every quarter second the
 // player compares its position with the clock: small drift is corrected by nudging the
@@ -59,6 +60,7 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
   const win = useRef<{ from: number; to: number; frags: Frag[] } | null>(null);
   const busy = useRef(false);
   const seq = useRef(0);
+  const pending = useRef<AbortController | null>(null);
   const [state, setState] = useState<"loading" | "playing" | "gap" | "error">("loading");
   const live = useRef({ playing, rate });
   live.current = { playing, rate };
@@ -67,21 +69,24 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
     const v = video.current;
     if (!v) return;
     const n = ++seq.current;
+    pending.current?.abort();
+    const ac = new AbortController();
+    pending.current = ac;
     busy.current = true;
     setState("loading");
     const from = t - 60_000;
     const to = Math.min(Date.now() + 30_000, t + 30 * 60_000);
     let frags: Frag[] = [];
     try {
-      frags = parsePlaylist(await (await fetch(vodURL(camera, from, to), { cache: "no-store" })).text());
+      frags = parsePlaylist(await (await fetch(vodURL(camera, from, to), { cache: "no-store", signal: ac.signal })).text());
     } catch {
-      if (n === seq.current) {
+      if (n === seq.current && !ac.signal.aborted) {
         busy.current = false;
         setState("error");
       }
       return;
     }
-    if (n !== seq.current) return;
+    if (n !== seq.current || ac.signal.aborted) return;
     win.current = { from, to, frags };
     hls.current?.destroy();
     hls.current = null;
@@ -123,7 +128,17 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera, epoch]);
 
-  useEffect(() => () => hls.current?.destroy(), []);
+  // Closing the tile stops the pending load, the stream and the element.
+  useEffect(() => {
+    const v = video.current;
+    return () => {
+      seq.current++;
+      pending.current?.abort();
+      hls.current?.destroy();
+      hls.current = null;
+      releaseVideo(v);
+    };
+  }, []);
 
   useEffect(() => {
     if (video.current) video.current.muted = muted;

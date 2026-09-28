@@ -13,7 +13,41 @@ function loadPlayer() {
   return loader;
 }
 
-type VideoStreamEl = HTMLElement & { mode: string; media: string; background: boolean; src: string; video?: HTMLVideoElement };
+type VideoStreamEl = HTMLElement & {
+  mode: string;
+  media: string;
+  background: boolean;
+  src: string;
+  video?: HTMLVideoElement;
+  ws?: WebSocket | null;
+  pc?: RTCPeerConnection | null;
+  wsState?: number;
+  pcState?: number;
+  disconnectTID?: number;
+};
+
+// go2rtc's player keeps streaming for 5 s after it leaves the page (in case it comes
+// back); React has already taken it off the page when this runs, so that timer is
+// pending. Cancel it and close the stream at once, the way its ondisconnect() does but
+// without clearing the video's source: doing that while data is being appended makes
+// go2rtc's own handlers throw. With the socket closed and the element gone, the browser
+// frees the rest.
+function closeStream(el: VideoStreamEl) {
+  window.clearTimeout(el.disconnectTID);
+  el.disconnectTID = 0;
+  const v = el.video;
+  if (v) {
+    v.muted = true;
+    v.pause();
+  }
+  el.wsState = WebSocket.CLOSED; // also stops go2rtc's automatic reconnect
+  el.pcState = WebSocket.CLOSED;
+  el.ws?.close();
+  el.ws = null;
+  el.pc?.close();
+  el.pc = null;
+  el.remove();
+}
 
 export function LiveStream({
   camera,
@@ -75,7 +109,7 @@ export function LiveStream({
       cancelled = true;
       window.clearTimeout(stallTimer);
       onVideo?.(null);
-      el?.remove();
+      if (el) closeStream(el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera, hq, audio]);

@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import clsx from "clsx";
 import { Download, Film, Loader2, Pencil, Pin, PinOff, Play, Trash2, X, AlertTriangle, FolderOpen, Check, CloudUpload, CloudCheck, CloudAlert, Moon } from "lucide-react";
-import { Button, Card, Empty, IconButton, PageHeader } from "../components/ui";
+import { Button, Card, Empty, IconButton, PageHeader, buttonCls } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { api, clipThumbURL, clipVideoURL, type Clip } from "../lib/api";
@@ -82,8 +81,8 @@ export function ClipsPage() {
           title="No clips yet"
           sub="Open a camera, press the scissors button under the player, pick a start and end on the timeline and press Save clip."
           action={
-            <Link to="/">
-              <Button variant="primary">Choose a camera</Button>
+            <Link to="/" className={buttonCls("primary")}>
+              Choose a camera
             </Link>
           }
         />
@@ -184,11 +183,18 @@ function ClipCard({
             className="flex gap-1"
             onSubmit={(e) => {
               e.preventDefault();
-              onPatch({ name });
+              const n = name.trim();
+              if (n && n !== c.name) onPatch({ name: n });
               setEditing(false);
             }}
           >
-            <input autoFocus value={name} onChange={(e) => setName(e.target.value)} className="h-8 min-w-0 flex-1 rounded-lg border border-white/10 bg-ink-900 px-2 text-sm text-white" />
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && (e.stopPropagation(), setEditing(false))}
+              className="h-8 min-w-0 flex-1 rounded-lg border border-white/10 bg-ink-900 px-2 text-sm text-white"
+            />
             <IconButton type="submit" title="Save name" className="size-8">
               <Check className="size-4" />
             </IconButton>
@@ -215,10 +221,8 @@ function ClipCard({
             </>
           ) : (
             <>
-              <a href={ready ? clipVideoURL(c.id, true) : undefined} download className={clsx(!ready && "pointer-events-none opacity-40")}>
-                <Button size="sm" variant="primary">
-                  <Download className="size-3.5" /> Download
-                </Button>
+              <a href={ready ? clipVideoURL(c.id, true) : undefined} download aria-disabled={!ready} className={buttonCls("primary", "sm")}>
+                <Download className="size-3.5" /> Download
               </a>
               <div className="ml-auto flex">
                 {onBackup && ready && b?.state !== "done" && b?.state !== "uploading" && (
@@ -226,7 +230,14 @@ function ClipCard({
                     <CloudUpload className="size-3.5" />
                   </IconButton>
                 )}
-                <IconButton title="Rename" onClick={() => setEditing((e) => !e)} className="size-8">
+                <IconButton
+                  title="Rename"
+                  onClick={() => {
+                    setName(c.name);
+                    setEditing((e) => !e);
+                  }}
+                  className="size-8"
+                >
                   <Pencil className="size-3.5" />
                 </IconButton>
                 <IconButton title={c.pinned ? "Unpin (can be auto-deleted)" : "Pin (never auto-delete)"} onClick={() => onPatch({ pinned: !c.pinned })} className="size-8">
@@ -261,10 +272,8 @@ function Player({ clip, onClose }: { clip: Clip; onClose: () => void }) {
             </div>
           </div>
           <div className="flex items-center gap-1">
-            <a href={clipVideoURL(clip.id, true)} download>
-              <Button size="sm" variant="primary">
-                <Download className="size-3.5" /> Download
-              </Button>
+            <a href={clipVideoURL(clip.id, true)} download className={buttonCls("primary", "sm")}>
+              <Download className="size-3.5" /> Download
             </a>
             <IconButton title="Close (Esc)" onClick={onClose}>
               <X className="size-5" />

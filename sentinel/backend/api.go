@@ -177,7 +177,10 @@ func (a *App) Routes(www string) http.Handler {
 	})
 	mux.HandleFunc("GET /api/incidents", func(w http.ResponseWriter, r *http.Request) {
 		n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		writeJSON(w, 200, a.incidents.List(max(n, 100)))
+		if n <= 0 {
+			n = 100
+		}
+		writeJSON(w, 200, a.incidents.List(min(n, 1000)))
 	})
 	mux.HandleFunc("POST /api/cameras/{id}/restart", func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
@@ -438,6 +441,10 @@ func (a *App) handleThumb(w http.ResponseWriter, r *http.Request) {
 // Wall-clock time is carried in EXT-X-PROGRAM-DATE-TIME so the player can map position to time.
 func (a *App) handleVOD(w http.ResponseWriter, r *http.Request) {
 	cam := r.URL.Query().Get("camera")
+	if !idRe.MatchString(cam) {
+		writeErr(w, 400, "bad camera id")
+		return
+	}
 	now := time.Now()
 	from := msParam(r, "from", now.Add(-time.Hour))
 	to := msParam(r, "to", from.Add(time.Hour))
@@ -497,7 +504,11 @@ func (a *App) handleSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	st, _ := f.Stat()
+	st, err := f.Stat()
+	if err != nil {
+		writeErr(w, 404, "recording not found")
+		return
+	}
 	w.Header().Set("Content-Type", "video/mp4")
 	w.Header().Set("Cache-Control", "private, max-age=60")
 	http.ServeContent(w, r, "", st.ModTime(), f)
@@ -699,7 +710,11 @@ func (a *App) handleClipVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	st, _ := f.Stat()
+	st, err := f.Stat()
+	if err != nil {
+		writeErr(w, 404, "clip file missing")
+		return
+	}
 	name := safeFileName(c.Name) + ".mp4"
 	if r.URL.Query().Get("download") == "1" {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)

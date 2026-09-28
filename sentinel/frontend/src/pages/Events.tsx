@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import clsx from "clsx";
 import { Play, Zap } from "lucide-react";
-import { Empty, PageHeader } from "../components/ui";
+import { Button, Empty, PageHeader } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { api, thumbURL, type SentinelEvent } from "../lib/api";
 import { DAY, HOUR, fmtDay, fmtDuration, fmtTimeSec, startOfDay } from "../lib/format";
@@ -15,6 +15,7 @@ const RANGES = [
   { label: "Custom", from: () => 0 },
 ];
 const CUSTOM = 3;
+const PAGE = 120; // events drawn at a time; "Show more" adds the next batch
 
 function toLocalInput(ms: number) {
   return new Date(ms - new Date(ms).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
@@ -28,12 +29,14 @@ export function EventsPage() {
   const [minPeak, setMinPeak] = useState(0);
   const [custom, setCustom] = useState(() => ({ from: toLocalInput(startOfDay(Date.now()) - DAY + 22 * HOUR), to: toLocalInput(startOfDay(Date.now()) + 6 * HOUR) }));
   const [events, setEvents] = useState<SentinelEvent[] | null>(null);
+  const [shown, setShown] = useState(PAGE);
   const names = Object.fromEntries((status?.cameras ?? []).map((c) => [c.id, c.name]));
 
   useEffect(() => {
     let alive = true;
     const from = range === CUSTOM ? new Date(custom.from).getTime() : RANGES[range].from();
     const to = range === CUSTOM ? new Date(custom.to).getTime() : Date.now() + HOUR;
+    setShown(PAGE);
     if (!(from < to)) return setEvents([]);
     const load = () =>
       api
@@ -41,25 +44,32 @@ export function EventsPage() {
         .then((e) => alive && setEvents(e))
         .catch(() => {});
     load();
-    const t = window.setInterval(load, 15_000);
+    // Only a range that reaches the present can get new events.
+    const t = to > Date.now() - HOUR ? window.setInterval(load, 15_000) : 0;
     return () => {
       alive = false;
       window.clearInterval(t);
     };
   }, [cams.join(), range, custom.from, custom.to]);
 
+  const matching = useMemo(() => (events ?? []).filter((e) => e.peak >= minPeak), [events, minPeak]);
+  const perDay = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const e of matching) m.set(startOfDay(e.start), (m.get(startOfDay(e.start)) ?? 0) + 1);
+    return m;
+  }, [matching]);
   const groups = useMemo(() => {
     const out: { day: number; items: SentinelEvent[] }[] = [];
-    for (const e of (events ?? []).filter((e) => e.peak >= minPeak)) {
+    for (const e of matching.slice(0, shown)) {
       const d = startOfDay(e.start);
       if (out.at(-1)?.day !== d) out.push({ day: d, items: [] });
       out.at(-1)!.items.push(e);
     }
     return out;
-  }, [events, minPeak]);
+  }, [matching, shown]);
 
   const toggleCam = (id: string) => setCams((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]));
-  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  const total = matching.length;
 
   return (
     <>
@@ -110,7 +120,7 @@ export function EventsPage() {
         groups.map((g) => (
           <section key={g.day} className="mb-8">
             <h2 className="sticky top-0 z-10 -mx-1 mb-3 bg-ink-950/80 px-1 py-2 text-sm font-semibold text-slate-300 backdrop-blur">
-              {fmtDay(g.day)} <span className="font-normal text-slate-500">· {g.items.length}</span>
+              {fmtDay(g.day)} <span className="font-normal text-slate-500">· {perDay.get(g.day)}</span>
             </h2>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
               {g.items.map((e, i) => (
@@ -142,6 +152,13 @@ export function EventsPage() {
             </div>
           </section>
         ))
+      )}
+      {events && total > shown && (
+        <div className="flex justify-center pb-4">
+          <Button onClick={() => setShown((n) => n + PAGE)}>
+            Show more <span className="text-slate-500">· {total - shown} left</span>
+          </Button>
+        </div>
       )}
     </>
   );

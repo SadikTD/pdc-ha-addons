@@ -25,8 +25,9 @@ export function SystemPage() {
   const recs = status.cameras.filter((c) => c.enabled && c.record && !(c.occasional && c.recorder?.state !== "recording"));
   const bad = recs.filter((c) => c.recorder?.state !== "recording");
   const s = status.storage;
-  const sentinelPct = (s.used / s.disk.total) * 100;
-  const otherPct = Math.max(0, ((s.disk.used - s.used) / s.disk.total) * 100);
+  const total = s.disk.total || 1; // not measured yet
+  const sentinelPct = Math.min(100, (s.used / total) * 100);
+  const otherPct = Math.max(0, Math.min(100 - sentinelPct, ((s.disk.used - s.used) / total) * 100));
   const clock = status.clock;
   const clockOk = clock.synced && Math.abs(clock.offset_ms) < 5000;
 
@@ -93,9 +94,13 @@ export function SystemPage() {
                     size="sm"
                     variant="ghost"
                     onClick={async () => {
-                      await api.restartCamera(c.id);
-                      toast(`Reconnecting ${c.name}…`, "info");
-                      refresh();
+                      try {
+                        await api.restartCamera(c.id);
+                        toast(`Reconnecting ${c.name}…`, "info");
+                        refresh();
+                      } catch (e) {
+                        toast((e as Error).message, "error");
+                      }
                     }}
                   >
                     <RefreshCw className="size-3.5" /> Reconnect
@@ -171,7 +176,7 @@ export function SystemPage() {
           const color = i.level === "error" ? "text-rose-400" : i.level === "warn" ? "text-amber-300" : "text-slate-500";
           const name = status.cameras.find((c) => c.id === i.camera)?.name ?? i.camera;
           return (
-            <div key={n} className="flex items-start gap-3 px-4 py-3 text-sm">
+            <div key={`${i.t}-${n}`} className="flex items-start gap-3 px-4 py-3 text-sm">
               <I className={clsx("mt-0.5 size-4 shrink-0", color)} />
               <div className="min-w-0 flex-1">
                 {name && <span className="mr-2 font-medium text-white">{name}</span>}

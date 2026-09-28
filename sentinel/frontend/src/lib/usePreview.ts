@@ -41,20 +41,22 @@ async function load(cam: string, t: number): Promise<string | null> {
 
 export function usePreviewFrame(cam: string | null, t: number | null) {
   const [frame, setFrame] = useState<{ url: string | null; t: number } | null>(null);
-  const want = useRef<number | null>(null);
+  const want = useRef<{ cam: string; t: number } | null>(null);
   const busy = useRef(false);
 
   useEffect(() => {
-    want.current = t;
-    if (!cam || t === null) return;
+    want.current = cam && t !== null ? { cam, t } : null;
+    if (!want.current) return;
     const pump = async () => {
-      if (busy.current || want.current === null) return;
+      if (busy.current || !want.current) return;
       const target = want.current;
       busy.current = true;
-      const url = await load(cam, target);
+      const url = await load(target.cam, target.t);
       busy.current = false;
-      setFrame({ url, t: target });
-      if (want.current !== null && previewKey(cam, want.current) !== previewKey(cam, target)) pump();
+      const next = want.current;
+      // Only show it if it's still what's wanted (the camera may have changed meanwhile).
+      if (next?.cam === target.cam) setFrame({ url, t: target.t });
+      if (next && previewKey(next.cam, next.t) !== previewKey(target.cam, target.t)) pump();
     };
     pump();
   }, [cam, t]);
@@ -62,11 +64,33 @@ export function usePreviewFrame(cam: string | null, t: number | null) {
   return t === null ? null : frame;
 }
 
+// Warm-up requests wait in a queue and run two at a time, so they never hold up what the
+// user is waiting for (the video itself, or the frame under their finger): browsers allow
+// only ~6 connections per server.
+const queue: { cam: string; t: number }[] = [];
+let running = 0;
+function drain() {
+  while (running < 2 && queue.length) {
+    const { cam, t } = queue.shift()!;
+    if (cache.has(previewKey(cam, t))) continue;
+    running++;
+    load(cam, t).finally(() => {
+      running--;
+      drain();
+    });
+  }
+}
+
 // Warm the cache around a time (e.g. when the timeline opens) so the first drag is instant.
 export function prefetchPreviews(cam: string, center: number, spanMs: number, count = 24) {
   const step = Math.max(STEP, spanMs / count);
-  for (let i = -count / 2; i <= count / 2; i++) {
+  // Drop older warm-ups for this camera: the view has moved on.
+  for (let i = queue.length - 1; i >= 0; i--) if (queue[i].cam === cam) queue.splice(i, 1);
+  // Nearest to the playhead first.
+  const offsets = Array.from({ length: count + 1 }, (_, i) => i - count / 2).sort((a, b) => Math.abs(a) - Math.abs(b));
+  for (const i of offsets) {
     const t = center + i * step;
-    if (t < Date.now() && !cache.has(previewKey(cam, t))) load(cam, t);
+    if (t < Date.now() && !cache.has(previewKey(cam, t))) queue.push({ cam, t });
   }
+  drain();
 }

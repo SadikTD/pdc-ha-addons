@@ -17,23 +17,26 @@ export function Card({ className, children, ...rest }: HTMLMotionProps<"div">) {
   );
 }
 
-type BtnProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost" | "subtle" | "danger"; size?: "sm" | "md" };
+type Variant = "primary" | "ghost" | "subtle" | "danger";
+type BtnProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: "sm" | "md" };
+
+// Button look, also for links that act as buttons (a button inside a link is invalid HTML).
+export function buttonCls(variant: Variant = "subtle", size: "sm" | "md" = "md", className?: string) {
+  return clsx(
+    "inline-flex select-none items-center justify-center gap-2 rounded-xl font-medium transition-all duration-200 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40 aria-disabled:pointer-events-none aria-disabled:opacity-40",
+    size === "sm" ? "h-8 px-3 text-xs" : "h-10 px-4 text-sm",
+    variant === "primary" &&
+      "bg-gradient-to-r from-violet-500 to-cyan-500 text-white shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40 hover:brightness-110",
+    variant === "subtle" && "border border-white/10 bg-white/[0.04] text-slate-200 hover:border-white/20 hover:bg-white/[0.08]",
+    variant === "ghost" && "text-slate-300 hover:bg-white/[0.06] hover:text-white",
+    variant === "danger" && "border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20",
+    className,
+  );
+}
 
 export function Button({ variant = "subtle", size = "md", className, children, ...rest }: BtnProps) {
   return (
-    <button
-      className={clsx(
-        "inline-flex select-none items-center justify-center gap-2 rounded-xl font-medium transition-all duration-200 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40",
-        size === "sm" ? "h-8 px-3 text-xs" : "h-10 px-4 text-sm",
-        variant === "primary" &&
-          "bg-gradient-to-r from-violet-500 to-cyan-500 text-white shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40 hover:brightness-110",
-        variant === "subtle" && "border border-white/10 bg-white/[0.04] text-slate-200 hover:border-white/20 hover:bg-white/[0.08]",
-        variant === "ghost" && "text-slate-300 hover:bg-white/[0.06] hover:text-white",
-        variant === "danger" && "border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20",
-        className,
-      )}
-      {...rest}
-    >
+    <button className={buttonCls(variant, size, className)} {...rest}>
       {children}
     </button>
   );

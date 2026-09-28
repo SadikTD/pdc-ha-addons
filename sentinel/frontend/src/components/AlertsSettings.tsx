@@ -369,9 +369,13 @@ export function DriveCard({ draft, set, cameras }: { draft: Settings; set: SetFn
   };
 
   const disconnect = async () => {
-    await api.driveDisconnect();
-    toast("Google Drive disconnected", "info");
-    load();
+    try {
+      await api.driveDisconnect();
+      toast("Google Drive disconnected", "info");
+      load();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
   };
 
   const d = draft.drive;

@@ -53,7 +53,7 @@ export function JumpTo({
   }, [open, setOpen]);
 
   const go = (when: number | null) => {
-    if (when === null) return;
+    if (when === null || !Number.isFinite(when)) return;
     onJump(Math.min(when, Date.now()));
     setOpen(false);
     setText("");

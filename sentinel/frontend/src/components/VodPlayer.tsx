@@ -47,6 +47,14 @@ function timeToPos(frags: Frag[], t: number) {
   return null;
 }
 
+// Stops a video element for good and lets the browser free its decoder and buffers.
+export function releaseVideo(v: HTMLVideoElement | null) {
+  if (!v) return;
+  v.pause();
+  v.removeAttribute("src");
+  v.load();
+}
+
 export type VodHandle = { video: HTMLVideoElement | null; toggle: () => void };
 
 type Props = {
@@ -64,6 +72,7 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
   const hls = useRef<Hls | null>(null);
   const win = useRef<{ from: number; to: number; frags: Frag[] } | null>(null);
   const loadSeq = useRef(0);
+  const pending = useRef<AbortController | null>(null);
   const [loading, setLoading] = useState(true);
   const cb = useRef({ onTime, onPlaying, onCaughtUp, onNoFootage });
   cb.current = { onTime, onPlaying, onCaughtUp, onNoFootage };
@@ -83,6 +92,9 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     const v = video.current;
     if (!v) return;
     const seq = ++loadSeq.current;
+    pending.current?.abort();
+    const ac = new AbortController();
+    pending.current = ac;
     setLoading(true);
     const now = Date.now();
     const from = t - 2 * 60_000;
@@ -90,11 +102,12 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     const url = vodURL(camera, from, to);
     let frags: Frag[];
     try {
-      frags = parsePlaylist(await (await fetch(url, { cache: "no-store" })).text());
+      frags = parsePlaylist(await (await fetch(url, { cache: "no-store", signal: ac.signal })).text());
     } catch {
       frags = [];
     }
-    if (seq !== loadSeq.current) return;
+    // A newer load, or the player was closed while this one was on its way.
+    if (seq !== loadSeq.current || ac.signal.aborted) return;
     const pos = timeToPos(frags, t);
     if (!frags.length || pos === null) {
       setLoading(false);
@@ -148,7 +161,18 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     if (video.current) video.current.playbackRate = rate;
   }, [rate]);
 
-  useEffect(() => () => hls.current?.destroy(), []);
+  // Closing the player stops everything: the pending load, the stream and the element
+  // itself, so nothing keeps playing (or downloading) in the background.
+  useEffect(() => {
+    const v = video.current;
+    return () => {
+      loadSeq.current++;
+      pending.current?.abort();
+      hls.current?.destroy();
+      hls.current = null;
+      releaseVideo(v);
+    };
+  }, []);
 
   const onTimeUpdate = () => {
     const v = video.current;

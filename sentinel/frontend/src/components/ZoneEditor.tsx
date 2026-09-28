@@ -105,7 +105,10 @@ function ZoneEditorModal({ camera, initial, onClose, onSave }: { camera: string;
   useEffect(() => {
     if (!live) return;
     let alive = true;
+    let busy = false; // one request at a time, even on a slow connection
     const draw = async () => {
+      if (busy) return;
+      busy = true;
       try {
         const g = await api.motionGrid(camera);
         const c = heat.current;
@@ -123,6 +126,8 @@ function ZoneEditorModal({ camera, initial, onClose, onSave }: { camera: string;
         ctx.putImageData(img, 0, 0);
       } catch {
         /* motion detection off */
+      } finally {
+        busy = false;
       }
     };
     draw();

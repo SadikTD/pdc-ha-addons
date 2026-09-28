@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
 import { Bell, Camera as CamIcon, CheckCircle2, Eye, EyeOff, HardDrive, Loader2, Pencil, Plus, Trash2, X, XCircle, Moon } from "lucide-react";
-import { Button, Card, Field, IconButton, PageHeader, SectionTitle, StatePill, Toggle, inputCls, recState } from "../components/ui";
+import { Button, Card, Empty, Field, IconButton, PageHeader, SectionTitle, StatePill, Toggle, inputCls, recState } from "../components/ui";
 import { ZoneSummary, rectToZone } from "../components/ZoneEditor";
 import { DriveCard, NightAlertsCard } from "../components/AlertsSettings";
 import { useStatus } from "../lib/status";
@@ -33,22 +33,30 @@ export function SettingsPage() {
   const [draft, setDraft] = useState<Settings | null>(null);
   const [editing, setEditing] = useState<{ cam: Camera; index: number } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api.settings().then((s) => {
-      setSaved(s);
-      setDraft(s);
-    });
-  }, []);
+  const loadSettings = () => {
+    setLoadError(null);
+    api
+      .settings()
+      .then((s) => {
+        setSaved(s);
+        setDraft(s);
+      })
+      .catch((e) => setLoadError((e as Error).message));
+  };
+  useEffect(loadSettings, []);
 
   const dirty = useMemo(() => JSON.stringify(saved) !== JSON.stringify(draft), [saved, draft]);
 
-  const save = async (next: Settings, msg = "Settings saved") => {
+  // onlyCameras: a camera saved from its editor. Other changes still waiting in the draft
+  // (e.g. night alert options) stay there instead of being thrown away.
+  const save = async (next: Settings, msg = "Settings saved", onlyCameras = false) => {
     setSaving(true);
     try {
       const s = await api.saveSettings(next);
       setSaved(s);
-      setDraft(s);
+      setDraft((d) => (onlyCameras && d ? { ...d, cameras: s.cameras } : s));
       toast(msg);
       refresh();
       return true;
@@ -60,6 +68,19 @@ export function SettingsPage() {
     }
   };
 
+  if (loadError)
+    return (
+      <Empty
+        icon={<XCircle className="size-6" />}
+        title="Couldn't load the settings"
+        sub={loadError}
+        action={
+          <Button variant="primary" onClick={loadSettings}>
+            Try again
+          </Button>
+        }
+      />
+    );
   if (!draft || !saved) return <div className="skeleton h-96 rounded-2xl" />;
 
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setDraft({ ...draft, [k]: v });
@@ -167,11 +188,11 @@ export function SettingsPage() {
               const cams = [...saved.cameras];
               if (editing.index < 0) cams.push(cam);
               else cams[editing.index] = cam;
-              if (await save({ ...saved, cameras: cams }, editing.index < 0 ? `${cam.name} added — recording starts now` : `${cam.name} saved`)) setEditing(null);
+              if (await save({ ...saved, cameras: cams }, editing.index < 0 ? `${cam.name} added — recording starts now` : `${cam.name} saved`, true)) setEditing(null);
             }}
             onDelete={async () => {
               const cams = saved.cameras.filter((_, i) => i !== editing.index);
-              if (await save({ ...saved, cameras: cams }, `${editing.cam.name} removed`)) setEditing(null);
+              if (await save({ ...saved, cameras: cams }, `${editing.cam.name} removed`, true)) setEditing(null);
             }}
           />
         )}

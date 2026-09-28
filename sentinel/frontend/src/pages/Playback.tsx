@@ -14,26 +14,13 @@ import { useTimeline } from "../lib/useTimeline";
 import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
 import { api, type SentinelEvent, type Span } from "../lib/api";
 import { DAY, HOUR, fmtDay, fmtTimeSec } from "../lib/format";
+import { fitGrid } from "../lib/layout";
 
 const RATES = [1, 2, 4, 8];
 const ZOOMS: [string, number][] = [["5m", 5 * 60_000], ["30m", 30 * 60_000], ["1h", HOUR], ["6h", 6 * HOUR], ["24h", DAY]];
 const GAP = 8;
 const MIN_TILE = 300; // px: below this the grid scrolls instead of shrinking further
-
-// The biggest 16:9 tiles that fit n cameras into w×h (never smaller than MIN_TILE wide).
-function layout(n: number, w: number, h: number) {
-  let best = { cols: 1, tile: 0 };
-  for (let cols = 1; cols <= Math.max(1, n); cols++) {
-    const rows = Math.ceil(n / cols);
-    const tile = Math.min((w - GAP * (cols - 1)) / cols, ((h - GAP * (rows - 1)) / rows) * (16 / 9));
-    if (tile > best.tile) best = { cols, tile };
-  }
-  if (best.tile < MIN_TILE) {
-    const cols = Math.max(1, Math.floor((w + GAP) / (MIN_TILE + GAP)));
-    best = { cols, tile: (w - GAP * (cols - 1)) / cols };
-  }
-  return best;
-}
+const NO_STYLE: React.CSSProperties = {};
 
 function mergeSpans(lists: Span[][]): Span[] {
   const all = lists.flat().sort((a, b) => a.s - b.s);
@@ -191,7 +178,15 @@ export function PlaybackPage() {
   const focused = focus ? cams.find((c) => c.id === focus) : undefined;
   const others = focused ? cams.filter((c) => c.id !== focused.id) : cams;
   const stripH = focused && others.length ? Math.min(120, Math.max(72, size.h * 0.18)) : 0;
-  const grid = focused ? layout(1, size.w, size.h - stripH - (stripH ? GAP : 0)) : layout(cams.length, size.w, size.h);
+  const grid = focused ? fitGrid(1, size.w, size.h - stripH - (stripH ? GAP : 0), MIN_TILE, GAP) : fitGrid(cams.length, size.w, size.h, MIN_TILE, GAP);
+  const bigStyle = useMemo(() => ({ width: grid.tile }), [grid.tile]);
+  const stripStyle = useMemo<React.CSSProperties>(() => ({ height: stripH, width: (stripH * 16) / 9, flex: "none" }), [stripH]);
+
+  // Stable handlers (by camera id) so the tiles only redraw when their own props change,
+  // not on every tick of the playback clock.
+  const onAudio = useCallback((id: string) => setAudio((a) => (a === id ? null : id)), []);
+  const onFocus = useCallback((id: string) => setFocus((f) => (f === id ? null : id)), []);
+  const onOpen = useCallback((id: string) => nav(`/camera/${id}?t=${Math.round(master())}`), [nav, master]);
 
   const tile = (c: { id: string; name: string }, style: React.CSSProperties, small = false) => (
     <Tile
@@ -207,9 +202,9 @@ export function PlaybackPage() {
       muted={audio !== c.id}
       scrubT={scrubT}
       focused={focus === c.id}
-      onAudio={() => setAudio(audio === c.id ? null : c.id)}
-      onFocus={() => setFocus(focus === c.id ? null : c.id)}
-      onOpen={() => nav(`/camera/${c.id}?t=${Math.round(master())}`)}
+      onAudio={onAudio}
+      onFocus={onFocus}
+      onOpen={onOpen}
     />
   );
 
@@ -242,17 +237,17 @@ export function PlaybackPage() {
           <div ref={stage} className="relative min-h-[50vh] flex-1 overflow-y-auto md:min-h-0">
             {focused ? (
               <div className="flex h-full flex-col items-center gap-2">
-                {tile(focused, { width: grid.tile })}
+                {tile(focused, bigStyle)}
                 {others.length > 0 && (
                   <div className="flex max-w-full gap-2 overflow-x-auto" style={{ height: stripH }}>
-                    {others.map((c) => tile(c, { height: stripH, width: (stripH * 16) / 9, flex: "none" }, true))}
+                    {others.map((c) => tile(c, stripStyle, true))}
                   </div>
                 )}
               </div>
             ) : (
               <div className="flex min-h-full items-center justify-center">
-                <div className="grid" style={{ gap: GAP, gridTemplateColumns: `repeat(${grid.cols}, ${Math.floor(grid.tile)}px)` }}>
-                  {cams.map((c) => tile(c, {}))}
+                <div className="grid" style={{ gap: GAP, gridTemplateColumns: `repeat(${grid.cols}, ${grid.tile}px)` }}>
+                  {cams.map((c) => tile(c, NO_STYLE))}
                 </div>
               </div>
             )}
@@ -354,9 +349,9 @@ const Tile = memo(function Tile({
   muted: boolean;
   scrubT: number | null;
   focused: boolean;
-  onAudio: () => void;
-  onFocus: () => void;
-  onOpen: () => void;
+  onAudio: (id: string) => void;
+  onFocus: (id: string) => void;
+  onOpen: (id: string) => void;
 }) {
   const preview = usePreviewFrame(scrubT !== null ? id : null, scrubT);
   const picture = (
@@ -381,8 +376,8 @@ const Tile = memo(function Tile({
       transition={{ type: "spring", stiffness: 420, damping: 40 }}
       style={style}
       className={clsx("group relative aspect-video overflow-hidden rounded-xl border bg-black", focused ? "border-violet-400/40" : "border-white/[0.07]", small && "cursor-pointer")}
-      onClick={small ? onFocus : undefined}
-      onDoubleClick={small || focused ? undefined : onOpen}
+      onClick={small ? () => onFocus(id) : undefined}
+      onDoubleClick={small || focused ? undefined : () => onOpen(id)}
     >
       {/* The enlarged camera zooms like the Live page: scroll, drag, double-click, pinch. */}
       {focused ? <ZoomPan resetKey={id}>{picture}</ZoomPan> : picture}
@@ -391,10 +386,10 @@ const Tile = memo(function Tile({
       </div>
       {!small && (
         <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
-          <IconButton title={muted ? "Listen to this camera" : "Mute"} onClick={onAudio} className="size-8 bg-black/50">
+          <IconButton title={muted ? "Listen to this camera" : "Mute"} onClick={() => onAudio(id)} className="size-8 bg-black/50">
             {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
           </IconButton>
-          <IconButton title={focused ? "Back to all cameras (Esc)" : "Enlarge"} onClick={onFocus} className="size-8 bg-black/50">
+          <IconButton title={focused ? "Back to all cameras (Esc)" : "Enlarge"} onClick={() => onFocus(id)} className="size-8 bg-black/50">
             {focused ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
           </IconButton>
         </div>

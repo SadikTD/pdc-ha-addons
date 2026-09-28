@@ -164,21 +164,35 @@ export type Clip = {
 };
 export type Incident = { t: number; level: "info" | "warn" | "error"; camera?: string; message: string };
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-    cache: "no-store",
-  });
+// timeoutMs aborts a request that hangs (e.g. the connection dropped mid-way).
+async function request<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      cache: "no-store",
+      signal: timeoutMs && "timeout" in AbortSignal ? AbortSignal.timeout(timeoutMs) : undefined,
+    });
+  } catch (e) {
+    throw new Error((e as Error).name === "TimeoutError" ? "Sentinel didn't answer in time" : "Can't reach Sentinel");
+  }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: { error?: string } | null = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    // Not JSON: e.g. Home Assistant's own error page while the add-on restarts.
+    if (!res.ok) throw new Error(res.status === 502 || res.status === 503 ? "Sentinel is restarting" : `HTTP ${res.status}`);
+    throw new Error("Unexpected answer from Sentinel");
+  }
   if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
   return data as T;
 }
 
 export const api = {
-  status: () => request<Status>("GET", "api/status"),
+  status: () => request<Status>("GET", "api/status", undefined, 10_000),
   settings: () => request<Settings>("GET", "api/settings"),
   saveSettings: (s: Settings) => request<Settings>("PUT", "api/settings", s),
   testStream: (url: string, camera?: string, field?: string) =>

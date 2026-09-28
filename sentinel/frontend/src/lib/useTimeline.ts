@@ -19,12 +19,10 @@ export function useTimeline(cams: { id: string; name: string }[], start: number,
       const step = Math.max(10, Math.round(range / 1000 / 400));
       try {
         const next = await Promise.all(
-          cams.map(async (c) => ({
-            id: c.id,
-            label: cams.length > 1 ? c.name : undefined,
-            spans: await api.coverage(c.id, from, to),
-            activity: await api.activity(c.id, from, to, step),
-          })),
+          cams.map(async (c) => {
+            const [spans, activity] = await Promise.all([api.coverage(c.id, from, to), api.activity(c.id, from, to, step)]);
+            return { id: c.id, label: cams.length > 1 ? c.name : undefined, spans, activity };
+          }),
         );
         if (!cancelled) {
           setLanes(next);

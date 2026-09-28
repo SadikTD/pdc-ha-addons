@@ -11,7 +11,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const push = useCallback((text: string, kind: Kind = "success", action?: Action) => {
     const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, kind, text, action }]);
+    // The same message twice (e.g. a repeated error) shows once; at most 4 at a time.
+    setToasts((t) => (t.some((x) => x.text === text && x.kind === kind) ? t : [...t.slice(-3), { id, kind, text, action }]));
     window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" || action ? 7000 : 3500);
   }, []);
   const Icon = { success: CheckCircle2, error: AlertTriangle, info: Info };
