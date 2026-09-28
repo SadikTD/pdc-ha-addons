@@ -1,5 +1,6 @@
-// PDC WhatsApp bridge: one Baileys session, one allowed recipient, one
-// authenticated HTTP endpoint for the pitch-checker Worker.
+// PDC WhatsApp bridge: one Baileys session, one allowed recipient. Pitch alerts
+// are collected from the pitch-checker Worker's outbox over outbound HTTPS, so
+// nothing needs to connect into this Pi. Local apps (Sentinel) use POST /send.
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { timingSafeEqual, createHash } from 'node:crypto';
 
@@ -69,9 +70,7 @@ function readJson(req, limit = 64 * 1024) {
 // `wa` exposes { status(): {connected, paired, accountOk}, send(jid, text): Promise<id>,
 // sendImage(jid, jpeg, caption): Promise<id>, groups(): Promise<[{id, name, size}]> }.
 // `events` (optional) records rejected requests and send results for the dashboard.
-// `upstream` (optional) is told about each Worker heartbeat. Other senders
-// (e.g. Sentinel on the local network) don't count: they don't use the tunnel.
-export function createHandler({ options, ledger, wa, events, upstream }) {
+export function createHandler({ options, ledger, wa, events }) {
   const note = (type, detail) => events?.add(type, detail);
   const reply = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
   return async (req, res) => {
@@ -81,15 +80,10 @@ export function createHandler({ options, ledger, wa, events, upstream }) {
       return reply(res, 200, { ok: s.connected && s.accountOk, connected: s.connected, paired: s.paired });
     }
     const route = `${req.method} ${url.pathname}`;
-    if (!['POST /send', 'POST /send-image', 'GET /chats', 'POST /heartbeat'].includes(route)) return reply(res, 404, { status: 'not_found' });
+    if (!['POST /send', 'POST /send-image', 'GET /chats'].includes(route)) return reply(res, 404, { status: 'not_found' });
     if (!tokenMatches(req.headers.authorization, options.token)) {
       note('rejected', 'Request with a wrong or missing token');
       return reply(res, 401, { status: 'unauthorized' });
-    }
-    // The Worker pings every minute over the tunnel, so silence means its route here is broken.
-    if (route === 'POST /heartbeat') {
-      upstream?.contact();
-      return reply(res, 200, { ok: true, connected: wa.status().connected });
     }
 
     // Chats a sender may pick: the configured recipient plus the groups this account is in.
@@ -145,10 +139,72 @@ export function createHandler({ options, ledger, wa, events, upstream }) {
   };
 }
 
-// Watches for the Worker going quiet (tunnel/Cloudflared down, Worker broken).
-// The Worker can't report that itself, but this bridge can still reach
-// WhatsApp, so it tells the recipient directly: once, again every `repeatMs`
-// while it lasts, and once more when the Worker is back.
+// Collects queued pitch alerts from the Worker (GET /bridge/outbox), sends each
+// through the idempotency ledger, and reports the result (POST /bridge/outbox/ack).
+// A key already in the ledger is re-reported, never re-sent, so a lost ack or a
+// restart can't cause a duplicate. `upstream` is told about each successful poll.
+export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)) }) {
+  let busy = false, failing = false;
+  const call = (path, init = {}) => fetcher(options.workerUrl + path, {
+    ...init, redirect: 'manual', signal: AbortSignal.timeout(20000),
+    headers: { Authorization: `Bearer ${options.token}`, 'Content-Type': 'application/json' },
+  });
+  const ack = (key, status, extra = {}) => call('/bridge/outbox/ack', { method: 'POST', body: JSON.stringify({ key, status, ...extra }) })
+    .then(r => r.ok).catch(() => false);
+  return {
+    async poll() {
+      if (busy || !options.workerUrl) return;
+      busy = true;
+      try {
+        let messages;
+        try {
+          const res = await call('/bridge/outbox');
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          messages = (await res.json())?.messages;
+          if (!Array.isArray(messages)) throw new Error('unexpected response');
+        } catch (e) {
+          if (!failing) { failing = true; log(`Can't reach the pitch-checker Worker: ${e?.message || e}`); }
+          return;
+        }
+        if (failing) { failing = false; log('Reached the pitch-checker Worker again'); }
+        upstream?.contact();
+        for (const m of messages) {
+          if (typeof m?.key !== 'string' || !/^[\w:.-]{1,120}$/.test(m.key)) continue;
+          const prev = ledger.get(m.key);
+          if (prev?.state === 'sent') { await ack(m.key, 'sent', { id: prev.id }); continue; }
+          if (prev?.state === 'unknown') { await ack(m.key, 'unknown', { error: prev.error || null }); continue; }
+          if (prev?.state === 'sending') continue;
+          if (digits(m.to) !== options.recipient || String(m.to).includes('@') || typeof m.text !== 'string' || !m.text.trim() || m.text.length > MAX_TEXT) {
+            events?.add('rejected', `Outbox message ${m.key} is not for the configured recipient or is malformed`);
+            await ack(m.key, 'failed', { error: 'recipient_not_allowed or malformed message' });
+            continue;
+          }
+          const s = wa.status();
+          if (!s.connected || !s.accountOk) break; // stays queued; the next poll retries
+          ledger.set(m.key, { state: 'sending', text: m.text, to: options.recipient, sentAt: null, error: null });
+          try {
+            const id = await wa.send(`${options.recipient}@s.whatsapp.net`, m.text);
+            ledger.set(m.key, { state: 'sent', id, sentAt: Date.now() });
+            log(`sent ${m.key}`);
+            await ack(m.key, 'sent', { id });
+          } catch (e) {
+            const error = String(e?.message || e).slice(0, 200);
+            ledger.set(m.key, { state: 'unknown', error });
+            log(`send failed for ${m.key}: ${error}`);
+            events?.add('send_failed', `${m.key}: ${error}`);
+            await ack(m.key, 'unknown', { error });
+          }
+          await sleep(spacingMs);
+        }
+      } finally { busy = false; }
+    },
+  };
+}
+
+// Watches for the Worker becoming unreachable (Pi internet down, wrong
+// worker_url or token, Worker broken). The Worker can't report that itself,
+// but WhatsApp may still work, so the bridge tells the recipient directly:
+// once, again every `repeatMs` while it lasts, and once more when it's back.
 // `send(text)` resolves true when WhatsApp accepted the message.
 export function createUpstreamWatchdog({ minutes, send, notify = () => {}, events, clock = Date.now, repeatMs = 6 * 3600000 }) {
   let last = clock(), down = false, lastAlert = null, recoveryDue = false;
@@ -156,23 +212,23 @@ export function createUpstreamWatchdog({ minutes, send, notify = () => {}, event
   return {
     contact() {
       last = clock();
-      if (down) { down = false; recoveryDue = lastAlert !== null; notify(null); events?.add('upstream_ok', 'The pitch-checker Worker reached the bridge again'); }
+      if (down) { down = false; recoveryDue = lastAlert !== null; notify(null); events?.add('upstream_ok', 'Reaching the pitch-checker Worker again'); }
     },
     lastContact: () => last,
     async tick() {
       if (!minutes) return;
       if (!down && clock() - last > minutes * 60000) {
         down = true;
-        events?.add('upstream_lost', `No contact from the pitch-checker Worker for ${since()} minutes`);
-        notify(`The pitch-checker Worker hasn't reached this bridge for ${since()} minutes, so duplicate-pitch alerts can't be delivered. The Cloudflare tunnel (Cloudflared add-on) is the most likely cause. Alerts wait in the queue and send once it's fixed.`);
+        events?.add('upstream_lost', `Could not reach the pitch-checker Worker for ${since()} minutes`);
+        notify(`This bridge hasn't been able to reach the pitch-checker Worker for ${since()} minutes, so duplicate-pitch alerts can't be collected. Check the Pi's internet connection and the Worker address and token in the add-on settings. Alerts wait in the queue and send once it's fixed.`);
       }
       if (down && (lastAlert === null || clock() - lastAlert >= repeatMs)) {
         const text = ['⚠️ *Pitch alerts are not getting through*', '',
-          `The pitch checker hasn't reached this WhatsApp bridge for ${since()} minutes, so duplicate-pitch alerts can't be delivered.`, '',
-          'Most likely the Cloudflared add-on (Cloudflare tunnel) in Home Assistant is stopped or uninstalled. New alerts are queued and will be sent once it is fixed.'].join('\n');
+          `The WhatsApp bridge in Home Assistant hasn't been able to reach the pitch checker for ${since()} minutes, so duplicate-pitch alerts can't be collected.`, '',
+          'Check the PDC WhatsApp Bridge add-on (Worker address and token) and the internet connection. New alerts are queued and will be sent once it is fixed.'].join('\n');
         if (await send(text).catch(() => false)) lastAlert = clock();
       }
-      if (recoveryDue && await send('✅ *Pitch alerts are getting through again*\n\nThe pitch checker can reach the WhatsApp bridge again. Any queued alerts will arrive over the next few minutes.').catch(() => false)) {
+      if (recoveryDue && await send('✅ *Pitch alerts are getting through again*\n\nThe WhatsApp bridge can reach the pitch checker again. Any queued alerts will arrive over the next few minutes.').catch(() => false)) {
         recoveryDue = false; lastAlert = null;
       }
     },

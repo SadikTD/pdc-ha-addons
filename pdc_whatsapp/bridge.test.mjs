@@ -4,7 +4,7 @@ import http from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadOptions, createLedger, createHandler, createUpstreamWatchdog } from './bridge.mjs';
+import { loadOptions, createLedger, createHandler, createUpstreamWatchdog, createOutboxPoller } from './bridge.mjs';
 
 const token = 'x'.repeat(40);
 const options = { token, sender: '15550000001', recipient: '15550000002' };
@@ -117,22 +117,54 @@ test('lists chats for authorised callers', async () => {
   s.close();
 });
 
-test('only an authenticated heartbeat counts as Worker contact; local sends do not', async () => {
-  let contacts = 0;
+test('outbox poller sends queued alerts once, acks results, and never resends a known key', async () => {
   const ledger = createLedger(join(mkdtempSync(join(tmpdir(), 'pdc-')), 'sent.json'));
-  const server = http.createServer(createHandler({ options, ledger, wa: online(), upstream: { contact: () => contacts++ } }));
-  await new Promise(r => server.listen(0, r));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const beat = auth => fetch(base + '/heartbeat', { method: 'POST', headers: { Authorization: auth } });
-  assert.equal((await beat('Bearer wrong')).status, 401);
-  assert.equal(contacts, 0);
-  const res = await beat(`Bearer ${token}`);
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, connected: true });
+  let queue = [
+    { key: 'trello:b:c1', to: '+15550000002', text: 'duplicate found' },
+    { key: 'trello:b:c2', to: '+15559999999', text: 'wrong recipient' },
+    { key: 'bad key!', to: '+15550000002', text: 'ignored' },
+  ];
+  const acks = [], sends = [], calls = [];
+  let contacts = 0, down = false;
+  const fetcher = async (url, init) => {
+    calls.push({ url, auth: init.headers.Authorization, redirect: init.redirect });
+    if (down) throw new Error('offline');
+    if (url.endsWith('/bridge/outbox')) return Response.json({ messages: queue });
+    acks.push(JSON.parse(init.body)); return Response.json({ ok: true });
+  };
+  const wa = online(async (jid, text) => { sends.push({ jid, text }); return 'WA1'; });
+  const p = createOutboxPoller({ options: { ...options, workerUrl: 'https://w.example' }, ledger, wa, fetcher, sleep: async () => {}, upstream: { contact: () => contacts++ } });
+  await p.poll();
+  assert.deepEqual(sends, [{ jid: '15550000002@s.whatsapp.net', text: 'duplicate found' }]);
+  assert.deepEqual(acks, [{ key: 'trello:b:c1', status: 'sent', id: 'WA1' }, { key: 'trello:b:c2', status: 'failed', error: 'recipient_not_allowed or malformed message' }]);
+  assert.equal(calls[0].url, 'https://w.example/bridge/outbox');
+  assert.equal(calls[0].auth, `Bearer ${token}`); assert.equal(calls[0].redirect, 'manual');
   assert.equal(contacts, 1);
-  await fetch(base + '/send', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(msg) });
-  assert.equal(contacts, 1); // e.g. Sentinel sending locally must not mask a dead tunnel
-  server.close();
+  // Ack lost: the Worker still lists it. Re-reported from the ledger, not re-sent.
+  queue = [queue[0]]; acks.length = 0;
+  await p.poll();
+  assert.equal(sends.length, 1);
+  assert.deepEqual(acks, [{ key: 'trello:b:c1', status: 'sent', id: 'WA1' }]);
+  // Worker unreachable: no contact recorded, nothing thrown.
+  down = true; await p.poll(); assert.equal(contacts, 2);
+});
+
+test('outbox poller waits while WhatsApp is offline and reports failed sends as unknown', async () => {
+  const ledger = createLedger(join(mkdtempSync(join(tmpdir(), 'pdc-')), 'sent.json'));
+  const acks = [];
+  const fetcher = async (url, init) => url.endsWith('/bridge/outbox')
+    ? Response.json({ messages: [{ key: 'health:x:1', to: '+15550000002', text: 'hi' }] })
+    : (acks.push(JSON.parse(init.body)), Response.json({ ok: true }));
+  const offline = { status: () => ({ connected: false, paired: true, accountOk: false }), send: async () => { throw new Error('should not send'); } };
+  await createOutboxPoller({ options: { ...options, workerUrl: 'https://w.example' }, ledger, wa: offline, fetcher, sleep: async () => {} }).poll();
+  assert.deepEqual(acks, []); assert.equal(ledger.get('health:x:1'), undefined);
+  const flaky = online(async () => { throw new Error('send timeout'); });
+  await createOutboxPoller({ options: { ...options, workerUrl: 'https://w.example' }, ledger, wa: flaky, fetcher, sleep: async () => {} }).poll();
+  assert.equal(acks[0].status, 'unknown'); assert.equal(ledger.get('health:x:1').state, 'unknown');
+  // No worker_url: never polls.
+  let polled = false;
+  await createOutboxPoller({ options, ledger, wa: flaky, fetcher: async () => { polled = true; }, sleep: async () => {} }).poll();
+  assert.equal(polled, false);
 });
 
 test('watchdog alerts once after silence, repeats every 6 hours, and reports recovery', async () => {
@@ -142,7 +174,7 @@ test('watchdog alerts once after silence, repeats every 6 hours, and reports rec
   t = 14 * 60000; await w.tick();
   assert.equal(sent.length, 0);
   t = 16 * 60000; accept = false; await w.tick(); // WhatsApp offline: retried next minute
-  assert.equal(sent.length, 0); assert.equal(notes.length, 1); assert.match(notes[0], /Cloudflared/);
+  assert.equal(sent.length, 0); assert.equal(notes.length, 1); assert.match(notes[0], /Worker address and token/);
   accept = true; t += 60000; await w.tick();
   assert.equal(sent.length, 1); assert.match(sent[0], /not getting through/);
   t += 60000; await w.tick();

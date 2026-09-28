@@ -1,5 +1,5 @@
 name: PDC WhatsApp Bridge
-version: "2.2.0"
+version: "2.3.0"
 slug: pdc_whatsapp
 description: Self-hosted Baileys sender for Pitch Duplicate Checker alerts, with a sidebar dashboard
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/pdc_whatsapp
@@ -18,8 +18,8 @@ panel_title: PDC Monitor
 homeassistant_api: true
 # Saves this add-on's own options (and restarts it) from the dashboard's Settings page.
 hassio_api: true
-# No host port is published. The Cloudflared add-on reaches this add-on over
-# the internal Supervisor network.
+# No host port is published. Pitch alerts are fetched from the Worker over
+# outbound HTTPS; local add-ons (Sentinel) reach :8787 on the Supervisor network.
 ports:
   8787/tcp: null
 options:
@@ -28,10 +28,11 @@ options:
   recipient_number: ""
   ha_notifications: true
   offline_notify_minutes: 10
-  # WhatsApp the recipient when the Worker's per-minute heartbeat has been
-  # missing this long (Cloudflare tunnel down). 0 turns it off.
+  # WhatsApp the recipient when the Worker (pitch-alert outbox) has been
+  # unreachable this long. 0 turns it off.
   upstream_alert_minutes: 15
-  # The pitch-checker Worker the dashboard reads checks and verdicts from,
+  # The pitch-checker Worker: pitch alerts are collected from it, and the
+  # dashboard reads checks and verdicts from it,
   # e.g. https://name.account.workers.dev (signs in with api_token).
   worker_url: ""
 schema:

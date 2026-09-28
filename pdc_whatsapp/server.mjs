@@ -4,7 +4,7 @@ import http from 'node:http';
 import { rm, mkdir, readFile } from 'node:fs/promises';
 import makeWASocket, { DisconnectReason, Browsers, fetchLatestBaileysVersion } from 'baileys';
 import pino from 'pino';
-import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, log } from './bridge.mjs';
+import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, createOutboxPoller, log } from './bridge.mjs';
 import { useAtomicAuthState } from './auth-state.mjs';
 import { createUiHandler } from './ui.mjs';
 
@@ -214,7 +214,7 @@ const events = createEventLog();
 events.add('started', `Add-on ${version} started`);
 const ledger = createLedger();
 const wa = startWhatsApp(options, events);
-// Alerts the recipient directly if the Worker's heartbeats stop (tunnel down).
+// Alerts the recipient directly if the Worker can't be reached for a while.
 const upstream = createUpstreamWatchdog({
   minutes: options.upstreamMinutes, events,
   notify: message => haNotify(options, message, 'pdc_whatsapp_upstream'),
@@ -228,7 +228,12 @@ const upstream = createUpstreamWatchdog({
   },
 });
 setInterval(() => upstream.tick().catch(e => log('Watchdog failed:', e?.message || e)), 60000).unref();
-const server = http.createServer(createHandler({ options, ledger, wa, events, upstream }));
+// Pitch alerts: collected from the Worker's outbox over outbound HTTPS, so no
+// tunnel or open port is needed.
+const outbox = createOutboxPoller({ options, ledger, wa, events, upstream });
+setInterval(() => outbox.poll().catch(e => log('Outbox poll failed:', e?.message || e)), 15000);
+if (!options.workerUrl) log('worker_url is not set, so pitch alerts cannot be collected. Set it in the add-on configuration.');
+const server = http.createServer(createHandler({ options, ledger, wa, events }));
 server.requestTimeout = 60000;
 server.listen(PORT, () => log(`Bridge listening on :${PORT}`));
 
