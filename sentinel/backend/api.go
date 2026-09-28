@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -475,7 +477,14 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad time")
 		return
 	}
-	img, at, ok := a.previews.Get(r.PathValue("cam"), time.UnixMilli(ts))
+	cam := r.PathValue("cam")
+	img, at, ok := a.previews.Get(cam, time.UnixMilli(ts))
+	if !ok {
+		// No stored preview (footage from before previews existed): take the nearest
+		// keyframe from the recording itself.
+		img, ok = a.frameFromRecording(r.Context(), cam, time.UnixMilli(ts))
+		at = ts
+	}
 	if !ok {
 		writeErr(w, 404, "no preview")
 		return
@@ -488,4 +497,72 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 	}
 	w.Write(img)
+}
+
+var (
+	extractSem   = make(chan struct{}, 2) // at most 2 ffmpeg extractions at once
+	extractCache sync.Map                 // cam/2s-bucket -> []byte
+	extractCount atomic.Int64
+)
+
+func (a *App) frameFromRecording(ctx context.Context, cam string, t time.Time) ([]byte, bool) {
+	key := fmt.Sprintf("%s/%d", cam, t.UnixMilli()/2000)
+	if v, ok := extractCache.Load(key); ok {
+		b := v.([]byte)
+		return b, b != nil
+	}
+	segs := a.store.Range(cam, t, t.Add(time.Millisecond))
+	if len(segs) == 0 {
+		return nil, false
+	}
+	s := segs[0]
+	p := a.store.Path(cam, s.ID)
+	if p == "" {
+		return nil, false
+	}
+	select {
+	case extractSem <- struct{}{}:
+		defer func() { <-extractSem }()
+	case <-ctx.Done():
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	// Feed ffmpeg just the init section plus the fragment containing t. Each fragment starts
+	// with a keyframe, so this decodes one frame without any seeking.
+	idx, err := a.store.Index(&s)
+	if err != nil || len(idx.Fragments) == 0 {
+		return nil, false
+	}
+	off := t.Sub(s.Start()).Seconds()
+	frag := idx.Fragments[0]
+	for _, f := range idx.Fragments {
+		if f.Start <= off {
+			frag = f
+		}
+	}
+	file, err := os.Open(p)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+	data := make([]byte, idx.InitLength+frag.Length)
+	if _, err := file.ReadAt(data[:idx.InitLength], 0); err != nil {
+		return nil, false
+	}
+	if _, err := file.ReadAt(data[idx.InitLength:], frag.Offset); err != nil {
+		return nil, false
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-i", "pipe:0",
+		"-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "7", "-f", "image2", "-c:v", "mjpeg", "pipe:1")
+	cmd.Stdin = bytes.NewReader(data)
+	out, err := cmd.Output()
+	if err != nil || len(out) < 100 {
+		return nil, false
+	}
+	if extractCount.Add(1)%2000 == 0 {
+		extractCache.Clear()
+	}
+	extractCache.Store(key, out)
+	return out, true
 }
