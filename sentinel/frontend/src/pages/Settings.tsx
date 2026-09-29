@@ -20,7 +20,8 @@ const blankCamera = (): Camera => ({
   audio: true,
   motion: true,
   retain_days: 2,
-  motion_retain_days: 7,
+  motion_retain_days: 0,
+  person_retain_days: 7,
   motion_sensitivity: 50,
   motion_masks: [],
   motion_zones: [],
@@ -150,6 +151,19 @@ export function SettingsPage() {
             </Field>
           </div>
           <p className="mt-4 text-xs text-slate-500">How long to keep footage is set per camera. Recordings are stored in <code className="text-slate-400">/media/sentinel</code>.</p>
+          <div className="mt-5 border-t border-white/5 pt-5">
+            <Toggle
+              checked={draft.daily_summary.enabled}
+              onChange={(v) => set("daily_summary", { ...draft.daily_summary, enabled: v })}
+              label="Daily summary on phones"
+              hint="Each morning the Sentinel app gets yesterday's summary: who was seen, where, and whether every camera recorded."
+            />
+            {draft.daily_summary.enabled && (
+              <Field label="Send it at">
+                <input type="time" value={draft.daily_summary.time} onChange={(e) => set("daily_summary", { ...draft.daily_summary, time: e.target.value || "08:00" })} className={clsx(inputCls, "w-32 [color-scheme:dark]")} />
+              </Field>
+            )}
+          </div>
         </Card>
       </div>
 
@@ -218,7 +232,8 @@ function CameraRow({ cam, onEdit }: { cam: Camera; onEdit: () => void }) {
           <span className="text-xs text-slate-600">{cam.id}</span>
         </div>
         <div className="truncate text-xs text-slate-500">
-          Keep {cam.retain_days}d{cam.motion_retain_days > cam.retain_days ? ` (motion ${cam.motion_retain_days}d)` : ""} · {cam.record ? "24/7 recording" : "live only"}
+          Keep {cam.retain_days}d{cam.motion_retain_days > cam.retain_days ? ` (motion ${cam.motion_retain_days}d)` : ""}
+          {cam.motion && cam.person_retain_days > Math.max(cam.retain_days, cam.motion_retain_days) ? ` (people ${cam.person_retain_days}d)` : ""} · {cam.record ? "24/7 recording" : "live only"}
           {cam.audio && cam.record ? " · audio" : ""} · {cam.motion ? `motion ${cam.motion_sensitivity}%` : "no motion"}
           {cam.motion_masks.length + cam.motion_zones.length ? ` · ${cam.motion_masks.length + cam.motion_zones.length} ignore zone${cam.motion_masks.length + cam.motion_zones.length > 1 ? "s" : ""}` : ""}
         </div>
@@ -382,6 +397,19 @@ function CameraEditor({ initial, isNew, saving, onClose, onSave, onDelete }: { i
               <span className="text-sm text-slate-400">days</span>
             </div>
           </Field>
+          {cam.motion && (
+            <RetainField
+              label="Keep footage with a person for"
+              base={Math.max(cam.retain_days, cam.motion_retain_days)}
+              value={cam.person_retain_days}
+              onChange={(v) => set("person_retain_days", v)}
+              hint={(b, v) =>
+                v > b
+                  ? `Motion in which Sentinel saw a person (and 15 s around it) is kept until day ${v}; other motion goes after ${b} day${b > 1 ? "s" : ""}. Cats and dogs count as ordinary motion.`
+                  : "Same as motion. Set it longer to keep the moments with people for more days."
+              }
+            />
+          )}
 
           {cam.motion && (
             <>
@@ -432,5 +460,20 @@ function CameraEditor({ initial, isNew, saving, onClose, onSave, onDelete }: { i
         </div>
       </motion.aside>
     </>
+  );
+}
+
+// A "keep for N days" control that can't go below base (0 = same as base).
+function RetainField({ label, base, value, onChange, hint }: { label: string; base: number; value: number; onChange: (v: number) => void; hint: (base: number, v: number) => string }) {
+  const v = Math.max(base, value);
+  const put = (n: number) => onChange(n <= base ? 0 : Math.min(365, n));
+  return (
+    <Field label={label} hint={hint(base, v)}>
+      <div className="flex items-center gap-3">
+        <input type="range" min={base} max={Math.max(30, base)} value={Math.min(Math.max(30, base), v)} onChange={(e) => put(Number(e.target.value))} className="flex-1" />
+        <input type="number" min={base} max={365} value={v} onChange={(e) => put(Number(e.target.value))} className={clsx(inputCls, "w-20 text-center")} />
+        <span className="text-sm text-slate-400">days</span>
+      </div>
+    </Field>
   );
 }

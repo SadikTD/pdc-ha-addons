@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Span } from "../lib/api";
+import { snapURL, type Label, type SentinelEvent, type Span } from "../lib/api";
+import { LABELS, LABEL_ORDER } from "../lib/labels";
 import { fmtTime, fmtTimeSec, HOUR, DAY, startOfDay } from "../lib/format";
 import { usePreviewFrame } from "../lib/usePreview";
 
-export type Lane = { id: string; label?: string; spans: Span[]; activity: [number, number][] };
+export type Lane = { id: string; label?: string; spans: Span[]; activity: [number, number][]; objects?: SentinelEvent[] };
 
 type Props = {
   lanes: Lane[];
@@ -16,7 +17,12 @@ type Props = {
   selection?: { from: number; to: number } | null;
   onSelection?: (sel: { from: number; to: number }) => void;
   laneHeight?: number;
+  // Which people/animal markers to draw (all when not given).
+  showLabels?: Label[];
 };
+
+// The label a marker is drawn as: the first shown one of the event's.
+const markerLabel = (e: SentinelEvent, show?: Label[]) => LABEL_ORDER.find((l) => e.labels?.includes(l) && (!show || show.includes(l)));
 
 const MIN_RANGE = 2 * 60_000;
 const MAX_RANGE = 7 * DAY;
@@ -24,7 +30,7 @@ const TICKS = [60_000, 5 * 60_000, 10 * 60_000, 15 * 60_000, 30 * 60_000, HOUR, 
 const AXIS = 26;
 const LABEL_W = 0;
 
-export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selection, onSelection, laneHeight = 46 }: Props) {
+export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selection, onSelection, laneHeight = 46, showLabels }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(600);
@@ -117,6 +123,20 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
           g.stroke();
         }
       }
+      // people and animals: a marker at the top of the lane
+      for (const e of lane.objects ?? []) {
+        const l = markerLabel(e, showLabels);
+        const e1 = e.end || now;
+        if (!l || e1 < start || e.start > end) continue;
+        const x0 = xOf(e.start);
+        const mw = Math.max(6, xOf(e1) - x0);
+        g.fillStyle = "#0b0f17";
+        roundRect(g, x0 - 1, y + laneHeight - 13, mw + 2, 10, 4);
+        g.fill();
+        g.fillStyle = LABELS[l].color;
+        roundRect(g, x0, y + laneHeight - 12, mw, 8, 3);
+        g.fill();
+      }
       g.restore();
       if (lane.label) {
         g.fillStyle = "rgba(5,7,11,0.7)";
@@ -170,7 +190,7 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
       g.lineTo(x, AXIS - 2);
       g.fill();
     }
-  }, [lanes, start, end, now, cursor, width, height, hover, selection, range, w, xOf, laneHeight]);
+  }, [lanes, start, end, now, cursor, width, height, hover, selection, range, w, xOf, laneHeight, showLabels]);
 
   // ---- interaction ----
   const localX = (e: { clientX: number }) => e.clientX - (canvas.current?.getBoundingClientRect().left ?? 0);
@@ -270,6 +290,12 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
 
   const thumbT = hover !== null && hover < now && hoverLane ? hover : null;
   const thumb = usePreviewFrame(thumbT !== null ? hoverLane : null, thumbT);
+  // A person/animal marker under the pointer shows its snapshot instead of the preview.
+  const pad = (5 / w) * range;
+  const hoverObj =
+    thumbT !== null
+      ? lanes.find((l) => l.id === hoverLane)?.objects?.find((e) => markerLabel(e, showLabels) && thumbT >= e.start - pad && thumbT <= (e.end || now) + pad)
+      : undefined;
 
   return (
     <div ref={wrap} className="relative w-full select-none">
@@ -300,8 +326,20 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
           style={{ left: Math.min(width - 88, Math.max(88, xOf(thumbT))), bottom: height + 30 }}
         >
           <div className="aspect-video bg-ink-800">
-            {thumb?.url ? <img src={thumb.url} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-[10px] text-slate-500">{thumb ? "No preview" : "…"}</div>}
+            {hoverObj?.snap ? (
+              <img src={snapURL(hoverObj)} className="h-full w-full object-cover" />
+            ) : thumb?.url ? (
+              <img src={thumb.url} className="h-full w-full object-cover" />
+            ) : (
+              <div className="flex h-full items-center justify-center text-[10px] text-slate-500">{thumb ? "No preview" : "…"}</div>
+            )}
           </div>
+          {hoverObj && (
+            <div className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold text-white">
+              <span className="size-2 rounded-full" style={{ background: LABELS[markerLabel(hoverObj, showLabels)!].color }} />
+              {hoverObj.labels!.map((l) => LABELS[l].name).join(" + ")}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -112,6 +112,33 @@ func (es *EventStore) SetScan(cam, id, scan string, objs, rejected []Object, sna
 	return Event{}, false
 }
 
+// RemoveLabel takes a wrong label off an event (the user said so). It returns the
+// object that was removed.
+func (es *EventStore) RemoveLabel(cam, id, label string) (Object, bool) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	for _, e := range es.events[cam] {
+		if e.ID != id {
+			continue
+		}
+		i := slices.IndexFunc(e.Objects, func(o Object) bool { return o.Label == label })
+		if i < 0 {
+			return Object{}, false
+		}
+		o := e.Objects[i]
+		e.Objects = slices.Delete(slices.Clone(e.Objects), i, i+1)
+		e.Labels = slices.DeleteFunc(slices.Clone(e.Labels), func(l string) bool { return l == label })
+		e.Rejected = append(e.Rejected, Object{Label: "not " + label, Score: o.Score, Box: o.Box, T: o.T})
+		if len(e.Objects) == 0 {
+			e.Snap = false
+			_ = os.Remove(es.SnapPath(cam, id))
+		}
+		es.persistDay(cam, dayKey(e.Start))
+		return o, true
+	}
+	return Object{}, false
+}
+
 // Rescan forgets detection results of events that started in [from, to] (on these
 // cameras, all when empty), so they're checked again. It returns how many.
 func (es *EventStore) Rescan(cams []string, from, to int64) int {

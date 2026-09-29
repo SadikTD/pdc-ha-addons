@@ -163,6 +163,18 @@ export function SystemPage() {
             <Row ok={clockOk} warn={clock.synced && !clockOk} label="Time" detail={clock.synced ? (clockOk ? `In sync with ${clock.server}` : `Host clock off by ${(clock.offset_ms / 1000).toFixed(1)} s — Sentinel corrects timestamps automatically`) : clock.error || "Waiting for an NTP server"} />
             <Row ok={status.live} label="Live view" icon={Radio} detail={status.live ? "Running" : "Restarting…"} />
             <Row ok={status.mqtt.connected} warn={!status.mqtt.connected} label="Home Assistant (MQTT)" icon={Wifi} detail={status.mqtt.connected ? "Connected — sensors & snapshots published" : status.mqtt.error || "Connecting…"} />
+            {status.detection && (
+              <Row
+                ok={status.detection.enabled && !status.detection.error}
+                warn={!!status.detection.error}
+                label="People & animals"
+                detail={
+                  !status.detection.enabled
+                    ? "Object detection isn't available"
+                    : `${status.detection.backlog > 0 ? `Checking older events (${status.detection.backlog} left) · ` : "Up to date · "}${status.detection.scanned} checked since start${status.detection.avg_ms ? `, ${(status.detection.avg_ms / 1000).toFixed(1)} s each` : ""}${status.detection.error ? ` · last problem: ${status.detection.error}` : ""}`
+                }
+              />
+            )}
             <Row ok={status.health} label="Watchdog" detail={status.health ? "All recorder loops healthy" : "A recorder loop is stuck — Supervisor will restart Sentinel"} />
           </ul>
         </Card>

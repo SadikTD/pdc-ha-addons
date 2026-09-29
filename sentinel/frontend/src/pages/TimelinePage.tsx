@@ -4,6 +4,9 @@ import { ChevronLeft, ChevronRight, GanttChart } from "lucide-react";
 import { Timeline } from "../components/Timeline";
 import { Card, Empty, IconButton, PageHeader } from "../components/ui";
 import { useStatus } from "../lib/status";
+import { LABELS, LABEL_ORDER } from "../lib/labels";
+import type { Label } from "../lib/api";
+import clsx from "clsx";
 import { useTimeline } from "../lib/useTimeline";
 import { DAY, HOUR, fmtDay, fmtDuration, startOfDay } from "../lib/format";
 
@@ -14,6 +17,16 @@ export function TimelinePage() {
   const [view, setView] = useState(() => ({ start: Date.now() - 12 * HOUR, end: Date.now() + HOUR / 2 }));
   const cams = useMemo(() => (status?.cameras ?? []).filter((c) => c.enabled || c.storage.count > 0).map((c) => ({ id: c.id, name: c.name })), [status?.cameras.map((c) => c.id).join()]);
   const lanes = useTimeline(cams, view.start, view.end);
+  const [show, setShow] = useState<Label[]>(() => {
+    const saved = localStorage.getItem("sentinel.tlLabels");
+    return saved !== null ? (saved.split(",").filter(Boolean) as Label[]) : LABEL_ORDER;
+  });
+  const toggle = (l: Label) =>
+    setShow((s) => {
+      const n = s.includes(l) ? s.filter((x) => x !== l) : LABEL_ORDER.filter((x) => x === l || s.includes(x));
+      localStorage.setItem("sentinel.tlLabels", n.join(","));
+      return n;
+    });
 
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 5000);
@@ -31,7 +44,9 @@ export function TimelinePage() {
     const b = Math.min(view.end, now);
     let rec = 0;
     for (const s of l.spans) rec += Math.max(0, Math.min(s.e, b) - Math.max(s.s, a));
-    return { id: l.id, pct: b > a ? (rec / (b - a)) * 100 : 0, gap: Math.max(0, b - a - rec) };
+    const seen: Record<string, number> = {};
+    for (const e of l.objects ?? []) if (e.start < b && (e.end || now) > a) for (const x of e.labels ?? []) seen[x] = (seen[x] ?? 0) + 1;
+    return { id: l.id, pct: b > a ? (rec / (b - a)) * 100 : 0, gap: Math.max(0, b - a - rec), seen };
   });
 
   return (
@@ -50,6 +65,24 @@ export function TimelinePage() {
               <IconButton title="Next day" onClick={() => jumpDay(1)} disabled={view.end > now}>
                 <ChevronRight className="size-4" />
               </IconButton>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-slate-500">Show</span>
+              {LABEL_ORDER.map((l) => {
+                const L = LABELS[l];
+                const on = show.includes(l);
+                return (
+                  <button
+                    key={l}
+                    onClick={() => toggle(l)}
+                    aria-pressed={on}
+                    className={clsx("flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold transition", on ? "border-white/15 bg-white/10 text-white" : "border-white/5 text-slate-500 hover:text-slate-300")}
+                  >
+                    <span className="size-2.5 rounded-sm" style={{ background: on ? L.color : "transparent", boxShadow: `inset 0 0 0 1.5px ${L.color}` }} />
+                    {L.plural}
+                  </button>
+                );
+              })}
             </div>
             <div className="flex gap-1">
               {[
@@ -77,7 +110,16 @@ export function TimelinePage() {
             onView={(s, e) => setView({ start: s, end: e })}
             onSeek={(t, lane) => lane && nav(`/camera/${lane}?t=${Math.round(t)}`)}
             laneHeight={44}
+            showLabels={show}
           />
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+            <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-gradient-to-r from-violet-500/70 to-cyan-400/40" /> Recorded</span>
+            <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-amber-400" /> Motion</span>
+            {LABEL_ORDER.map((l) => (
+              <span key={l} className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm" style={{ background: LABELS[l].color }} /> {LABELS[l].name}</span>
+            ))}
+            <span className="ml-auto hidden md:inline">Hover a marker to see who · click to play</span>
+          </div>
           <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {uptime.map((u) => {
               const name = cams.find((c) => c.id === u.id)?.name ?? u.id;
@@ -90,7 +132,19 @@ export function TimelinePage() {
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/5">
                     <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all duration-700" style={{ width: `${u.pct}%` }} />
                   </div>
-                  <div className="mt-1.5 text-xs text-slate-500">{u.gap > 5000 ? `${fmtDuration(u.gap)} missing in view` : "No gaps in view"}</div>
+                  <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-slate-500">
+                    <span>{u.gap > 5000 ? `${fmtDuration(u.gap)} missing in view` : "No gaps in view"}</span>
+                    <span className="flex gap-2">
+                      {LABEL_ORDER.filter((l) => u.seen[l]).map((l) => {
+                        const L = LABELS[l];
+                        return (
+                          <span key={l} className="flex items-center gap-0.5 font-medium text-slate-300" title={`${u.seen[l]} ${u.seen[l] === 1 ? L.name.toLowerCase() : L.plural.toLowerCase()} in view`}>
+                            <L.icon className="size-3.5" style={{ color: L.color }} /> {u.seen[l]}
+                          </span>
+                        );
+                      })}
+                    </span>
+                  </div>
                 </div>
               );
             })}

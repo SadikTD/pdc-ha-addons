@@ -1,15 +1,17 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
-import { LayoutGrid, GanttChart, Zap, Film, HeartPulse, Settings2, Columns2, ArrowLeft } from "lucide-react";
+import { LayoutGrid, GanttChart, Zap, Film, HeartPulse, Settings2, Columns2, ArrowLeft, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { useStatus } from "../lib/status";
 
+// mobile: false = left out of the phone tab bar (too many tabs; still reachable by link).
 const NAV = [
   { to: "/", label: "Live", icon: LayoutGrid },
-  { to: "/playback", label: "Playback", icon: Columns2 },
+  { to: "/playback", label: "Playback", icon: Columns2, mobile: false },
   { to: "/timeline", label: "Timeline", icon: GanttChart },
   { to: "/events", label: "Events", icon: Zap },
+  { to: "/summary", label: "Summary", icon: Sparkles },
   { to: "/clips", label: "Clips", icon: Film },
   { to: "/system", label: "System", icon: HeartPulse },
   { to: "/settings", label: "Settings", icon: Settings2 },
@@ -120,7 +122,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </main>
         {/* Mobile tab bar */}
         <nav className="fixed inset-x-0 bottom-0 z-50 flex border-t border-white/5 bg-ink-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">
-          {NAV.map(({ to, label, icon: Icon }) => {
+          {NAV.filter((n) => n.mobile !== false).map(({ to, label, icon: Icon }) => {
             const active = to === "/" ? section === "/" || section === "/camera" : section === to;
             return (
               <NavLink key={to} to={to} className={clsx("flex flex-1 flex-col items-center gap-1 py-2.5 text-[10px] font-medium", active ? "text-white" : "text-slate-500")}>

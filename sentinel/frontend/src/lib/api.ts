@@ -13,6 +13,7 @@ export type Camera = {
   motion: boolean;
   retain_days: number;
   motion_retain_days: number;
+  person_retain_days: number;
   motion_sensitivity: number;
   motion_masks: Rect[];
   motion_zones: Zone[];
@@ -42,6 +43,7 @@ export type Settings = {
     save_clip: boolean;
   };
   whatsapp: { to: string; to_name: string; bridge_url: string };
+  daily_summary: { enabled: boolean; time: string };
   drive: {
     backup_alerts: boolean;
     backup_saved: boolean;
@@ -101,7 +103,40 @@ export type RecStatus = {
 
 export type MotionStatus = { state: string; active: boolean; score: number; error?: string };
 
-export type SentinelEvent = { id: string; camera: string; start: number; end: number; peak: number; thumb: boolean };
+export type Label = "person" | "cat" | "dog";
+export type DetectedObject = { label: Label; score: number; box: Rect; t: number };
+export type SentinelEvent = {
+  id: string;
+  camera: string;
+  start: number;
+  end: number;
+  peak: number;
+  thumb: boolean;
+  // Who was seen; empty with scan "done" = plain motion. scan "" = not checked yet.
+  labels?: Label[];
+  objects?: DetectedObject[];
+  scan?: "" | "scanning" | "done" | "none";
+  snap?: boolean;
+};
+
+export type DetectionStatus = { enabled: boolean; error?: string; backlog: number; scanned: number; found: number; avg_ms: number; scanning: string; last_found: number };
+
+export type SearchQuery = { labels: Label[] | null; motion: boolean; cameras: string[] | null; from: number; to: number; day_from: number; day_to: number; chips: string[] };
+
+export type CamDay = { id: string; name: string; counts: Record<string, number>; recorded: number; missing: number; first_person?: number; last_person?: number };
+export type Highlight = SentinelEvent & { label: Label; score: number };
+export type DaySummary = {
+  date: string;
+  from: number;
+  to: number;
+  totals: Record<string, number>;
+  cameras: CamDay[];
+  hours: [number, number, number, number][];
+  highlights: Highlight[];
+  pending: number;
+  problems: number;
+  text: string;
+};
 
 export type CamStorage = { bytes: number; count: number; oldest: number; newest: number; rate_bph: number; uptime_24h: number };
 
@@ -143,6 +178,7 @@ export type Status = {
   drive: { connected: boolean; mode: string };
   mqtt: { connected: boolean; error: string };
   health: boolean;
+  detection?: DetectionStatus;
 };
 
 export type Span = { s: number; e: number };
@@ -212,14 +248,19 @@ export const api = {
   coverage: (cam: string, from: number, to: number) => request<Span[]>("GET", `api/recordings/${cam}?from=${from}&to=${to}`),
   activity: (cam: string, from: number, to: number, step: number) =>
     request<[number, number][]>("GET", `api/activity/${cam}?from=${from}&to=${to}&step=${step}`),
-  events: (opts: { cameras?: string[]; from?: number; to?: number; limit?: number }) => {
+  events: (opts: { cameras?: string[]; from?: number; to?: number; limit?: number; labels?: Label[]; motionOnly?: boolean }) => {
     const q = new URLSearchParams();
     if (opts.cameras?.length) q.set("cameras", opts.cameras.join(","));
+    if (opts.labels?.length) q.set("labels", opts.labels.join(","));
+    if (opts.motionOnly) q.set("motion", "1");
     if (opts.from) q.set("from", String(opts.from));
     if (opts.to) q.set("to", String(opts.to));
     if (opts.limit) q.set("limit", String(opts.limit));
     return request<SentinelEvent[]>("GET", `api/events?${q}`);
   },
+  wrongLabel: (e: SentinelEvent, label: Label) => request<SentinelEvent>("POST", `api/events/${e.camera}/${e.id}/wrong`, { label }),
+  search: (q: string, limit = 500) => request<{ query: SearchQuery; events: SentinelEvent[] }>("GET", `api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  summary: (date?: string) => request<DaySummary>("GET", `api/summary${date ? `?date=${date}` : ""}`),
   incidents: (limit = 200) => request<Incident[]>("GET", `api/incidents?limit=${limit}`),
   motionGrid: (id: string) => request<{ w: number; h: number; grid: string | null }>("GET", `api/cameras/${id}/motion-grid`),
   restartCamera: (id: string) => request<{ ok: boolean }>("POST", `api/cameras/${id}/restart`),
@@ -253,6 +294,9 @@ export const api = {
 export const snapshotURL = (cam: string, hq = false, bust = 0) => `api/cameras/${cam}/snapshot.jpg?${hq ? "hq=1&" : ""}t=${bust}`;
 export const latestFrameURL = (cam: string) => `api/cameras/${cam}/latest.jpg`;
 export const thumbURL = (e: SentinelEvent) => `api/events/${e.camera}/${e.id}/thumb.jpg`;
+export const snapURL = (e: SentinelEvent) => `api/events/${e.camera}/${e.id}/snap.jpg`;
+// The best picture of an event: who was seen if anyone, else the moment motion started.
+export const eventPicture = (e: SentinelEvent) => (e.snap ? snapURL(e) : e.thumb ? thumbURL(e) : null);
 export const vodURL = (cam: string, from: number, to: number) => `api/vod.m3u8?camera=${cam}&from=${Math.round(from)}&to=${Math.round(to)}`;
 export const clipVideoURL = (id: string, download = false) => `api/clips/${id}/video${download ? "?download=1" : ""}`;
 export const clipThumbURL = (c: Clip) => `api/clips/${c.id}/thumb.jpg?v=${c.status}`;

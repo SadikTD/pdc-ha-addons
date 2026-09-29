@@ -15,9 +15,10 @@ import { Button, Card, IconButton, StatePill, recState } from "../components/ui"
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { useTimeline } from "../lib/useTimeline";
+import { EventPicture, LABELS, LabelChips } from "../lib/labels";
 import { useSound } from "../lib/sound";
 import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
-import { api, thumbURL, type SentinelEvent, type Span } from "../lib/api";
+import { api, type SentinelEvent, type Span } from "../lib/api";
 import { DAY, HOUR, fmtBitrate, fmtBytes, fmtDay, fmtDuration, fmtTimeSec } from "../lib/format";
 
 const RATES = [1, 2, 4, 8, 16];
@@ -60,6 +61,13 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   const [range, setRange] = useState(HOUR);
   const [selection, setSelection] = useState<{ from: number; to: number } | null>(null);
   const [events, setEvents] = useState<SentinelEvent[]>([]);
+  // Which events the skip buttons and the list step through.
+  const [kind, setKind] = useState<"all" | "person" | "animal">(() => (localStorage.getItem("sentinel.jump") as "all" | "person" | "animal") || "all");
+  const setJumpKind = (k: "all" | "person" | "animal") => {
+    setKind(k);
+    localStorage.setItem("sentinel.jump", k);
+  };
+  const ofKind = (e: SentinelEvent) => kind === "all" || (kind === "person" ? !!e.labels?.includes("person") : !!e.labels?.some((l) => l === "cat" || l === "dog"));
   const [jumpOpen, setJumpOpen] = useState(false);
   const vod = useRef<VodHandle>(null);
   const liveVideo = useRef<HTMLVideoElement | null>(null);
@@ -153,9 +161,10 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
 
   const jumpEvent = (dir: -1 | 1) => {
     const ref = center + dir * 3000;
-    const sorted = [...events].sort((a, b) => a.start - b.start);
+    const sorted = events.filter(ofKind).sort((a, b) => a.start - b.start);
     const e = dir < 0 ? [...sorted].reverse().find((x) => x.start < ref - 3000) : sorted.find((x) => x.start > ref);
-    if (!e) return toast(dir < 0 ? "No earlier motion" : "No later motion", "info");
+    const what = kind === "all" ? "motion" : kind === "person" ? "person" : "animal";
+    if (!e) return toast(dir < 0 ? `No earlier ${what}` : `No later ${what}`, "info");
     seekTo(e.start - 3000, true);
   };
 
@@ -225,7 +234,8 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
 
   const zoom = (f: number) => setRange((r) => Math.min(MAX_RANGE, Math.max(MIN_RANGE, r * f)));
 
-  const listEvents = events.filter((e) => e.start >= center - Math.max(range, 6 * HOUR) && e.start <= center + Math.max(range, 6 * HOUR));
+  const listEvents = events.filter((e) => ofKind(e) && e.start >= center - Math.max(range, 6 * HOUR) && e.start <= center + Math.max(range, 6 * HOUR));
+  const jumpName = kind === "all" ? "motion" : kind === "person" ? "person" : "animal";
 
   if (status && !cam) {
     return (
@@ -356,7 +366,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
 
           {/* Controls */}
           <Card className="flex flex-wrap items-center gap-1 p-2">
-            <IconButton title="Previous motion ( [ )" onClick={() => jumpEvent(-1)}>
+            <IconButton title={`Previous ${jumpName} ( [ )`} onClick={() => jumpEvent(-1)}>
               <SkipBack className="size-4" />
             </IconButton>
             <IconButton title="Back 10 s (←)" onClick={() => nudge(-10)}>
@@ -368,7 +378,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
             <IconButton title="Forward 10 s (→)" onClick={() => nudge(10)} disabled={mode === "live"}>
               <RotateCw className="size-4" />
             </IconButton>
-            <IconButton title="Next motion ( ] )" onClick={() => jumpEvent(1)} disabled={mode === "live"}>
+            <IconButton title={`Next ${jumpName} ( ] )`} onClick={() => jumpEvent(1)} disabled={mode === "live"}>
               <SkipForward className="size-4" />
             </IconButton>
             <div className="mx-1 hidden rounded-xl bg-white/5 p-0.5 sm:flex">
@@ -443,7 +453,10 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
             />
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-gradient-to-r from-violet-500/70 to-cyan-400/40" /> Recorded</span>
-              <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-amber-400" /> Motion</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-amber-400/60" /> Motion</span>
+              {(["person", "cat", "dog"] as const).map((l) => (
+                <span key={l} className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm" style={{ background: LABELS[l].color }} /> {LABELS[l].name}</span>
+              ))}
               <span className="flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-rose-500/30" /> Not recorded</span>
               <span className="ml-auto hidden md:inline">Drag to scrub · click to jump · scroll to zoom · scroll on the video to magnify · G to go to a time</span>
             </div>
@@ -467,28 +480,43 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
         <Card className="flex max-h-[calc(100vh-10rem)] min-h-64 flex-col overflow-hidden xl:sticky xl:top-4">
           <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
             <span className="flex items-center gap-2 text-sm font-semibold text-white">
-              <Zap className="size-4 text-amber-300" /> Motion events
+              <Zap className="size-4 text-amber-300" /> Events
+              <span className="text-xs font-normal text-slate-500">{listEvents.length}</span>
             </span>
-            <span className="text-xs text-slate-500">{listEvents.length}</span>
+            <div className="flex rounded-lg bg-white/5 p-0.5" title="What the list and the skip buttons step through">
+              {(
+                [
+                  ["all", "All"],
+                  ["person", "People"],
+                  ["animal", "Animals"],
+                ] as const
+              ).map(([k, l]) => (
+                <button key={k} onClick={() => setJumpKind(k)} className={clsx("rounded-md px-2 py-0.5 text-[11px] font-semibold transition", kind === k ? "bg-white/15 text-white" : "text-slate-400 hover:text-white")}>
+                  {l}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {listEvents.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-slate-500">No motion around this time</div>
+              <div className="px-4 py-10 text-center text-sm text-slate-500">No {jumpName === "motion" ? "motion" : jumpName === "person" ? "people" : "animals"} around this time</div>
             ) : (
               listEvents.map((e) => {
                 const active = center >= e.start - 3000 && center <= (e.end || now);
                 return (
                   <button
                     key={e.id}
-                    onClick={() => seekTo(e.start - 3000, true)}
+                    onClick={() => seekTo((e.objects?.[0]?.t ?? e.start) - 3000, true)}
                     className={clsx("flex w-full items-center gap-3 rounded-xl p-2 text-left transition hover:bg-white/5", active && "bg-violet-500/10 ring-1 ring-violet-400/30")}
                   >
-                    <div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-lg bg-ink-800">
-                      {e.thumb ? <img src={thumbURL(e)} loading="lazy" className="h-full w-full object-cover" /> : <Zap className="absolute inset-0 m-auto size-4 text-slate-600" />}
+                    <div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-lg">
+                      <EventPicture e={e} className="h-full w-full" boxes={false} />
                       {!e.end && <span className="absolute right-1 top-1 rounded bg-amber-400 px-1 text-[9px] font-bold text-black">NOW</span>}
                     </div>
                     <div className="min-w-0">
-                      <div className="text-sm font-medium text-white">{fmtTimeSec(e.start)}</div>
+                      <div className="flex items-center gap-1.5 text-sm font-medium text-white">
+                        {fmtTimeSec(e.start)} <LabelChips e={e} size="xs" />
+                      </div>
                       <div className="text-xs text-slate-500">
                         {fmtDay(e.start)} · {e.end ? fmtDuration(e.end - e.start) : "ongoing"}
                       </div>

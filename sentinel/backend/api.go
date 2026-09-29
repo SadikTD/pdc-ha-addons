@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -67,6 +68,34 @@ func (a *App) Routes(www string) http.Handler {
 	mux.HandleFunc("GET /api/events/{cam}/{id}/thumb.jpg", a.handleThumb)
 	mux.HandleFunc("GET /api/events/{cam}/{id}/snap.jpg", a.handleSnap)
 	mux.HandleFunc("GET /api/search", a.handleSearch)
+	// "That's not a person": the label goes, and the camera learns the spot.
+	mux.HandleFunc("POST /api/events/{cam}/{id}/wrong", func(w http.ResponseWriter, r *http.Request) {
+		cam, id := r.PathValue("cam"), r.PathValue("id")
+		var req struct {
+			Label string `json:"label"`
+		}
+		if json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&req) != nil || !slices.Contains(watchLabels, req.Label) {
+			writeErr(w, 400, "which label?")
+			return
+		}
+		o, ok := a.events.RemoveLabel(cam, id, req.Label)
+		if !ok {
+			writeErr(w, 404, "no such label on that event")
+			return
+		}
+		a.labeler.hot.Add(cam, o.Box, userHits)
+		a.labeler.hot.Save()
+		e, _ := a.events.Get(cam, id)
+		writeJSON(w, 200, e)
+	})
+	mux.HandleFunc("GET /api/detection/hotspots/{cam}", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, a.labeler.hot.List(r.PathValue("cam")))
+	})
+	mux.HandleFunc("DELETE /api/detection/hotspots/{cam}", func(w http.ResponseWriter, r *http.Request) {
+		a.labeler.hot.Clear(r.PathValue("cam"))
+		a.labeler.hot.Save()
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
 	// Check events again (e.g. after changing detection): from/to in unix ms.
 	mux.HandleFunc("POST /api/detection/rescan", func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()

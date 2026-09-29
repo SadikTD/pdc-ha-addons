@@ -9,7 +9,8 @@ import { Empty, PageHeader, StatePill, buttonCls, recState } from "../components
 import { useStatus } from "../lib/status";
 import { useSound } from "../lib/sound";
 import { fmtAgo, fmtBitrate, fmtBytes, fmtTime, startOfDay } from "../lib/format";
-import { api, latestFrameURL, thumbURL, type CameraStatus, type SentinelEvent } from "../lib/api";
+import { api, latestFrameURL, type CameraStatus, type SentinelEvent } from "../lib/api";
+import { EventPicture, LabelChips } from "../lib/labels";
 
 const LAYOUTS = [
   { cols: 0, icon: Scan, label: "Fit all cameras on screen" },
@@ -138,6 +139,7 @@ function SummaryCards({ events }: { events: SentinelEvent[] | null }) {
   const uptime = measured.length ? Math.min(...measured.map((c) => c.storage.uptime_24h)) : 100;
   const s = status.storage;
   const last = events?.[0];
+  const lastPerson = events?.find((e) => e.labels?.includes("person"));
   const lastCam = last && status.cameras.find((c) => c.id === last.camera)?.name;
   const oldest = Math.min(...status.cameras.filter((c) => c.storage.oldest).map((c) => c.storage.oldest));
 
@@ -151,12 +153,16 @@ function SummaryCards({ events }: { events: SentinelEvent[] | null }) {
       sub: down.length ? down.map((c) => c.name).join(", ") : `${uptime >= 99.95 ? "100" : uptime.toFixed(1)}% recorded in the last 24 h`,
     },
     {
-      to: "/events",
+      to: "/summary",
       icon: Zap,
       tone: "amber",
-      label: "Motion today",
-      value: events ? `${events.length} event${events.length === 1 ? "" : "s"}` : "…",
-      sub: last ? `Last: ${lastCam ?? last.camera} · ${fmtAgo(last.start)}` : "Nothing yet today",
+      label: "Today",
+      value: events ? todayLine(events) : "…",
+      sub: lastPerson
+        ? `Last person: ${status.cameras.find((c) => c.id === lastPerson.camera)?.name ?? lastPerson.camera} · ${fmtAgo(lastPerson.start)}`
+        : last
+          ? `Last motion: ${lastCam ?? last.camera} · ${fmtAgo(last.start)}`
+          : "Nothing yet today",
     },
     {
       to: "/system",
@@ -213,12 +219,15 @@ function RecentMotion({ events }: { events: SentinelEvent[] }) {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.03 }}
             whileHover={{ y: -3 }}
-            onClick={() => nav(`/camera/${e.camera}?t=${e.start - 3000}`)}
+            onClick={() => nav(`/camera/${e.camera}?t=${(e.objects?.[0]?.t ?? e.start) - 3000}`)}
             className="w-48 shrink-0 overflow-hidden rounded-xl border border-white/[0.07] bg-ink-850 text-left"
           >
-            <div className="relative aspect-video bg-ink-800">
-              {e.thumb ? <img src={thumbURL(e)} loading="lazy" className="h-full w-full object-cover" /> : <Zap className="absolute inset-0 m-auto size-4 text-slate-600" />}
+            <div className="relative aspect-video">
+              <EventPicture e={e} className="h-full w-full" boxes={false} />
               <span className="absolute left-1.5 top-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white">{names[e.camera] ?? e.camera}</span>
+              <span className="absolute bottom-1.5 left-1.5">
+                <LabelChips e={e} size="xs" />
+              </span>
             </div>
             <div className="px-2.5 py-1.5 text-xs">
               <span className="font-medium text-white">{fmtTime(e.start)}</span> <span className="text-slate-500">· {fmtAgo(e.start)}</span>
@@ -307,4 +316,17 @@ export function CameraTile({ cam, index }: { cam: CameraStatus; index: number })
       </div>
     </motion.div>
   );
+}
+
+// "3 people · 1 cat · 120 motion", leaving out what wasn't seen.
+function todayLine(events: SentinelEvent[]) {
+  const n = { person: 0, cat: 0, dog: 0 };
+  for (const e of events) for (const l of e.labels ?? []) n[l]++;
+  const parts = [
+    n.person && `${n.person} ${n.person === 1 ? "person" : "people"}`,
+    n.cat && `${n.cat} cat${n.cat === 1 ? "" : "s"}`,
+    n.dog && `${n.dog} dog${n.dog === 1 ? "" : "s"}`,
+    `${events.length} motion`,
+  ].filter(Boolean);
+  return parts.join(" · ");
 }

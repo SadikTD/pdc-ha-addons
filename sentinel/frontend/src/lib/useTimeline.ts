@@ -5,7 +5,7 @@ import type { Lane } from "../components/Timeline";
 // Loads coverage + motion activity for the visible window (with margin), debounced while
 // the user drags, and refreshed periodically so the live edge keeps growing.
 export function useTimeline(cams: { id: string; name: string }[], start: number, end: number) {
-  const [lanes, setLanes] = useState<Lane[]>(() => cams.map((c) => ({ id: c.id, label: c.name, spans: [], activity: [] })));
+  const [lanes, setLanes] = useState<Lane[]>(() => cams.map((c) => ({ id: c.id, label: c.name, spans: [], activity: [], objects: [] })));
   const loaded = useRef<{ from: number; to: number; key: string; at: number } | null>(null);
   const key = cams.map((c) => c.id).join(",");
 
@@ -20,8 +20,13 @@ export function useTimeline(cams: { id: string; name: string }[], start: number,
       try {
         const next = await Promise.all(
           cams.map(async (c) => {
-            const [spans, activity] = await Promise.all([api.coverage(c.id, from, to), api.activity(c.id, from, to, step)]);
-            return { id: c.id, label: cams.length > 1 ? c.name : undefined, spans, activity };
+            const [spans, activity, objects] = await Promise.all([
+              api.coverage(c.id, from, to),
+              api.activity(c.id, from, to, step),
+              // People and animals, shown as markers on the lane.
+              api.events({ cameras: [c.id], from, to, labels: ["person", "cat", "dog"], limit: 2000 }).catch(() => []),
+            ]);
+            return { id: c.id, label: cams.length > 1 ? c.name : undefined, spans, activity, objects };
           }),
         );
         if (!cancelled) {

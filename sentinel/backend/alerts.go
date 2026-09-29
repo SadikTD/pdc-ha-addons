@@ -419,8 +419,8 @@ func (al *Alerter) scanObjects(cam Camera, bg time.Time, times []time.Time, r Re
 		var moving []Detection
 		for _, d := range dets {
 			cx, cy := int((d.Box.X+d.Box.W/2)*shotW), int((d.Box.Y+d.Box.H/2)*shotH)
-			if mask[min(max(cy, 0), shotH-1)*shotW+min(max(cx, 0), shotW-1)] {
-				continue
+			if mask[min(max(cy, 0), shotH-1)*shotW+min(max(cx, 0), shotW-1)] || al.app.labeler.hot.Suspect(cam.ID, d.Box) {
+				continue // ignored area, or a spot where lookalikes (laundry) fool detection
 			}
 			still := false
 			for _, b := range before {
@@ -446,7 +446,7 @@ func (al *Alerter) scanObjects(cam Camera, bg time.Time, times []time.Time, r Re
 		if i == 2 {
 			break
 		}
-		v, ok := al.app.labeler.verify(ctx, cam, c.t, c.moving[0].Box)
+		v, ok := al.app.labeler.verify(ctx, cam, c.t, c.moving[0].Box, atEdge(c.moving[0].Box))
 		if !ok {
 			continue
 		}

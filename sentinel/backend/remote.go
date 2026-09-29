@@ -320,6 +320,8 @@ func (rm *Remote) allowed(u *AppUser, r *http.Request) bool {
 		return u.CanSee(r.URL.Query().Get("camera"))
 	case get && (p == "/go2rtc/api/stream.mp4" || p == "/go2rtc/api/frame.jpeg"):
 		return u.CanSee(strings.TrimSuffix(r.URL.Query().Get("src"), "_sub"))
+	case u.Admin && r.Method == http.MethodPost && n == 5 && at(1) == "events" && at(4) == "wrong":
+		return u.CanSee(at(2))
 	case u.Admin && get && (p == "/api/incidents" || p == "/api/alerts"):
 		return true
 	case u.Admin && n == 3 && at(1) == "clips" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete):

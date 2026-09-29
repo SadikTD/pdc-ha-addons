@@ -3,6 +3,8 @@ import clsx from "clsx";
 import type { SentinelEvent, Span } from "../lib/api";
 import { fmtTime, fmtTimeSec, HOUR, DAY, startOfDay } from "../lib/format";
 import { usePreviewFrame } from "../lib/usePreview";
+import { LABELS, mainLabel } from "../lib/labels";
+import { snapURL } from "../lib/api";
 
 // A fixed playhead in the middle; the timeline slides underneath it (like UniFi Protect /
 // Frigate). Drag or flick to scrub (with momentum), click to jump, scroll/pinch to zoom.
@@ -156,16 +158,38 @@ export function Scrubber(p: Props) {
     }
     g.restore();
 
-    // motion event bars
+    // event bars: plain motion in faint amber, people and animals in their colour on top
+    const labelled = [];
     for (const e of p.events) {
       const e1 = e.end || now;
       if (e1 < start || e.start > end) continue;
+      if (mainLabel(e)) {
+        labelled.push(e);
+        continue;
+      }
       const x0 = xOf(e.start);
       const w = Math.max(4, xOf(e1) - x0);
       const k = Math.min(1, e.peak / 8);
-      rr(g, x0, EV_Y, w, EV_H, 3);
-      g.fillStyle = `rgba(251,191,36,${0.55 + 0.45 * k})`;
+      rr(g, x0, EV_Y + 2, w, EV_H - 4, 3);
+      g.fillStyle = `rgba(251,191,36,${0.35 + 0.35 * k})`;
       g.fill();
+    }
+    for (const e of labelled) {
+      const x0 = xOf(e.start);
+      const w = Math.max(8, xOf(e.end || now) - x0);
+      rr(g, x0 - 1, EV_Y - 1, w + 2, EV_H + 2, 4);
+      g.fillStyle = "#0b0f17"; // a surface ring so neighbours stay apart
+      g.fill();
+      rr(g, x0, EV_Y, w, EV_H, 3);
+      g.fillStyle = LABELS[mainLabel(e)!].color;
+      g.fill();
+      // Seen more than one kind (a person with a dog): a second-colour cap.
+      const second = e.labels?.find((l) => l !== mainLabel(e));
+      if (second && w > 12) {
+        rr(g, x0 + w - 5, EV_Y, 5, EV_H, 2);
+        g.fillStyle = LABELS[second].color;
+        g.fill();
+      }
     }
 
     // export selection
@@ -339,7 +363,10 @@ export function Scrubber(p: Props) {
 
   const hoverT = hover && !dragging && hover.t < now ? hover.t : null;
   const thumb = usePreviewFrame(hoverT !== null ? p.camera : null, hoverT);
-  const hoverEvent = hover ? p.events.find((e) => hover.t >= e.start - 2000 && hover.t <= (e.end || now) + 2000) : undefined;
+  const near = hover ? p.events.filter((e) => hover.t >= e.start - (4 / width) * range - 2000 && hover.t <= (e.end || now) + (4 / width) * range + 2000) : [];
+  // Prefer a person/animal under the pointer: its snapshot beats the preview frame.
+  const hoverEvent = near.find((e) => mainLabel(e)) ?? near[0];
+  const hoverLabel = hoverEvent && mainLabel(hoverEvent);
 
   return (
     <div ref={wrap} className="relative w-full select-none">
@@ -369,11 +396,24 @@ export function Scrubber(p: Props) {
           style={{ left: Math.min(width - 88, Math.max(88, hover.x)), bottom: HEIGHT + 8 }}
         >
           <div className="aspect-video bg-ink-800">
-            {thumb?.url ? <img src={thumb.url} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-[10px] text-slate-500">{thumb ? "No preview" : "…"}</div>}
+            {hoverLabel && hoverEvent?.snap ? (
+              <img src={snapURL(hoverEvent)} className="h-full w-full object-cover" />
+            ) : thumb?.url ? (
+              <img src={thumb.url} className="h-full w-full object-cover" />
+            ) : (
+              <div className="flex h-full items-center justify-center text-[10px] text-slate-500">{thumb ? "No preview" : "…"}</div>
+            )}
           </div>
           <div className="flex items-center justify-between px-2 py-1 text-[11px]">
-            <span className="font-semibold text-white">{fmtTimeSec(hover.t)}</span>
-            {hoverEvent && <span className="font-medium text-amber-300">Motion</span>}
+            <span className="font-semibold text-white">{fmtTimeSec(hoverLabel ? hoverEvent!.start : hover.t)}</span>
+            {hoverLabel ? (
+              <span className="flex items-center gap-1 font-semibold text-white">
+                <span className="size-2 rounded-full" style={{ background: LABELS[hoverLabel].color }} />
+                {hoverEvent!.labels!.map((l) => LABELS[l].name).join(" + ")}
+              </span>
+            ) : (
+              hoverEvent && <span className="font-medium text-amber-300">Motion</span>
+            )}
           </div>
         </div>
       )}
