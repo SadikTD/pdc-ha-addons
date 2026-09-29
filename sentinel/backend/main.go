@@ -84,6 +84,7 @@ func main() {
 	incidents.Add("info", "", "Sentinel %s started with %d camera(s)", version, len(s.Cameras))
 	go app.Background()
 
+	app.push = newPush(app)
 	app.remote = app.newRemote(configDir)
 	routes := app.Routes(www)
 	app.remote.Start(routes)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -312,6 +313,8 @@ func (rm *Remote) allowed(u *AppUser, r *http.Request) bool {
 			Camera string `json:"camera"`
 		}
 		return json.Unmarshal(body, &req) == nil && u.CanSee(req.Camera)
+	case get && p == "/api/alerts/picture":
+		return u.CanSee(r.URL.Query().Get("camera"))
 	case get && (p == "/go2rtc/api/stream.mp4" || p == "/go2rtc/api/frame.jpeg"):
 		return u.CanSee(strings.TrimSuffix(r.URL.Query().Get("src"), "_sub"))
 	case u.Admin && get && (p == "/api/incidents" || p == "/api/alerts"):
@@ -355,17 +358,29 @@ func (rm *Remote) handleApp(w http.ResponseWriter, r *http.Request, u *AppUser, 
 	p := strings.TrimPrefix(r.URL.Path, "/app")
 	switch {
 	case p == "/me" && r.Method == http.MethodGet:
-		writeJSON(w, 200, map[string]any{"user": u.public(), "server": map[string]string{"id": rm.identity.ID, "name": "Sentinel", "version": version}})
+		writeJSON(w, 200, map[string]any{
+			"user":   u.public(),
+			"server": map[string]string{"id": rm.identity.ID, "name": "Sentinel", "version": version},
+			"push":   rm.app.push.ClientConfig(),
+			"prefs":  rm.users.PushPrefsOf(sid),
+		})
 	case p == "/logout" && r.Method == http.MethodPost:
 		rm.users.Logout(sid)
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	case p == "/push" && r.Method == http.MethodPost:
 		var req struct {
-			Token string `json:"token"`
+			Token string     `json:"token"`
+			Prefs *PushPrefs `json:"prefs"`
 		}
 		json.NewDecoder(io.LimitReader(r.Body, 1<<14)).Decode(&req)
-		rm.users.SetPushToken(sid, req.Token)
-		writeJSON(w, 200, map[string]bool{"ok": true})
+		writeJSON(w, 200, map[string]any{"prefs": rm.users.SetPush(sid, req.Token, req.Prefs)})
+	case p == "/push/test" && r.Method == http.MethodPost:
+		n, err := rm.app.push.Test(sid)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]int{"sent": n})
 	case u.Admin:
 		rm.handleUsers(w, r, p)
 	default:
@@ -436,6 +451,38 @@ func (rm *Remote) Status() map[string]any {
 // Routes for the Home Assistant panel (ingress is already an HA admin session).
 func (rm *Remote) panelRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/app/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, rm.Status()) })
+	mux.HandleFunc("GET /api/app/push", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, rm.app.push.Status()) })
+	mux.HandleFunc("POST /api/app/push", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Account json.RawMessage `json:"account"`
+			Client  json.RawMessage `json:"client"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		if err := rm.app.push.Setup(req.Account, req.Client); err != nil {
+			code := 400
+			if errors.Is(err, ErrNeedClientConfig) {
+				code = 409
+			}
+			writeErr(w, code, err.Error())
+			return
+		}
+		writeJSON(w, 200, rm.app.push.Status())
+	})
+	mux.HandleFunc("DELETE /api/app/push", func(w http.ResponseWriter, r *http.Request) {
+		rm.app.push.Disconnect()
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("POST /api/app/push/test", func(w http.ResponseWriter, r *http.Request) {
+		n, err := rm.app.push.Test("")
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]int{"sent": n})
+	})
 	mux.HandleFunc("/api/app/", func(w http.ResponseWriter, r *http.Request) {
 		rm.handleUsers(w, r, strings.TrimPrefix(r.URL.Path, "/api/app"))
 	})

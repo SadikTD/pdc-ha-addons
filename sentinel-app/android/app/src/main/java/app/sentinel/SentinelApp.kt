@@ -7,6 +7,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import app.sentinel.core.Api
 import app.sentinel.core.AppState
 import app.sentinel.core.Engine
+import app.sentinel.core.Push
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -27,6 +28,8 @@ class SentinelApp : Application(), SingletonImageLoader.Factory {
         instance = this
         engine = Engine(this)
         state = AppState(this, engine, Api(engine))
+        Push.channels(this)
+        runCatching { Push.init(this, null) }
         // Poll Sentinel only while the app is visible.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) = state.startPolling()

@@ -173,6 +173,7 @@ export type AppStatus = {
   lan?: string[];
   host?: { online: boolean; public: string; error: string; since: number; connects: number; last_app: number; public_err: string };
 };
+export type PushStatus = { configured: boolean; project?: string; error: string; last_ok: number; sent: number };
 export type Incident = { t: number; level: "info" | "warn" | "error"; camera?: string; message: string };
 
 // timeoutMs aborts a request that hangs (e.g. the connection dropped mid-way).
@@ -242,6 +243,10 @@ export const api = {
   deleteAppUser: (id: string) => request<{ ok: boolean }>("DELETE", `api/app/users/${id}`),
   appSessions: () => request<AppSession[]>("GET", "api/app/sessions"),
   deleteAppSession: (id: string) => request<{ ok: boolean }>("DELETE", `api/app/sessions/${id}`),
+  pushStatus: () => request<PushStatus>("GET", "api/app/push"),
+  setupPush: (account: unknown, client?: unknown) => request<PushStatus>("POST", "api/app/push", { account, client }),
+  deletePush: () => request<{ ok: boolean }>("DELETE", "api/app/push"),
+  testPush: () => request<{ sent: number }>("POST", "api/app/push/test"),
   deleteRecordings: (id: string) => request<{ ok: boolean }>("DELETE", `api/recordings/${id}`),
 };
 

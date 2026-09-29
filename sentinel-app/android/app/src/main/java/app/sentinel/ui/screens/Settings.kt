@@ -31,7 +31,25 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import app.sentinel.core.AppState
+import app.sentinel.core.Push
+import app.sentinel.ui.components.Gap
+import app.sentinel.ui.components.GradientButton
+import app.sentinel.ui.components.SubtleButton
+import app.sentinel.ui.components.Toaster
+import kotlinx.coroutines.launch
 import app.sentinel.ui.components.Chip
 import app.sentinel.ui.components.GlassCard
 import app.sentinel.ui.components.RoundIcon
@@ -62,6 +80,7 @@ fun SettingsScreen(state: AppState, onBack: () -> Unit) {
                 }
             }
         }
+        item { NotificationsCard(state) }
         item { SectionTitle("Camera order") }
         item { Text("Order and visibility on this phone only. Hidden cameras are still recorded.", color = C.TextFaint, fontSize = 12.sp) }
         itemsIndexed(cams, key = { _, c -> c.id }) { i, c ->
@@ -96,5 +115,61 @@ fun SettingsScreen(state: AppState, onBack: () -> Unit) {
             dismissButton = { TextButton({ confirmForget = false }) { Text("Cancel", color = C.TextDim) } },
             containerColor = C.Ink850,
         )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun NotificationsCard(state: AppState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val available by state.pushAvailable.collectAsStateWithLifecycle()
+    val prefs by state.pushPrefs.collectAsStateWithLifecycle()
+    val status by state.status.collectAsStateWithLifecycle()
+    var allowed by remember { mutableStateOf(Push.canNotify(context)) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        allowed = ok
+        if (ok) scope.launch { state.registerPush() }
+    }
+    GlassCard(Modifier.fillMaxWidth()) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Notifications, null, tint = C.VioletLight, modifier = Modifier.size(20.dp))
+                Text("  Notifications", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            }
+            when {
+                !available -> Text(
+                    "Not set up on Sentinel yet. The admin turns them on in Sentinel → Settings → Sentinel app → Phone notifications.",
+                    color = C.TextFaint, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp),
+                )
+                !allowed -> Column(Modifier.padding(top = 8.dp)) {
+                    Text("Allow Sentinel to show notifications on this phone.", color = C.TextDim, fontSize = 13.sp)
+                    Gap(10.dp)
+                    GradientButton("Allow notifications", Modifier.fillMaxWidth().height(46.dp)) {
+                        if (Build.VERSION.SDK_INT >= 33) ask.launch(Manifest.permission.POST_NOTIFICATIONS) else allowed = true
+                    }
+                }
+                else -> Column {
+                    ToggleRow("Night alerts", "People and animals seen at night, with the picture", prefs.alerts) { state.setPushPrefs(prefs.copy(alerts = it)) }
+                    ToggleRow("Camera problems", "A camera stops or starts recording", prefs.status) { state.setPushPrefs(prefs.copy(status = it)) }
+                    Text("Any motion on", color = C.Text, fontSize = 15.sp, modifier = Modifier.padding(top = 8.dp))
+                    Text("At most one notification a minute per camera", color = C.TextFaint, fontSize = 12.sp)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 10.dp)) {
+                        status?.cameras?.forEach { c ->
+                            val on = c.id in prefs.motion
+                            Chip(c.name, on) { state.setPushPrefs(prefs.copy(motion = if (on) prefs.motion - c.id else prefs.motion + c.id)) }
+                        }
+                    }
+                    SubtleButton("Send a test notification", Modifier.fillMaxWidth(), icon = Icons.Rounded.Notifications) {
+                        scope.launch {
+                            state.registerPush()
+                            runCatching { state.api.testPush() }
+                                .onSuccess { Toaster.show(if (it > 0) "Test sent — it should arrive in a moment" else "This phone isn't registered yet") }
+                                .onFailure { Toaster.error(it.message ?: "Couldn't send") }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

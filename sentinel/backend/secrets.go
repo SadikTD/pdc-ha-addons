@@ -15,6 +15,10 @@ type Secrets struct {
 	DriveRefreshToken string `json:"drive_refresh_token,omitempty"`
 	DriveAccount      string `json:"drive_account,omitempty"`
 	DriveFolderID     string `json:"drive_folder_id,omitempty"`
+	// Firebase (push notifications to the Sentinel app): service account key and the
+	// app's public config.
+	FirebaseAccount string `json:"firebase_account,omitempty"`
+	FirebaseClient  string `json:"firebase_client,omitempty"`
 }
 
 type SecretStore struct {

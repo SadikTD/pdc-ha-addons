@@ -124,6 +124,22 @@ func (a *App) Routes(www string) http.Handler {
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("GET /api/alerts", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, a.alerts.List()) })
+	// The full picture of an alert moment (for the app's notifications), from the recording.
+	mux.HandleFunc("GET /api/alerts/picture", func(w http.ResponseWriter, r *http.Request) {
+		cam := r.URL.Query().Get("camera")
+		if !idRe.MatchString(cam) {
+			writeErr(w, 400, "bad camera id")
+			return
+		}
+		img, err := a.alerts.picture(cam, msParam(r, "t", time.Now()))
+		if err != nil {
+			writeErr(w, 404, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Write(img)
+	})
 	mux.HandleFunc("POST /api/alerts/test", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Camera string `json:"camera"`

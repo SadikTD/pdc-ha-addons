@@ -144,6 +144,13 @@ object Routes {
 @Composable
 private fun MainNav(state: AppState) {
     val nav = rememberNavController()
+    val activity = LocalActivity.current
+    // Opened from a notification: go to that camera and moment.
+    LaunchedEffect(activity.openCamera) {
+        val (id, t) = activity.openCamera ?: return@LaunchedEffect
+        activity.openCamera = null
+        nav.navigate(Routes.camera(id, t)) { popUpTo(Routes.Tabs) }
+    }
     NavHost(
         nav,
         startDestination = Routes.Tabs,

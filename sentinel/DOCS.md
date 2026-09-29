@@ -149,7 +149,18 @@ at home and from anywhere, with no port forwarding, VPN or other add-on:
 
 Setup: install the app (APK from the GitHub releases), then log in. At home the app
 finds Sentinel by itself; elsewhere, scan the QR code or type the Sentinel ID shown in
-Settings. Sentinel uses UDP port 8555 on the Home Assistant host.
+Settings. Sentinel uses UDP port 8555 on the Home Assistant host (it runs on the host
+network, so no port mapping or Docker NAT sits in the way).
+
+**Phone notifications** (optional): night alerts with the picture of who was seen,
+cameras that stop or start recording, and any motion on the cameras each phone picks.
+They use Google's free Firebase Cloud Messaging: create a Firebase project, download its
+service account key (Project settings → Service accounts → Generate new private key) and
+upload it under Settings → Sentinel app → Phone notifications. Sentinel registers the app
+in the project itself. Messages only say what happened; the app fetches the picture from
+Sentinel over its encrypted connection. Each phone chooses what it gets in the app
+(App settings → Notifications). Night alerts follow the Night alerts settings (hours,
+cameras, people/animals only) and work with or without WhatsApp.
 
 ## Home Assistant dashboard card
 

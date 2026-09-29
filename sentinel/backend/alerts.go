@@ -124,7 +124,8 @@ func (al *Alerter) state(cam string) *camAlerts {
 func (al *Alerter) MotionStart(cam string, e Event) {
 	s := al.app.settings.Get()
 	n := s.NightAlerts
-	if !n.Enabled || s.WhatsApp.To == "" || !inWindow(n.From, n.To, time.Now()) {
+	// Night alerts go to WhatsApp and/or the Sentinel app's notifications.
+	if !n.Enabled || (s.WhatsApp.To == "" && !al.app.push.Enabled()) || !inWindow(n.From, n.To, time.Now()) {
 		return
 	}
 	if len(n.Cameras) > 0 && !contains(n.Cameras, cam) {
@@ -252,9 +253,15 @@ func (al *Alerter) fire(cam string, e Event) {
 	}
 	rec := AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: pic.t.UnixMilli(), Event: e.ID, Status: "sending"}
 	al.put(rec)
-	err := al.deliver(cam, name, pic.t, s.WhatsApp.To, e.ID, pic.what, note, 15*time.Minute)
+	al.app.push.Alert(cam, name, pic.t, pic.what, e.ID)
+	var err error
+	if s.WhatsApp.To != "" {
+		err = al.deliver(cam, name, pic.t, s.WhatsApp.To, e.ID, pic.what, note, 15*time.Minute)
+	}
 	al.finish(rec.ID, err)
-	if err != nil {
+	if s.WhatsApp.To == "" {
+		al.app.incidents.Add("info", cam, "Night alert sent to the Sentinel app")
+	} else if err != nil {
 		al.app.incidents.Add("error", cam, "Night alert not sent to WhatsApp: %v", err)
 		notifyHA("", "Sentinel: night alert not sent", fmt.Sprintf("Motion on %s at %s, but the WhatsApp alert failed: %v", name, pic.t.In(time.Local).Format("15:04:05"), err), "whatsapp", false)
 	} else {
@@ -292,7 +299,10 @@ func (al *Alerter) fire(cam string, e Event) {
 		if b.what != "" {
 			label = b.what + " still there"
 		}
-		err = al.deliver(cam, name, b.t, s.WhatsApp.To, id, label, note, 5*time.Minute)
+		al.app.push.Alert(cam, name, b.t, label, e.ID)
+		if s.WhatsApp.To != "" {
+			err = al.deliver(cam, name, b.t, s.WhatsApp.To, id, label, note, 5*time.Minute)
+		}
 		al.finish(id, err)
 		n = al.app.settings.Get().NightAlerts
 	}

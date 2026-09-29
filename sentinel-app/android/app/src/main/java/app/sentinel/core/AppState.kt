@@ -66,6 +66,12 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
     private val _status = MutableStateFlow<Status?>(null)
     val status: StateFlow<Status?> = _status.asStateFlow()
 
+    /** Notifications: whether Sentinel has them set up, and this phone's choices. */
+    private val _pushAvailable = MutableStateFlow(false)
+    val pushAvailable: StateFlow<Boolean> = _pushAvailable.asStateFlow()
+    private val _pushPrefs = MutableStateFlow(PushPrefs())
+    val pushPrefs: StateFlow<PushPrefs> = _pushPrefs.asStateFlow()
+
     private val _statusError = MutableStateFlow<String?>(null)
     val statusError: StateFlow<String?> = _statusError.asStateFlow()
 
@@ -113,6 +119,9 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
     /** Refresh the account (an admin may have changed it) without blocking the UI. */
     private fun refreshMe() = scope.launch {
         runCatching { api.me() }.onSuccess { me ->
+            _pushPrefs.value = me.prefs
+            _pushAvailable.value = me.push != null
+            if (me.push != null && Push.init(context, me.push)) registerPush()
             val a = _auth.value
             if (a is Auth.LoggedIn) {
                 _auth.value = a.copy(user = me.user, server = me.server)
@@ -155,6 +164,19 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
         }
         _status.value = null
         _auth.value = Auth.LoggedIn(serverId, r.user, r.server)
+        refreshMe()
+    }
+
+    /** Tells Sentinel where to send this phone's notifications. */
+    suspend fun registerPush(token: String? = null) {
+        if (_auth.value !is Auth.LoggedIn) return
+        val t = token ?: Push.token() ?: return
+        runCatching { api.setPush(t, null) }.onSuccess { _pushPrefs.value = it }
+    }
+
+    fun setPushPrefs(p: PushPrefs) {
+        _pushPrefs.value = p
+        scope.launch { runCatching { api.setPush(null, p) }.onSuccess { _pushPrefs.value = it } }
     }
 
     fun logout() {

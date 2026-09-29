@@ -30,6 +30,7 @@ type App struct {
 	go2rtc    *Go2RTC
 	mqtt      *MQTT
 	remote    *Remote
+	push      *Push
 	started   time.Time
 	heartbeat atomic.Int64
 
@@ -142,6 +143,7 @@ func (a *App) MotionStart(cam string, score float64) {
 	go a.captureThumb(cam, e.ID)
 	a.alerts.MotionStart(cam, *e)
 	a.drive.MotionStart(cam, e.Start)
+	a.push.Motion(cam, cameraName(a.settings.Get(), cam), time.UnixMilli(e.Start))
 }
 
 func (a *App) MotionUpdate(cam string, score float64) { a.events.Update(cam, score) }
@@ -311,8 +313,10 @@ func (a *App) checkOutages() {
 			msg += " Sentinel keeps retrying automatically."
 			a.incidents.Add("error", c.cam.ID, "Alert sent: not recording for %s", humanDuration(c.down))
 			notifyHA(s.NotifyService, "Sentinel: "+c.cam.Name+" is not recording", msg, c.cam.ID, false)
+			a.push.CameraState(c.cam.ID, c.cam.Name, true, msg)
 		case c.resolved:
 			notifyHA(s.NotifyService, "Sentinel: "+c.cam.Name+" is recording again", c.cam.Name+" is recording again after "+humanDuration(c.down)+".", c.cam.ID, true)
+			a.push.CameraState(c.cam.ID, c.cam.Name, false, c.cam.Name+" is recording again after "+humanDuration(c.down)+".")
 		default:
 			a.mqtt.Recording(c.cam.ID, c.rec)
 		}

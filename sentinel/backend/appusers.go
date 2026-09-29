@@ -48,15 +48,16 @@ func (u AppUser) public() AppUser {
 }
 
 type AppSession struct {
-	ID        string `json:"id"`
-	TokenHash string `json:"token_hash,omitempty"`
-	UserID    string `json:"user_id"`
-	Device    string `json:"device"`
-	Created   int64  `json:"created"`
-	LastSeen  int64  `json:"last_seen"`
-	Addr      string `json:"addr"`
-	Via       string `json:"via"`                  // "home" or "internet", on the last request
-	PushToken string `json:"push_token,omitempty"` // Firebase token for notifications
+	ID        string     `json:"id"`
+	TokenHash string     `json:"token_hash,omitempty"`
+	UserID    string     `json:"user_id"`
+	Device    string     `json:"device"`
+	Created   int64      `json:"created"`
+	LastSeen  int64      `json:"last_seen"`
+	Addr      string     `json:"addr"`
+	Via       string     `json:"via"`                  // "home" or "internet", on the last request
+	PushToken string     `json:"push_token,omitempty"` // Firebase token for notifications
+	PushPrefs *PushPrefs `json:"push_prefs,omitempty"`
 }
 
 type userFile struct {
@@ -342,6 +343,76 @@ func (s *UserStore) SetPushToken(sessionID, token string) {
 		}
 	}
 	s.saveLocked()
+}
+
+// SetPush saves a phone's notification token and choices (nil prefs: keep them).
+func (s *UserStore) SetPush(sessionID, token string, prefs *PushPrefs) PushPrefs {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := defaultPushPrefs()
+	for i := range s.data.Sessions {
+		se := &s.data.Sessions[i]
+		if se.ID != sessionID {
+			continue
+		}
+		if token != "" {
+			// A token belongs to one phone: drop it from older sessions of that phone.
+			for j := range s.data.Sessions {
+				if j != i && s.data.Sessions[j].PushToken == token {
+					s.data.Sessions[j].PushToken = ""
+				}
+			}
+			se.PushToken = token
+		}
+		if prefs != nil {
+			p := *prefs
+			se.PushPrefs = &p
+		}
+		if se.PushPrefs != nil {
+			out = *se.PushPrefs
+		}
+	}
+	s.saveLocked()
+	return out
+}
+
+func (s *UserStore) PushPrefsOf(sessionID string) PushPrefs {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, se := range s.data.Sessions {
+		if se.ID == sessionID && se.PushPrefs != nil {
+			return *se.PushPrefs
+		}
+	}
+	return defaultPushPrefs()
+}
+
+type pushTarget struct {
+	session *AppSession
+	prefs   PushPrefs
+}
+
+// PushSessions: phones with notifications whose user may see the camera ("" = any).
+func (s *UserStore) PushSessions(cam string) []pushTarget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []pushTarget
+	for _, se := range s.data.Sessions {
+		if se.PushToken == "" {
+			continue
+		}
+		for _, u := range s.data.Users {
+			if u.ID == se.UserID && !u.Disabled && (cam == "" || u.CanSee(cam)) {
+				p := defaultPushPrefs()
+				if se.PushPrefs != nil {
+					p = *se.PushPrefs
+				}
+				se := se
+				out = append(out, pushTarget{session: &se, prefs: p})
+			}
+		}
+	}
+	return out
 }
 
 type SessionView struct {

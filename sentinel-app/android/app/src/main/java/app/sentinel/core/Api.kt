@@ -56,7 +56,16 @@ class Api(private val engine: Engine) {
 
     suspend fun me(): MeResponse = get("app/me")
     suspend fun logout() = runCatching { call("POST", "app/logout") }
-    suspend fun registerPush(token: String) = call("POST", "app/push", Engine.json.encodeToString(mapOf("token" to token)))
+    suspend fun setPush(token: String?, prefs: PushPrefs?): PushPrefs {
+        val body = buildString {
+            append("{")
+            if (token != null) append("\"token\":").append(Engine.json.encodeToString(token))
+            if (prefs != null) { if (token != null) append(","); append("\"prefs\":").append(Engine.json.encodeToString(prefs)) }
+            append("}")
+        }
+        return Engine.json.decodeFromString<PushReply>(call("POST", "app/push", body)).prefs
+    }
+    suspend fun testPush(): Int = Engine.json.decodeFromString<Map<String, Int>>(call("POST", "app/push/test"))["sent"] ?: 0
 
     // Sentinel
     suspend fun status(): Status = get("api/status")

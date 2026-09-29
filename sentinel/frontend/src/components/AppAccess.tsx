@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
 import QRCode from "qrcode";
-import { Check, Copy, Download, Globe, Home, KeyRound, Loader2, LogOut, Pencil, Plus, ShieldCheck, Smartphone, Trash2, UserRound, Users, X } from "lucide-react";
+import { Bell, Check, Copy, Download, Globe, Home, KeyRound, Loader2, LogOut, Pencil, Plus, Send, ShieldCheck, Smartphone, Trash2, Upload, UserRound, Users, X } from "lucide-react";
 import { Button, Card, Field, IconButton, SectionTitle, Toggle, inputCls } from "./ui";
-import { api, type AppSession, type AppStatus, type AppUser, type AppUserInput, type Camera } from "../lib/api";
+import { api, type AppSession, type AppStatus, type AppUser, type AppUserInput, type Camera, type PushStatus } from "../lib/api";
 import { fmtAgo } from "../lib/format";
 import { useToast } from "../lib/toast";
 
@@ -144,6 +144,8 @@ export function AppAccessCard({ cameras }: { cameras: Camera[] }) {
               ))}
             </div>
           </div>
+
+          <PushSetup onChange={load} />
 
           {sessions.length > 0 && (
             <div>
@@ -286,5 +288,99 @@ function UserEditor({ user, cameras, onClose, onSaved }: { user: AppUser | null;
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+// Notifications through Firebase Cloud Messaging: one service account key, uploaded once.
+function PushSetup({ onChange }: { onChange: () => void }) {
+  const toast = useToast();
+  const [st, setSt] = useState<PushStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [needClient, setNeedClient] = useState(false);
+  const load = () => api.pushStatus().then(setSt).catch(() => {});
+  useEffect(() => {
+    load();
+  }, []);
+
+  const readFile = (accept: string, then: (json: unknown) => void) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = accept;
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      try {
+        then(JSON.parse(await f.text()));
+      } catch {
+        toast("That file isn't JSON", "error");
+      }
+    };
+    input.click();
+  };
+
+  const upload = (client = false) =>
+    readFile(".json,application/json", async (json) => {
+      setBusy(true);
+      try {
+        const s = client ? await api.setupPush(undefined, json) : await api.setupPush(json);
+        setSt(s);
+        setNeedClient(false);
+        toast("Notifications are on — open the app to allow them");
+        onChange();
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg.includes("google-services.json")) setNeedClient(true);
+        toast(msg, "error");
+      } finally {
+        setBusy(false);
+      }
+    });
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-slate-400"><Bell className="size-3.5" /> Phone notifications</div>
+      <div className="rounded-xl border border-white/5 p-3 text-sm">
+        {st?.configured ? (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-300">
+                <Check className="size-3.5" /> On · Firebase project {st.project}
+              </span>
+              <span className="text-xs text-slate-500">{st.sent} sent{st.last_ok ? ` · last ${fmtAgo(st.last_ok)}` : ""}</span>
+            </div>
+            {st.error && <div className="text-xs text-amber-300">Last problem: {st.error}</div>}
+            <p className="text-xs text-slate-500">Night alerts (people and animals, with the picture), cameras that stop or start recording, and any motion on cameras a phone picks. Each phone chooses in the app under App settings.</p>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={async () => {
+                try { const r = await api.testPush(); toast(r.sent ? `Test sent to ${r.sent} phone${r.sent > 1 ? "s" : ""}` : "No phone has notifications on yet"); load(); } catch (e) { toast((e as Error).message, "error"); }
+              }}><Send className="size-3.5" /> Send a test</Button>
+              <Button size="sm" variant="ghost" onClick={async () => { if (confirm("Turn off phone notifications?")) { await api.deletePush(); load(); } }}>Turn off</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-slate-300">Get night alerts and camera problems as notifications on every phone, even when the app is closed. Uses Google's free Firebase Cloud Messaging; pictures stay on Sentinel.</p>
+            <ol className="list-decimal space-y-1 pl-5 text-xs text-slate-400">
+              <li>Open <a className="text-violet-300 underline" href="https://console.firebase.google.com/" target="_blank" rel="noreferrer">console.firebase.google.com</a>, <b>Create a project</b> (any name, e.g. "Sentinel"; Google Analytics can be off).</li>
+              <li>In the project: ⚙ <b>Project settings → Service accounts → Generate new private key</b>. A .json file downloads.</li>
+              <li>Upload that file here. Sentinel registers the app in your project by itself.</li>
+            </ol>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="primary" disabled={busy} onClick={() => upload(false)}>
+                {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />} Upload service account key
+              </Button>
+              {needClient && (
+                <Button size="sm" disabled={busy} onClick={() => upload(true)}><Upload className="size-3.5" /> Upload google-services.json</Button>
+              )}
+            </div>
+            {needClient && (
+              <p className="text-xs text-amber-300">
+                Sentinel couldn't register the app itself. In Firebase: Project settings → General → <b>Add app → Android</b>, package name <code>app.sentinel.nvr</code>, download <b>google-services.json</b> and upload it here.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

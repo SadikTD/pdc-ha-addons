@@ -24,6 +24,8 @@ class MainActivity : FragmentActivity() {
     /** sentinel://connect?id=… from a QR code or a shared link. */
     var deepLinkId by mutableStateOf<String?>(null)
         private set
+    /** A camera to open (from a notification): id and moment. */
+    var openCamera by mutableStateOf<Pair<String, Long?>?>(null)
     var inPip by mutableStateOf(false)
         private set
     var locked by mutableStateOf(false)
@@ -58,7 +60,11 @@ class MainActivity : FragmentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         val data = intent?.data ?: return
-        if (data.scheme == "sentinel") deepLinkId = data.getQueryParameter("id")
+        if (data.scheme != "sentinel") return
+        when (data.host) {
+            "connect" -> deepLinkId = data.getQueryParameter("id")
+            "camera" -> data.getQueryParameter("id")?.let { openCamera = it to data.getQueryParameter("t")?.toLongOrNull() }
+        }
     }
 
     fun consumeDeepLink() {

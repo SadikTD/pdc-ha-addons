@@ -184,7 +184,10 @@ data class ServerInfo(val id: String = "", val name: String = "Sentinel", val ve
 data class LoginResponse(val token: String, val user: AppUser, val server: ServerInfo)
 
 @Serializable
-data class MeResponse(val user: AppUser, val server: ServerInfo)
+data class MeResponse(val user: AppUser, val server: ServerInfo, val push: FirebaseClient? = null, val prefs: PushPrefs = PushPrefs())
+
+@Serializable
+data class PushReply(val prefs: PushPrefs = PushPrefs())
 
 @Serializable
 data class Found(val id: String, val name: String = "Sentinel", val version: String = "", val addr: String = "")
