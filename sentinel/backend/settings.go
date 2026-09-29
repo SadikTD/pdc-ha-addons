@@ -79,6 +79,8 @@ type Settings struct {
 	// Animals that live here or visit ("cat", "dog"). With one kind only, any animal
 	// detection is that kind: the detector often calls a cat seen from above a dog.
 	Animals []string `json:"animals"`
+	// Recognise the people you name by their faces (and, the same day, clothes).
+	FaceRecognition bool `json:"face_recognition"`
 }
 
 type DailySummary struct {
@@ -157,6 +159,8 @@ func defaultSettings() Settings {
 		Drive:        DriveBackup{Alerts: true, MotionCameras: []string{}, QuotaGB: 10, RetentionDays: 90},
 		DailySummary: DailySummary{Enabled: true, Time: "08:00"},
 		WhatsApp:     WhatsApp{MorningReport: true},
+		// On: nothing is recognised until the user names someone.
+		FaceRecognition: true,
 	}
 }
 

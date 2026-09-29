@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { Cat, Dog, PersonStanding, Zap, type LucideIcon } from "lucide-react";
+import { Cat, Dog, PersonStanding, UserRound, Zap, type LucideIcon } from "lucide-react";
 import { eventPicture, thumbURL, type Label, type SentinelEvent } from "./api";
 import { whenNear } from "./lazy";
 
@@ -28,9 +28,21 @@ export function LabelChips({ e, size = "sm", showMotion = false, onWrong }: { e:
       </span>
     );
   }
+  // Recognised people show by name instead of "Person" (≈ = by their clothes).
+  const who = e.who ?? [];
   return (
-    <span className="inline-flex gap-1">
-      {labels.map((l) => {
+    <span className="inline-flex flex-wrap gap-1">
+      {who.map((w) => (
+        <span
+          key={w.person}
+          title={w.by === "clothing" ? `${w.name}, going by their clothes (same day)` : `${w.name}, recognised by face`}
+          className={clsx("inline-flex items-center gap-1 rounded-md bg-pink-600 font-bold text-white shadow-sm", size === "xs" ? "px-1 py-0.5 text-[9px]" : "px-1.5 py-0.5 text-[10px]")}
+        >
+          <UserRound className={size === "xs" ? "size-2.5" : "size-3"} /> {w.by === "clothing" ? "≈ " : ""}
+          {w.name}
+        </span>
+      ))}
+      {labels.filter((l) => l !== "person" || who.length === 0).map((l) => {
         const L = LABELS[l];
         return (
           <span key={l} className={clsx("group/chip inline-flex items-center gap-1 rounded-md font-bold shadow-sm", L.chip, size === "xs" ? "px-1 py-0.5 text-[9px]" : "px-1.5 py-0.5 text-[10px]")}>

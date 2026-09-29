@@ -25,6 +25,7 @@ type App struct {
 	alerts    *Alerter
 	detector  *Detector
 	labeler   *Labeler
+	faces     *Faces
 	objects   *objectSensors
 	drive     *Drive
 	breakdown atomic.Value // map[string]int64: bytes per data type

@@ -158,6 +158,94 @@ func (a *App) Routes(www string) http.Handler {
 		objs, rejected, _, checked := a.labeler.scan(r.Context(), e, scanOpts{dry: true, trace: trace})
 		writeJSON(w, 200, map[string]any{"labels_now": e.Labels, "objects": objs, "rejected": rejected, "frames": checked, "steps": steps})
 	})
+	// People: who the faces are (see faces.go).
+	mux.HandleFunc("GET /api/people", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"people": a.faces.PeopleInfo(), "status": a.faces.Status()})
+	})
+	mux.HandleFunc("PATCH /api/people/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name string `json:"name"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		p, err := a.faces.Rename(r.PathValue("id"), req.Name)
+		if err != nil {
+			writeErr(w, 404, err.Error())
+			return
+		}
+		writeJSON(w, 200, p)
+	})
+	mux.HandleFunc("DELETE /api/people/{id}", func(w http.ResponseWriter, r *http.Request) {
+		a.faces.Forget(r.PathValue("id"))
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("GET /api/people/{id}/faces", func(w http.ResponseWriter, r *http.Request) {
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit <= 0 {
+			limit = 60
+		}
+		writeJSON(w, 200, a.faces.PersonFaces(r.PathValue("id"), limit))
+	})
+	mux.HandleFunc("GET /api/faces/unknown", func(w http.ResponseWriter, r *http.Request) {
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit <= 0 {
+			limit = 40
+		}
+		writeJSON(w, 200, a.faces.Unknown(limit))
+	})
+	// {faces: [ids], person: id} or {faces, name}: these faces are that person.
+	mux.HandleFunc("POST /api/faces/name", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Faces  []string `json:"faces"`
+			Person string   `json:"person"`
+			Name   string   `json:"name"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Faces) == 0 {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		p, err := a.faces.Name(req.Faces, req.Person, req.Name)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, p)
+	})
+	mux.HandleFunc("POST /api/faces/not", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Faces  []string `json:"faces"`
+			Person string   `json:"person"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Faces) == 0 || req.Person == "" {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		a.faces.NotPerson(req.Faces, req.Person)
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("POST /api/faces/junk", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Faces []string `json:"faces"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Faces) == 0 {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		a.faces.Junk(req.Faces)
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("GET /api/faces/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSuffix(r.PathValue("id"), ".jpg")
+		s, ok := a.faces.Face(id)
+		if !ok || !camAllowed(r, s.Cam) {
+			writeErr(w, 404, "no such face")
+			return
+		}
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		http.ServeFile(w, r, a.faces.imgPath(id))
+	})
 	mux.HandleFunc("GET /api/summary", a.handleSummary)
 	mux.HandleFunc("GET /api/preview/{cam}/{ts}", a.handlePreview)
 	mux.HandleFunc("GET /api/cameras/{id}/latest.jpg", func(w http.ResponseWriter, r *http.Request) {
@@ -582,9 +670,13 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, []Event{})
 		return
 	}
-	// labels=person,cat: events with any of these; motion=1: plain motion only.
+	// labels=person,cat: events with any of these; motion=1: plain motion only;
+	// person=<id>: events with that person (recognised).
 	var keep func(*Event) bool
-	if l := r.URL.Query().Get("labels"); l != "" {
+	if p := r.URL.Query().Get("person"); p != "" {
+		q := SearchQuery{People: []string{p}, DayFrom: -1}
+		keep = q.Match
+	} else if l := r.URL.Query().Get("labels"); l != "" {
 		q := SearchQuery{Labels: strings.Split(l, ","), DayFrom: -1}
 		keep = q.Match
 	} else if r.URL.Query().Get("motion") == "1" {
@@ -621,7 +713,7 @@ func (a *App) handleSnap(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	s := a.settings.Get()
-	q := ParseSearch(r.URL.Query().Get("q"), time.Now(), s.Cameras)
+	q := ParseSearch(r.URL.Query().Get("q"), time.Now(), s.Cameras, a.faces.People())
 	cams, ok := a.visibleCams(r, q.Cameras)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 1000 {

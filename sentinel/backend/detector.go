@@ -137,7 +137,64 @@ func (d *Detector) readLocked(ctx context.Context, timeout time.Duration) (strin
 const (
 	modelScan   = "scan"   // fast, looks at every frame
 	modelVerify = "verify" // bigger and more accurate, confirms what scan found
+	modelFaces  = "faces"  // faces and their fingerprints (see faces.go)
 )
+
+// HasModel reports whether the worker has a model (starting it if needed).
+func (d *Detector) HasModel(model string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cmd == nil {
+		if err := d.startLocked(); err != nil {
+			return false
+		}
+	}
+	_, ok := d.models[model]
+	return ok
+}
+
+// Raw runs a model whose answer is rows of numbers (faces: see detect.py).
+func (d *Detector) Raw(ctx context.Context, model string, rgb []byte, w, h int) ([][]float64, error) {
+	line, err := d.ask(ctx, model, rgb, w, h)
+	if err != nil {
+		return nil, err
+	}
+	var rows [][]float64
+	if err := json.Unmarshal([]byte(line), &rows); err != nil {
+		d.mu.Lock()
+		d.stopLocked()
+		d.mu.Unlock()
+		return nil, fmt.Errorf("bad detector answer: %v", err)
+	}
+	return rows, nil
+}
+
+// ask sends one picture to a model and returns the answer line.
+func (d *Detector) ask(ctx context.Context, model string, rgb []byte, w, h int) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cmd == nil {
+		if err := d.startLocked(); err != nil {
+			return "", err
+		}
+	}
+	size, ok := d.models[model]
+	if !ok {
+		return "", fmt.Errorf("the detector has no %s model", model)
+	}
+	if w > size || h > size || len(rgb) != w*h*3 {
+		return "", fmt.Errorf("picture %dx%d does not fit the model", w, h)
+	}
+	if _, err := fmt.Fprintf(d.in, "%d %d %s\n", w, h, model); err == nil {
+		_, err = d.in.Write(rgb)
+	}
+	line, err := d.readLocked(ctx, 20*time.Second)
+	if err != nil {
+		d.stopLocked() // don't leave a half-read answer behind
+		return "", err
+	}
+	return line, nil
+}
 
 // Size is the largest picture side a model takes (starting the worker if needed). A
 // missing verify model falls back to the scan model.

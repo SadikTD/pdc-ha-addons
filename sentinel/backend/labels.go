@@ -244,6 +244,9 @@ func (l *Labeler) label(ctx context.Context, e Event, live, busy bool) {
 	}
 	a.events.SetScan(e.Cam, e.ID, scan, objs, rejected, snap)
 	l.hot.Save()
+	if slices.ContainsFunc(objs, func(o Object) bool { return o.Label == "person" }) {
+		a.faces.Poke() // who was it?
+	}
 	l.mu.Lock()
 	l.status.Scanning = ""
 	if checked > 0 {

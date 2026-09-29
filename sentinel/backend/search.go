@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 
 type SearchQuery struct {
 	Labels  []string `json:"labels"`  // person, cat, dog; empty = any
+	People  []string `json:"people"`  // recognised people (ids); empty = anyone
 	Motion  bool     `json:"motion"`  // plain motion only (nobody recognised)
 	Cameras []string `json:"cameras"` // empty = all
 	From    int64    `json:"from"`
@@ -54,7 +56,7 @@ var months = []string{"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "s
 
 // ParseSearch reads a question. now is the current time; cams are the cameras to match
 // names against.
-func ParseSearch(q string, now time.Time, cams []Camera) SearchQuery {
+func ParseSearch(q string, now time.Time, cams []Camera, people []Person) SearchQuery {
 	s := " " + strings.Join(strings.Fields(rePunct.ReplaceAllString(strings.ToLower(q), " ")), " ") + " "
 	out := SearchQuery{DayFrom: -1, DayTo: -1}
 	day := func(t time.Time) time.Time { return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()) }
@@ -78,6 +80,18 @@ func ParseSearch(q string, now time.Time, cams []Camera) SearchQuery {
 			return true
 		}
 		return false
+	}
+
+	// Who: people the user named ("mom", "abir"), longest names first.
+	named := slices.Clone(people)
+	sort.Slice(named, func(i, j int) bool { return len(named[i].Name) > len(named[j].Name) })
+	var whoChips []string
+	for _, p := range named {
+		n := strings.Join(strings.Fields(rePunct.ReplaceAllString(strings.ToLower(p.Name), " ")), " ")
+		if n != "" && (has(n) || has(n+"s")) {
+			out.People = append(out.People, p.ID)
+			whoChips = append(whoChips, p.Name)
+		}
 	}
 
 	// What.
@@ -257,6 +271,8 @@ func ParseSearch(q string, now time.Time, cams []Camera) SearchQuery {
 		out.From, out.To = now.Add(-backfillWindow).UnixMilli(), now.UnixMilli()
 	}
 	switch {
+	case len(out.People) > 0:
+		out.Chips = append([]string{strings.Join(whoChips, " or ")}, out.Chips...)
 	case out.Motion:
 		out.Chips = append([]string{"Plain motion"}, out.Chips...)
 	case len(out.Labels) == 0:
@@ -318,6 +334,10 @@ func fmtDay(d, now time.Time) string {
 // the caller except the time of day)?
 func (q SearchQuery) Match(e *Event) bool {
 	switch {
+	case len(q.People) > 0:
+		if !slices.ContainsFunc(e.Who, func(w Who) bool { return slices.Contains(q.People, w.Person) }) {
+			return false
+		}
 	case q.Motion:
 		if e.Scan != "done" || len(e.Labels) > 0 {
 			return false

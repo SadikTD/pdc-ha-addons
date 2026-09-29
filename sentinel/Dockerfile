@@ -34,6 +34,9 @@ RUN set -eux; mkdir -p /app/detect; \
     wget -qO /app/detect/yolox_m.onnx "$base/yolox_m.onnx"; \
     echo "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063  /app/detect/yolox_s.onnx" | sha256sum -c -; \
     echo "21ff6cfdeb53b013bac2249599e55f00bff3cfdfdab37ed7a4620818c1d15b3f  /app/detect/yolox_m.onnx" | sha256sum -c -
+# Faces: YuNet finds them (OpenCV Zoo, MIT) and InsightFace's MobileFaceNet (w600k_mbf,
+# from buffalo_s; non-commercial use, which a home system is) fingerprints them.
+RUN set -eux;     wget -qO /app/detect/yunet.onnx "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx";     echo "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  /app/detect/yunet.onnx" | sha256sum -c -;     wget -qO /tmp/buffalo_s.zip "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_s.zip";     echo "d85a87f503f691807cd8bb97128bdf7a0660326cd9cd02657127fa978bab8b5e  /tmp/buffalo_s.zip" | sha256sum -c -;     unzip -p /tmp/buffalo_s.zip w600k_mbf.onnx > /app/detect/w600k_mbf.onnx;     rm /tmp/buffalo_s.zip;     echo "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f  /app/detect/w600k_mbf.onnx" | sha256sum -c -
 COPY detect/detect.py /app/detect/
 
 COPY --from=build /sentinel /usr/local/bin/sentinel

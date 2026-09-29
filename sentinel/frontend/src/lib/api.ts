@@ -44,6 +44,7 @@ export type Settings = {
   };
   whatsapp: { to: string; to_name: string; animals_to: string; animals_to_name: string; morning_report: boolean; bridge_url: string };
   daily_summary: { enabled: boolean; time: string };
+  face_recognition?: boolean;
   animals?: ("cat" | "dog")[];
   drive: {
     backup_alerts: boolean;
@@ -119,7 +120,16 @@ export type SentinelEvent = {
   objects?: DetectedObject[];
   scan?: "" | "scanning" | "done" | "none";
   snap?: boolean;
+  // Who the people were, when recognised (by face, or the same day by their clothes).
+  who?: Who[];
 };
+
+export type Who = { person: string; name: string; by: "face" | "clothing" };
+export type Person = { id: string; name: string; created: number };
+export type PersonInfo = Person & { faces: number; sightings: number; last?: { cam: string; event: string; t: number }; cover?: string };
+export type FaceInfo = { id: string; cam: string; event: string; t: number; q: number; by?: "you" | "face"; sim?: number; person?: string };
+export type FaceGroup = { faces: FaceInfo[]; size: number; ids: string[]; suggest?: { person: string; name: string } };
+export type FaceStatus = { enabled: boolean; error?: string; backlog: number; done: number; faces: number };
 
 export type DetectionStatus = { enabled: boolean; error?: string; backlog: number; scanned: number; found: number; avg_ms: number; scanning: string; last_found: number };
 
@@ -250,8 +260,9 @@ export const api = {
   coverage: (cam: string, from: number, to: number) => request<Span[]>("GET", `api/recordings/${cam}?from=${from}&to=${to}`),
   activity: (cam: string, from: number, to: number, step: number) =>
     request<[number, number][]>("GET", `api/activity/${cam}?from=${from}&to=${to}&step=${step}`),
-  events: (opts: { cameras?: string[]; from?: number; to?: number; limit?: number; labels?: Label[]; motionOnly?: boolean }) => {
+  events: (opts: { cameras?: string[]; from?: number; to?: number; limit?: number; labels?: Label[]; motionOnly?: boolean; person?: string }) => {
     const q = new URLSearchParams();
+    if (opts.person) q.set("person", opts.person);
     if (opts.cameras?.length) q.set("cameras", opts.cameras.join(","));
     if (opts.labels?.length) q.set("labels", opts.labels.join(","));
     if (opts.motionOnly) q.set("motion", "1");
@@ -260,6 +271,14 @@ export const api = {
     if (opts.limit) q.set("limit", String(opts.limit));
     return request<SentinelEvent[]>("GET", `api/events?${q}`);
   },
+  people: () => request<{ people: PersonInfo[]; status: FaceStatus }>("GET", "api/people"),
+  renamePerson: (id: string, name: string) => request<Person>("PATCH", `api/people/${id}`, { name }),
+  forgetPerson: (id: string) => request<{ ok: boolean }>("DELETE", `api/people/${id}`),
+  personFaces: (id: string, limit = 60) => request<FaceInfo[]>("GET", `api/people/${id}/faces?limit=${limit}`),
+  unknownFaces: (limit = 40) => request<FaceGroup[]>("GET", `api/faces/unknown?limit=${limit}`),
+  nameFaces: (faces: string[], who: { person?: string; name?: string }) => request<Person>("POST", "api/faces/name", { faces, ...who }),
+  notPerson: (faces: string[], person: string) => request<{ ok: boolean }>("POST", "api/faces/not", { faces, person }),
+  notFaces: (faces: string[]) => request<{ ok: boolean }>("POST", "api/faces/junk", { faces }),
   wrongLabel: (e: SentinelEvent, label: Label) => request<SentinelEvent>("POST", `api/events/${e.camera}/${e.id}/wrong`, { label }),
   search: (q: string, limit = 500) => request<{ query: SearchQuery; events: SentinelEvent[] }>("GET", `api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   summary: (date?: string) => request<DaySummary>("GET", `api/summary${date ? `?date=${date}` : ""}`),
@@ -302,6 +321,7 @@ export const thumbURL = (e: SentinelEvent, small = false) => `api/events/${e.cam
 export const snapURL = (e: SentinelEvent, small = false) => `api/events/${e.camera}/${e.id}/snap.jpg${small ? "?small=1" : ""}`;
 // The best picture of an event: who was seen if anyone, else the moment motion started.
 export const eventPicture = (e: SentinelEvent, small = false) => (e.snap ? snapURL(e, small) : e.thumb ? thumbURL(e, small) : null);
+export const faceURL = (id: string) => `api/faces/${id}.jpg`;
 export const vodURL = (cam: string, from: number, to: number) => `api/vod.m3u8?camera=${cam}&from=${Math.round(from)}&to=${Math.round(to)}`;
 export const clipVideoURL = (id: string, download = false) => `api/clips/${id}/video${download ? "?download=1" : ""}`;
 export const clipThumbURL = (c: Clip) => `api/clips/${c.id}/thumb.jpg?v=${c.status}`;

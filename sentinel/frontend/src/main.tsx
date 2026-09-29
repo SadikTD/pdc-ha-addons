@@ -45,6 +45,7 @@ const CameraPage = named(() => import("./pages/Camera"), "CameraPage");
 const TimelinePage = named(() => import("./pages/TimelinePage"), "TimelinePage");
 const EventsPage = named(() => import("./pages/Events"), "EventsPage");
 const SummaryPage = named(() => import("./pages/Summary"), "SummaryPage");
+const PeoplePage = named(() => import("./pages/People"), "PeoplePage");
 const ClipsPage = named(() => import("./pages/Clips"), "ClipsPage");
 const SystemPage = named(() => import("./pages/System"), "SystemPage");
 const SettingsPage = named(() => import("./pages/Settings"), "SettingsPage");
@@ -114,6 +115,7 @@ createRoot(document.getElementById("root")!).render(
                     <Route path="/timeline" element={<TimelinePage />} />
                     <Route path="/events" element={<EventsPage />} />
                     <Route path="/summary" element={<SummaryPage />} />
+                    <Route path="/people" element={<PeoplePage />} />
                     <Route path="/clips" element={<ClipsPage />} />
                     <Route path="/system" element={<SystemPage />} />
                     <Route path="/settings" element={<SettingsPage />} />

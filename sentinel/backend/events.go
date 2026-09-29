@@ -29,6 +29,10 @@ type Event struct {
 	// What the fast model thought it saw but the big model didn't confirm (for checking
 	// how well detection does; not shown as a label).
 	Rejected []Object `json:"rejected,omitempty"`
+	// Who the people were, when recognised (see faces.go), and whether their faces have
+	// been looked at ("done").
+	Who   []Who  `json:"who,omitempty"`
+	Faces string `json:"faces,omitempty"`
 }
 
 // Object is one kind of thing seen in an event, at its clearest moment.
@@ -106,11 +110,63 @@ func (es *EventStore) SetScan(cam, id, scan string, objs, rejected []Object, sna
 					e.Labels = append(e.Labels, o.Label)
 				}
 			}
+			if scan == "done" && !e.Has("person") {
+				e.Who, e.Faces = nil, ""
+			}
 			es.persistDay(cam, dayKey(e.Start))
 			return *e, true
 		}
 	}
 	return Event{}, false
+}
+
+// SetWho stores who the people in an event were (only when it changed).
+func (es *EventStore) SetWho(cam, id string, who []Who) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	list := es.events[cam]
+	for i := len(list) - 1; i >= 0; i-- {
+		if e := list[i]; e.ID == id {
+			if !slices.Equal(e.Who, who) {
+				e.Who = who
+				es.persistDay(cam, dayKey(e.Start))
+			}
+			return
+		}
+	}
+}
+
+// SetFacesDone: the event's faces have been looked at.
+func (es *EventStore) SetFacesDone(cam, id string) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	list := es.events[cam]
+	for i := len(list) - 1; i >= 0; i-- {
+		if e := list[i]; e.ID == id {
+			e.Faces = "done"
+			es.persistDay(cam, dayKey(e.Start))
+			return
+		}
+	}
+}
+
+// ForFaces: finished person events whose faces haven't been looked at, newest first.
+func (es *EventStore) ForFaces(since int64, limit int) []Event {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	var out []Event
+	for _, list := range es.events {
+		for _, e := range list {
+			if e.End != 0 && e.Start >= since && e.Faces == "" && e.Scan == "done" && e.Has("person") {
+				out = append(out, *e)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Start > out[j].Start })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 // RemoveLabel takes a wrong label off an event (the user said so). It returns the
@@ -130,6 +186,9 @@ func (es *EventStore) RemoveLabel(cam, id, label string) (Object, bool) {
 		e.Objects = slices.Delete(slices.Clone(e.Objects), i, i+1)
 		e.Labels = slices.DeleteFunc(slices.Clone(e.Labels), func(l string) bool { return l == label })
 		e.Rejected = append(e.Rejected, Object{Label: "not " + label, Score: o.Score, Box: o.Box, T: o.T})
+		if label == "person" {
+			e.Who = nil
+		}
 		if len(e.Objects) == 0 {
 			e.Snap = false
 			removePicture(es.SnapPath(cam, id))

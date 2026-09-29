@@ -126,6 +126,12 @@ export function SettingsPage() {
               <QuietWindows value={draft.quiet_windows} onChange={(v) => set("quiet_windows", v)} />
             </Field>
             <Toggle checked={draft.mqtt_enabled} onChange={(v) => set("mqtt_enabled", v)} label="Home Assistant entities (MQTT)" hint="Motion & recording sensors plus a snapshot camera per camera" />
+            <Toggle
+              checked={draft.face_recognition ?? true}
+              onChange={(v) => set("face_recognition", v)}
+              label="Recognise people"
+              hint="Faces (and the same day, clothes) of the people you name on the People page. Everything stays on this Pi."
+            />
             <Field label="Animals that live here or visit" hint="With just one kind, every animal seen is called that: cameras looking down often make a cat look like a dog to the detector.">
               <div className="flex gap-2">
                 {(

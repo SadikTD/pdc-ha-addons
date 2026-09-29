@@ -34,7 +34,7 @@ func TestParseSearch(t *testing.T) {
 		{"person at night", []string{"person"}, nil, 0, 0, 21 * 60, 6 * 60},
 	}
 	for _, tc := range tests {
-		q := ParseSearch(tc.q, now, cams)
+		q := ParseSearch(tc.q, now, cams, nil)
 		if !slices.Equal(q.Labels, tc.labels) && !(len(q.Labels) == 0 && len(tc.labels) == 0) {
 			t.Errorf("%q: labels %v, want %v", tc.q, q.Labels, tc.labels)
 		}
@@ -74,5 +74,22 @@ func TestVerifyRect(t *testing.T) {
 	}
 	if r.H < 0.35-1e-9 {
 		t.Errorf("too small: %+v", r)
+	}
+}
+
+func TestParseSearchPeople(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.Local)
+	people := []Person{{ID: "p1", Name: "Abir"}, {ID: "p2", Name: "Big Mom"}}
+	q := ParseSearch("abir yesterday", now, nil, people)
+	if len(q.People) != 1 || q.People[0] != "p1" || q.Chips[0] != "Abir" {
+		t.Fatalf("abir: %+v", q)
+	}
+	q = ParseSearch("big mom on the roof", now, []Camera{{ID: "roof_cam", Name: "Roof"}}, people)
+	if len(q.People) != 1 || q.People[0] != "p2" || len(q.Cameras) != 1 {
+		t.Fatalf("big mom: %+v", q)
+	}
+	e := &Event{Who: []Who{{Person: "p2", Name: "Big Mom", By: "face"}}}
+	if !q.Match(e) || (SearchQuery{People: []string{"p1"}, DayFrom: -1}).Match(e) {
+		t.Fatal("match by person")
 	}
 }

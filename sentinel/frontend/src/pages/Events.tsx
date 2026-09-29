@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
 import clsx from "clsx";
-import { Loader2, Play, Search, X, Zap } from "lucide-react";
+import { Loader2, Play, Search, UserRound, X, Zap } from "lucide-react";
 import { Button, Empty, PageHeader } from "../components/ui";
 import { useStatus } from "../lib/status";
-import { api, type Label, type SearchQuery, type SentinelEvent } from "../lib/api";
+import { api, faceURL, type Label, type PersonInfo, type SearchQuery, type SentinelEvent } from "../lib/api";
 import { DAY, HOUR, fmtDay, fmtDuration, fmtTimeSec, startOfDay } from "../lib/format";
 import { EventPicture, LABELS, LABEL_ORDER, LabelChips, SEARCH_EXAMPLES } from "../lib/labels";
 import { openEvent, readList } from "../lib/eventNav";
@@ -53,6 +53,7 @@ export function EventsPage() {
   const cams = useMemo(() => (params.get("cams") ?? "").split(",").filter(Boolean), [params]);
   const range = Math.max(0, RANGES.findIndex((r) => r.id === (params.get("range") ?? "24h")));
   const kind = (params.get("kind") as Kind) || "all";
+  const whoId = params.get("who") ?? "";
   const minPeak = Number(params.get("min")) || 0;
   const custom = {
     from: params.get("from") ?? toLocalInput(startOfDay(Date.now()) - DAY + 22 * HOUR),
@@ -72,6 +73,11 @@ export function EventsPage() {
   const [searching, setSearching] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const names = Object.fromEntries((status?.cameras ?? []).map((c) => [c.id, c.name]));
+  // People Sentinel recognises (named on the People page), for the "who" filter.
+  const [people, setPeople] = useState<PersonInfo[]>([]);
+  useEffect(() => {
+    api.people().then((r) => setPeople(r.people)).catch(() => {});
+  }, []);
   const ask = (q: string) => {
     setText(q);
     set({ q: q.trim() || null });
@@ -159,9 +165,19 @@ export function EventsPage() {
     }
     return c;
   }, [sized]);
+  const whoCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const e of sized) for (const w of e.who ?? []) c[w.person] = (c[w.person] ?? 0) + 1;
+    return c;
+  }, [sized]);
   const matching = useMemo(
-    () => sized.filter((e) => (kind === "all" ? true : kind === "motion" ? e.scan === "done" && !e.labels?.length : e.labels?.includes(kind))),
-    [sized, kind],
+    () =>
+      sized.filter(
+        (e) =>
+          (kind === "all" ? true : kind === "motion" ? e.scan === "done" && !e.labels?.length : e.labels?.includes(kind)) &&
+          (!whoId || !!e.who?.some((w) => w.person === whoId)),
+      ),
+    [sized, kind, whoId],
   );
   const perDay = useMemo(() => {
     const m = new Map<number, number>();
@@ -202,7 +218,8 @@ export function EventsPage() {
     ...LABEL_ORDER.map((l) => ({ k: l as Kind, label: LABELS[l].plural, icon: LABELS[l].icon, color: LABELS[l].color })),
     { k: "motion", label: "Motion only", icon: Zap, color: "#fbbf24" },
   ];
-  const what = kind === "all" ? "event" : kind === "motion" ? "plain motion event" : `event with ${LABELS[kind].plural.toLowerCase()}`;
+  const whoName = people.find((p) => p.id === whoId)?.name;
+  const what = whoName ? `event with ${whoName}` : kind === "all" ? "event" : kind === "motion" ? "plain motion event" : `event with ${LABELS[kind].plural.toLowerCase()}`;
 
   return (
     <>
@@ -283,6 +300,21 @@ export function EventsPage() {
             {I && <I className="size-3.5" style={{ color }} />}
             {label}
             <span className="tabular-nums text-slate-500">{events ? counts[k] : "…"}</span>
+          </button>
+        ))}
+        {people.length > 0 && <span className="mx-1 h-5 w-px bg-white/10" />}
+        {people.map((p) => (
+          <button
+            key={p.id}
+            onClick={() => set({ who: whoId === p.id ? null : p.id })}
+            className={clsx(
+              "flex items-center gap-1.5 rounded-xl border py-1 pl-1 pr-3 text-xs font-semibold transition",
+              whoId === p.id ? "border-pink-400/50 bg-pink-500/20 text-white" : "border-white/5 bg-white/[0.02] text-slate-400 hover:text-white",
+            )}
+          >
+            {p.cover ? <img src={faceURL(p.cover)} alt="" className="size-6 rounded-full object-cover" /> : <UserRound className="size-4" />}
+            {p.name}
+            <span className="tabular-nums text-slate-500">{events ? (whoCounts[p.id] ?? 0) : "…"}</span>
           </button>
         ))}
         {pending > 0 && (
