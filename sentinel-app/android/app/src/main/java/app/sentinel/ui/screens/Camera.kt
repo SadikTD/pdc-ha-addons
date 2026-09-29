@@ -1,5 +1,9 @@
 package app.sentinel.ui.screens
 
+import app.sentinel.core.ListItem
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ChevronLeft
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.util.Rational
@@ -154,7 +158,7 @@ import kotlinx.coroutines.launch
 private val SPEEDS = listOf(1f, 2f, 4f, 8f, 16f, 0.5f)
 
 @Composable
-fun CameraScreen(state: AppState, id: String, t: Long?, onBack: () -> Unit, onOpenCamera: (String) -> Unit) {
+fun CameraScreen(state: AppState, id: String, t: Long?, ev: String?, onBack: () -> Unit, onOpenCamera: (String) -> Unit, onStep: (ListItem) -> Unit) {
     val status by state.status.collectAsStateWithLifecycle()
     val cam = status?.cameras?.find { it.id == id }
     if (cam == null) {
@@ -164,11 +168,11 @@ fun CameraScreen(state: AppState, id: String, t: Long?, onBack: () -> Unit, onOp
         }
         return
     }
-    CameraContent(state, cam, t, onBack, onOpenCamera)
+    CameraContent(state, cam, t, ev, onBack, onOpenCamera, onStep)
 }
 
 @Composable
-private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, onBack: () -> Unit, onOpenCamera: (String) -> Unit) {
+private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev: String?, onBack: () -> Unit, onOpenCamera: (String) -> Unit, onStep: (ListItem) -> Unit) {
     val context = LocalContext.current
     val activity = LocalActivity.current
     val view = LocalView.current
@@ -223,6 +227,19 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
     }
 
     rec.onCaughtUp = { goLive() }
+
+    // Opened from the Events list: step through it without going back. Another event of
+    // this camera just seeks (the player stays); another camera replaces this screen.
+    val list = remember(ev) { if (ev != null) state.eventList else emptyList() }
+    var at by remember(ev) { mutableIntStateOf(list.indexOfFirst { it.id == ev }) }
+    fun step(d: Int) {
+        val next = list.getOrNull(at + d) ?: return
+        state.lastWatched = next.id
+        if (next.c == cam.id) {
+            at += d
+            seekTo(next.t)
+        } else onStep(next)
+    }
 
     // Start where we were asked to.
     LaunchedEffect(cam.id) { if (startAt != null) seekTo(startAt) }
@@ -509,7 +526,22 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
                     val st = cam.recorder?.stream
                     if (st != null && st.width > 0) Text("${st.width}×${st.height} · ${st.videoCodec.uppercase()}${if (st.fps > 0) " · ${st.fps.toInt()} fps" else ""}", color = C.TextFaint, fontSize = 12.sp)
                 }
-                StatePill(if (cam.occasional && cam.state != "recording") "offline" else cam.state)
+                if (list.size > 1 && at >= 0) {
+                    Row(
+                        Modifier.clip(CircleShape).background(Color(0x10FFFFFF)).border(1.dp, C.GlassBorder, CircleShape),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Rounded.ChevronLeft, "Previous event", tint = if (at > 0) Color.White else C.TextFaint,
+                            modifier = Modifier.size(38.dp).clip(CircleShape).clickable(enabled = at > 0) { step(-1) }.padding(8.dp),
+                        )
+                        Text("${at + 1} / ${list.size}", color = C.TextDim, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Icon(
+                            Icons.Rounded.ChevronRight, "Next event", tint = if (at < list.size - 1) Color.White else C.TextFaint,
+                            modifier = Modifier.size(38.dp).clip(CircleShape).clickable(enabled = at < list.size - 1) { step(1) }.padding(8.dp),
+                        )
+                    }
+                } else StatePill(if (cam.occasional && cam.state != "recording") "offline" else cam.state)
             }
             // Video, with its controls on top (tap the picture to show or hide them).
             Box(

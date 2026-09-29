@@ -8,6 +8,11 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
+import android.net.Uri
+import androidx.media3.datasource.ByteArrayDataSource
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -284,7 +289,7 @@ class RecordingPlayer(context: Context, private val http: OkHttpClient, private 
 
     /** Play from time t. Returns false when there's no footage there or later. */
     suspend fun seek(t: Long): Boolean {
-        if (frags.isNotEmpty() && t >= winFrom + 60_000 && t < winTo - 60_000) {
+        if (frags.isNotEmpty() && t >= winFrom + 20_000 && t < winTo - 60_000) {
             val pos = timeToPos(frags, t)
             val last = frags.last()
             if (pos != null && pos < last.pos + last.dur) {
@@ -299,15 +304,15 @@ class RecordingPlayer(context: Context, private val http: OkHttpClient, private 
     private suspend fun load(t: Long): Boolean {
         val seq = ++loadSeq
         _ui.value = _ui.value.copy(loading = true, error = null)
+        // A window Sentinel answers at once; playing past its end loads the next one.
         val now = nowProvider()
-        val from = t - 2 * 60_000
-        val to = minOf(now + 60_000, t + 60 * 60_000)
+        val from = t - 60_000
+        val to = minOf(now + 60_000, t + 30 * 60_000)
         val url = urlFor(from, to)
-        val list = withContext(Dispatchers.IO) {
-            runCatching {
-                http.newCall(Request.Builder().url(url).build()).execute().use { parsePlaylist(it.body?.string() ?: "") }
-            }.getOrDefault(emptyList())
-        }
+        val body = withContext(Dispatchers.IO) {
+            runCatching { http.newCall(Request.Builder().url(url).build()).execute().use { it.body?.bytes() } }.getOrNull()
+        } ?: ByteArray(0)
+        val list = parsePlaylist(String(body))
         if (seq != loadSeq) return true
         val pos = timeToPos(list, t)
         if (list.isEmpty() || pos == null) {
@@ -317,7 +322,8 @@ class RecordingPlayer(context: Context, private val http: OkHttpClient, private 
         frags = list
         winFrom = from
         winTo = to
-        val source = HlsMediaSource.Factory(OkHttpDataSource.Factory(http))
+        // The player gets the playlist just read instead of asking for it again.
+        val source = HlsMediaSource.Factory(PreloadedDataSource.Factory(Uri.parse(url), body, OkHttpDataSource.Factory(http)))
             .setAllowChunklessPreparation(true)
             .createMediaSource(MediaItem.fromUri(url))
         exo.setMediaSource(source, (pos * 1000).toLong())
@@ -341,6 +347,35 @@ class RecordingPlayer(context: Context, private val http: OkHttpClient, private 
         loadSeq++
         exo.stop()
         frags = emptyList()
+    }
+}
+
+/** Serves one already-downloaded file (the playlist) from memory; everything else from upstream. */
+private class PreloadedDataSource(private val uri: Uri, private val bytes: ByteArray, private val upstream: DataSource.Factory) : DataSource {
+    class Factory(private val uri: Uri, private val bytes: ByteArray, private val upstream: DataSource.Factory) : DataSource.Factory {
+        override fun createDataSource(): DataSource = PreloadedDataSource(uri, bytes, upstream)
+    }
+
+    private val listeners = mutableListOf<TransferListener>()
+    private var current: DataSource? = null
+
+    override fun addTransferListener(transferListener: TransferListener) {
+        listeners += transferListener
+    }
+
+    override fun open(dataSpec: DataSpec): Long {
+        val ds = if (dataSpec.uri == uri) ByteArrayDataSource(bytes) else upstream.createDataSource()
+        listeners.forEach { ds.addTransferListener(it) }
+        current = ds
+        return ds.open(dataSpec)
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int = current!!.read(buffer, offset, length)
+    override fun getUri(): Uri? = current?.uri
+    override fun getResponseHeaders(): Map<String, List<String>> = current?.responseHeaders ?: emptyMap()
+    override fun close() {
+        current?.close()
+        current = null
     }
 }
 

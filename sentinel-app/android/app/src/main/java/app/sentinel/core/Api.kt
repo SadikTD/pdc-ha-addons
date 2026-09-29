@@ -112,10 +112,13 @@ class Api(private val engine: Engine) {
     // URLs for the player and image loader
     fun snapshotUrl(cam: String, hq: Boolean = false, bust: Long = 0) = engine.url("api/cameras/$cam/snapshot.jpg?${if (hq) "hq=1&" else ""}t=$bust")
     fun latestUrl(cam: String) = engine.url("api/cameras/$cam/latest.jpg")
-    fun thumbUrl(e: SentinelEvent) = if (e.thumb) engine.url("api/events/${e.camera}/${e.id}/thumb.jpg") else previewUrl(e.camera, e.start + 1000)
-    fun snapUrl(e: SentinelEvent) = engine.url("api/events/${e.camera}/${e.id}/snap.jpg")
-    /** The best picture of an event: who was seen, else the moment motion started. */
-    fun pictureUrl(e: SentinelEvent) = if (e.snap) snapUrl(e) else thumbUrl(e)
+    fun thumbUrl(e: SentinelEvent, small: Boolean = false) = if (e.thumb) engine.url("api/events/${e.camera}/${e.id}/thumb.jpg${if (small) "?small=1" else ""}") else previewUrl(e.camera, e.start + 1000)
+    fun snapUrl(e: SentinelEvent, small: Boolean = false) = engine.url("api/events/${e.camera}/${e.id}/snap.jpg${if (small) "?small=1" else ""}")
+    /**
+     * The best picture of an event: who was seen, else the moment motion started. small:
+     * a 480 px copy for lists (a fifth of the bytes, which matters on mobile data).
+     */
+    fun pictureUrl(e: SentinelEvent, small: Boolean = true) = if (e.snap) snapUrl(e, small) else thumbUrl(e, small)
     /** Preview frames are cached per 2 s, so scrubbing reuses them. */
     fun previewUrl(cam: String, t: Long) = engine.url("api/preview/$cam/${t / 2000 * 2000}.jpg")
     fun vodUrl(cam: String, from: Long, to: Long) = engine.url("api/vod.m3u8?camera=$cam&from=$from&to=$to")

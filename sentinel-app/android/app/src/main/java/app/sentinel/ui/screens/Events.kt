@@ -1,5 +1,7 @@
 package app.sentinel.ui.screens
 
+import app.sentinel.core.ListItem
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -97,7 +99,7 @@ private val EXAMPLES = listOf("People today", "Person last night", "Cats this we
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, Long?) -> Unit) {
+fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) -> Unit) {
     val status by state.status.collectAsStateWithLifecycle()
     val prefs by state.prefs.collectAsStateWithLifecycle()
     val cams = state.orderedCameras(status, prefs)
@@ -110,7 +112,10 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
     var text by rememberSaveable { mutableStateOf("") }
     var asked by rememberSaveable { mutableStateOf("") }
     var parsed by remember { mutableStateOf<SearchQuery?>(null) }
-    var events by remember { mutableStateOf<List<SentinelEvent>?>(null) }
+    // Kept while an event is open, so coming back shows the list at once, where it was.
+    val key = "$range|$camFilter|$asked"
+    var events by remember { mutableStateOf(state.eventsCache[key]) }
+    val grid = rememberLazyGridState()
     var searching by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var wrongFor by remember { mutableStateOf<SentinelEvent?>(null) }
@@ -121,7 +126,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
         if (asked.isNotBlank()) {
             searching = true
             runCatching { state.api.search(asked, 1000) }
-                .onSuccess { events = it.events.sortedByDescending { e -> e.start }; parsed = it.query }
+                .onSuccess { events = it.events.sortedByDescending { e -> e.start }.also { l -> state.eventsCache[key] = l }; parsed = it.query }
                 .onFailure { if (events == null) events = emptyList() }
             searching = false
             return
@@ -135,10 +140,10 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
             else -> now - 7 * DAY
         }
         runCatching { state.api.events(camFilter?.let { listOf(it) } ?: emptyList(), from, null, LIMIT) }
-            .onSuccess { events = it.sortedByDescending { e -> e.start } }
+            .onSuccess { events = it.sortedByDescending { e -> e.start }.also { l -> state.eventsCache[key] = l } }
     }
     LaunchedEffect(range, camFilter, asked) {
-        events = null
+        events = state.eventsCache[key]
         while (true) {
             state.awaitVisible()
             load()
@@ -174,6 +179,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
     PullToRefreshBox(refreshing, onRefresh = { scope.launch { refreshing = true; load(); refreshing = false } }, modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
             columns = GridCells.Adaptive(165.dp),
+            state = grid,
             contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = padding.calculateTopPadding() + 8.dp, bottom = padding.calculateBottomPadding() + 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -279,8 +285,14 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
                 items(evs, key = { "${it.first.camera}/${it.first.id}" }) { a ->
                     EventCard(
                         state, a, names[a.first.camera] ?: a.first.camera, aspects[a.first.camera] ?: (16f / 9f),
+                        watched = a.first.id == state.lastWatched,
                         onLongClick = if (state.isAdmin && a.shown.labels.isNotEmpty()) ({ wrongFor = a.shown }) else null,
-                    ) { openCamera(a.first.camera, a.shown.bestTime - 2000) }
+                    ) {
+                        // The player steps through this list; the list marks what was watched.
+                        state.eventList = activities.map { x -> ListItem(x.first.camera, x.first.id, x.shown.bestTime - 2000) }
+                        state.lastWatched = a.first.id
+                        openEvent(ListItem(a.first.camera, a.first.id, a.shown.bestTime - 2000))
+                    }
                 }
             }
         }
@@ -345,7 +357,7 @@ private fun groupActivities(list: List<SentinelEvent>): List<Activity> {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Float, onLongClick: (() -> Unit)?, onClick: () -> Unit) {
+private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Float, watched: Boolean, onLongClick: (() -> Unit)?, onClick: () -> Unit) {
     val e = a.shown
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
@@ -357,7 +369,7 @@ private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Flo
         ),
     ) {
         val ratio = aspect.coerceIn(1.2f, 2f)
-        Box(Modifier.fillMaxWidth().aspectRatio(ratio).clip(RoundedCornerShape(16.dp)).border(1.dp, C.GlassBorder, RoundedCornerShape(16.dp))) {
+        Box(Modifier.fillMaxWidth().aspectRatio(ratio).clip(RoundedCornerShape(16.dp)).border(if (watched) 2.dp else 1.dp, if (watched) C.VioletLight else C.GlassBorder, RoundedCornerShape(16.dp))) {
             // Boxes line up only when the card has the camera's shape.
             EventPicture(state.api, e, Modifier.fillMaxSize(), boxes = ratio == aspect)
             Box(Modifier.fillMaxWidth().height(44.dp).align(Alignment.BottomCenter).background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xAA000000)))))
@@ -374,6 +386,10 @@ private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Flo
                 if (a.ongoing) Text(
                     "LIVE", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(C.Amber).padding(horizontal = 5.dp, vertical = 2.dp),
+                )
+                else if (watched) Text(
+                    "Last watched", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(C.Violet).padding(horizontal = 5.dp, vertical = 2.dp),
                 )
             }
             // Motion strength

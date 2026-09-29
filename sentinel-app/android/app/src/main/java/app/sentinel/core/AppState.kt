@@ -1,5 +1,8 @@
 package app.sentinel.core
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import android.content.Context
 import android.os.Build
 import androidx.datastore.preferences.core.Preferences
@@ -262,4 +265,15 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
     fun serverNow(): Long = System.currentTimeMillis() + skew
 
     val isAdmin: Boolean get() = (auth.value as? Auth.LoggedIn)?.user?.admin == true
+
+    // ---- Events opened from a list ----
+    /** The last event lists fetched, so coming back from an event shows the list at once. */
+    val eventsCache = HashMap<String, List<SentinelEvent>>()
+    /** The list an event was opened from: the player steps through it (previous / next). */
+    var eventList: List<ListItem> = emptyList()
+    /** The event last opened from the list, marked there when coming back. */
+    var lastWatched by mutableStateOf<String?>(null)
 }
+
+/** An event in a list: its camera, id, and where playback starts. */
+data class ListItem(val c: String, val id: String, val t: Long)

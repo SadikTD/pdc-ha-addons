@@ -97,19 +97,28 @@ Every motion event is checked for people, cats and dogs. It never watches video:
 something moves, Sentinel looks at a few frames of the recording (in full quality), at
 low priority, so recording and live view always come first.
 
-Being wrong is worse than saying nothing, so a label needs two independent yeses: a
-fast model (YOLOX-s) must see it, and a bigger one (YOLOX-m), looking again at a
-zoomed-in crop of that spot, must agree. On top of that:
+A label needs two independent yeses: a fast model (YOLOX-s) must see it, and a bigger
+one (YOLOX-m), looking again at a zoomed-in crop of that spot, must agree. On top of that:
 
-- Something person-like that was already there before the motion (laundry, a coat, a
-  statue, a sleeping cat) doesn't count, and neither does anything in a camera's ignore
-  zones.
-- Each camera learns spots where lookalikes keep fooling detection (laundry flapping on
-  a line) and ignores sightings there unless the person or animal is also seen moving
-  elsewhere in the picture. Removing a wrong label teaches it at once.
-- Cat or dog is voted over several frames, so one animal never gets both labels; when
-  it stays unclear, it gets neither.
-- Things cut off by the picture's edge need a surer answer.
+- It must be where the picture changed since just before the motion: shoes, a bag or a
+  poster the fast model takes for someone don't count. When the whole picture shows
+  nobody, Sentinel looks again zoomed in on where it changed, which finds small, distant
+  cats.
+- Each camera learns spots where lookalikes fooled detection (laundry flapping on a
+  line): a sighting there, or of something that was already there before the motion (a
+  coat, someone sitting still), needs the bigger model to be clearly sure. Removing a
+  wrong label teaches it at once.
+- A different kind than the fast model saw (a person bending over can look like a cat
+  up close) must be clear, and so must things cut off by the picture's edge.
+- **Animals that live here** (Settings): with only cats (or only dogs), every animal
+  seen is called that; cameras looking down often make a cat look like a dog to the
+  detector. With both, cat or dog is voted over several frames.
+- Anything in a camera's ignore zones doesn't count.
+
+Why an event did or didn't get a label: `GET /api/detection/explain/<camera>/<event id>`
+checks it again step by step (nothing is saved). To check events again after changing
+detection, `POST /api/detection/rescan?from=…&to=…` (add `only=seen` for just the events
+where something was seen).
 
 Events that just happened are checked within seconds; older ones (e.g. after an update)
 are checked in the background, using at most a third of the time. The System page
@@ -160,11 +169,25 @@ every event of the night has been checked. Preview it or send it now from Settin
 
 ## Google Drive backup
 
-Sentinel can upload every motion event (10 s before to 10 s after, per camera or all
+Sentinel can upload motion events (10 s before to 10 s after, per camera or all
 cameras), night alert clips and the clips you save, or any clip with its cloud button.
-Uploads go into one folder per day. Set how much Drive space Sentinel may use: when it's
-full, the oldest backups are deleted to make room (it also always leaves 1 GB free on
-the account, and can delete backups older than a number of days). Setup, once:
+Motion is uploaded either only when a person, cat or dog was seen (the default: laundry,
+light and leaves stay off Drive; it's uploaded once checked, usually within a minute)
+or all of it. If detection isn't working, everything is uploaded rather than risk
+missing someone.
+
+Backups are kept by day and camera, named by time and who was seen:
+
+```
+Sentinel/2026-09-30/Drawing Room/21.14.03 · Person.mp4
+Sentinel/2026-09-30/Roof/02.10.44 · Cat.mp4
+Sentinel/2026-09-30/Ground Floor/03.02.15 · Night alert.mp4
+```
+
+(Backups from before this layout were moved to Drive's trash, which Google empties
+after 30 days.) Set how much Drive space Sentinel may use: when it's full, the oldest
+backups are deleted to make room (it also always leaves 1 GB free on the account, and
+can delete backups older than a number of days). Setup, once:
 
 1. In the Google Cloud Console create a project and enable the Google Drive API.
 2. In Google Auth Platform, set an app name, choose External and **Publish app**
@@ -194,6 +217,8 @@ at home and from anywhere, with no port forwarding, VPN or other add-on:
   password). Viewers can be limited to some cameras; admins can also delete clips,
   restart cameras and see the system log. Each signed-in phone is listed and can be
   signed out on its own. Five wrong passwords lock the username for a growing time.
+- **Events:** opening one plays it with **‹ 12 / 340 ›** at the top to step through the
+  list; back returns to the list where you left it, with the event last watched marked.
 
 Setup: install the app (APK from the GitHub releases), then log in. At home the app
 finds Sentinel by itself; elsewhere, scan the QR code or type the Sentinel ID shown in

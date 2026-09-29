@@ -137,14 +137,14 @@ private fun LockScreen(onUnlock: () -> Unit) {
 
 object Routes {
     const val Tabs = "tabs"
-    const val Camera = "camera/{id}?t={t}"
+    const val Camera = "camera/{id}?t={t}&ev={ev}"
     const val Users = "users"
     const val System = "system"
     const val Settings = "settings"
     const val Notifications = "notifications"
     const val Summary = "summary?date={date}"
     fun summary(date: String? = null) = "summary" + (date?.takeIf { it.isNotBlank() }?.let { "?date=$it" } ?: "")
-    fun camera(id: String, t: Long? = null) = "camera/$id" + (if (t != null) "?t=$t" else "")
+    fun camera(id: String, t: Long? = null, ev: String? = null) = "camera/$id" + (if (t != null) "?t=$t" else "") + (if (ev != null) "${if (t != null) "&" else "?"}ev=${android.net.Uri.encode(ev)}" else "")
 }
 
 @Composable
@@ -173,13 +173,23 @@ private fun MainNav(state: AppState) {
         composable(Routes.Tabs) { Tabs(state, nav) }
         composable(
             Routes.Camera,
-            arguments = listOf(navArgument("id") { type = NavType.StringType }, navArgument("t") { type = NavType.LongType; defaultValue = 0L }),
+            arguments = listOf(
+                navArgument("id") { type = NavType.StringType },
+                navArgument("t") { type = NavType.LongType; defaultValue = 0L },
+                navArgument("ev") { type = NavType.StringType; nullable = true; defaultValue = null },
+            ),
             enterTransition = { scaleIn(tween(320), initialScale = 0.92f) + fadeIn(tween(320)) },
             popExitTransition = { scaleOut(tween(260), targetScale = 0.92f) + fadeOut(tween(260)) },
         ) { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
             val t = entry.arguments?.getLong("t")?.takeIf { it > 0 }
-            CameraScreen(state, id, t, onBack = { nav.popBackStack() }, onOpenCamera = { nav.navigate(Routes.camera(it)) { popUpTo(Routes.Tabs) } })
+            CameraScreen(
+                state, id, t, entry.arguments?.getString("ev"),
+                onBack = { nav.popBackStack() },
+                onOpenCamera = { nav.navigate(Routes.camera(it)) { popUpTo(Routes.Tabs) } },
+                // The next event is on another camera: replace this screen, so back still returns to the list.
+                onStep = { nav.navigate(Routes.camera(it.c, it.t, it.id)) { popUpTo(Routes.Camera) { inclusive = true } } },
+            )
         }
         composable(Routes.Users) { UsersScreen(state, onBack = { nav.popBackStack() }) }
         composable(Routes.System) { SystemScreen(state, onBack = { nav.popBackStack() }, onOpenCamera = { nav.navigate(Routes.camera(it)) }) }
@@ -219,7 +229,7 @@ private fun Tabs(state: AppState, nav: NavHostController) {
         ) { t ->
             when (t) {
                 0 -> LiveScreen(state, padding, onSummary = { nav.navigate(Routes.summary()) }) { openCamera(it.id, null) }
-                1 -> EventsScreen(state, padding, openCamera)
+                1 -> EventsScreen(state, padding) { nav.navigate(Routes.camera(it.c, it.t, it.id)) }
                 2 -> TimelineScreen(state, padding, openCamera)
                 3 -> ClipsScreen(state, padding)
                 else -> MoreScreen(state, padding, onUsers = { nav.navigate(Routes.Users) }, onSystem = { nav.navigate(Routes.System) }, onSettings = { nav.navigate(Routes.Settings) }, onNotifications = { nav.navigate(Routes.Notifications) }, onSummary = { nav.navigate(Routes.summary()) })
