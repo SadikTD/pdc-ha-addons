@@ -349,10 +349,18 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 	if o.busy {
 		limit = busyFrames
 	}
+	// Spots to learn as lookalikes, only if the event ends with nobody confirmed: a
+	// sighting the big model couldn't make out in an event where it did see a cat was
+	// most likely that cat (learning it would slowly block the cats' own paths).
+	type lesson struct {
+		box  Rect
+		hits float64
+	}
+	var lessons []lesson
 	reject := func(label string, s sighting, why string, hits float64) {
 		rejected = append(rejected, Object{Label: label, Score: s.d.Score, Box: s.d.Box, T: s.t.UnixMilli(), Why: why})
-		if hits > 0 && !o.dry {
-			l.hot.Add(e.Cam, s.d.Box, hits)
+		if hits > 0 {
+			lessons = append(lessons, lesson{s.d.Box, hits})
 		}
 	}
 
@@ -572,6 +580,11 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 	for i := 0; i < 2*maxVerify && decide(true); i++ {
 	}
 	decideAnimal(true)
+	if len(objs) == 0 && !o.dry {
+		for _, ls := range lessons {
+			l.hot.Add(e.Cam, ls.box, ls.hits)
+		}
+	}
 	if !done["animal"] && animalChecks > 0 {
 		rejected = append(rejected, Object{Label: "animal", Score: max(votes["cat"], votes["dog"]), Why: "cat or dog unclear"})
 	}
