@@ -48,6 +48,7 @@ type Tunnel struct {
 	ln         net.Listener
 	secret     string
 	gen        int // bumps on Reconnect so stale connections are dropped
+	relayOnly  bool
 }
 
 // State as JSON for the app: {"state":"connecting|connected|offline|idle", …}.
@@ -216,7 +217,7 @@ func (t *Tunnel) ensure(ctx context.Context) (*quic.Conn, error) {
 			}
 			t.ep = ep
 		}
-		cfg := p2p.DialConfig{ID: t.id, Introducer: t.introducer, Hints: t.loadHints(), Endpoint: t.ep, LocalIPs: slices.Clone(t.localIPs)}
+		cfg := p2p.DialConfig{ID: t.id, Introducer: t.introducer, Hints: t.loadHints(), Endpoint: t.ep, LocalIPs: slices.Clone(t.localIPs), RelayOnly: t.relayOnly}
 		t.state = State{State: "connecting", Since: now()}
 		t.mu.Unlock()
 
@@ -242,6 +243,8 @@ func (t *Tunnel) ensure(ctx context.Context) (*quic.Conn, error) {
 		path := "internet"
 		if res.Local {
 			path = "home"
+		} else if res.Relay {
+			path = "relay"
 		}
 		t.state = State{State: "connected", Path: path, Addr: res.Addr, Since: now()}
 		t.saveHints(res)
@@ -287,7 +290,10 @@ func (t *Tunnel) loadHints() []string {
 }
 
 func (t *Tunnel) saveHints(res *p2p.DialResult) {
-	addrs := []string{res.Addr}
+	var addrs []string
+	if a, err := netip.ParseAddrPort(res.Addr); err == nil && a.Addr().IsPrivate() {
+		addrs = append(addrs, res.Addr)
+	}
 	for _, c := range res.Cands {
 		if a, err := netip.ParseAddrPort(c); err == nil && a.Addr().IsPrivate() && !slices.Contains(addrs, c) {
 			addrs = append(addrs, c) // public addresses change; only keep LAN ones
@@ -434,4 +440,12 @@ func FormatID(id string) string {
 		return p2p.FormatID(n)
 	}
 	return ""
+}
+
+// SetRelayOnly forces the relay (testing).
+func (t *Tunnel) SetRelayOnly(on bool) {
+	t.mu.Lock()
+	t.relayOnly = on
+	t.dropLocked("")
+	t.mu.Unlock()
 }

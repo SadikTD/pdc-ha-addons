@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"sentinel/p2p"
@@ -115,6 +116,8 @@ func (rm *Remote) Start(routes http.Handler) {
 		Version:    version,
 		LANAddrs:   rm.lanAddrs,
 		Logf:       logf,
+		ServerTLS:  tlsConf,
+		ServeRelay: func(c *quic.Conn) { srv.ServeQUICConn(c) },
 	})
 	go rm.host.Run(a.ctx)
 	go func() {

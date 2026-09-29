@@ -3,6 +3,7 @@ package p2p
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go"
 )
 
 // Messages between the server and the introducer (JSON over one WebSocket).
@@ -25,6 +27,7 @@ type wsMsg struct {
 	Version string   `json:"version,omitempty"`
 	SID     string   `json:"sid,omitempty"`
 	Cands   []string `json:"cands,omitempty"`
+	Relay   string   `json:"relay,omitempty"`
 	Error   string   `json:"error,omitempty"`
 }
 
@@ -40,6 +43,9 @@ type HostConfig struct {
 	// LANAddrs are this server's addresses on the home network ("192.168.0.226:8555").
 	LANAddrs func() []string
 	Logf     func(format string, args ...any)
+	// For connections through the relay: the TLS config, and what to do with a connection.
+	ServerTLS  *tls.Config
+	ServeRelay func(*quic.Conn)
 }
 
 type HostStatus struct {
@@ -50,6 +56,7 @@ type HostStatus struct {
 	Connects  int64  `json:"connects"`   // app connections introduced since start
 	LastApp   int64  `json:"last_app"`   // unix ms of the last one
 	PublicErr string `json:"public_err"` // STUN problem, if any
+	Relayed   int64  `json:"relayed"`    // connections that needed the relay
 }
 
 // Host keeps the server reachable: a WebSocket to the introducer, and answers to
@@ -62,6 +69,7 @@ type Host struct {
 	public   string
 	publicAt time.Time
 	connects atomic.Int64
+	relays   atomic.Int64
 }
 
 func NewHost(cfg HostConfig) *Host { return &Host{cfg: cfg} }
@@ -72,6 +80,7 @@ func (h *Host) Status() HostStatus {
 	s := h.status
 	s.Public = h.public
 	s.Connects = h.connects.Load()
+	s.Relayed = h.relays.Load()
 	return s
 }
 
@@ -225,8 +234,44 @@ func (h *Host) session(ctx context.Context) error {
 					cands = append(cands, h.cfg.LANAddrs()...)
 				}
 				send(wsMsg{T: "answer", SID: m.SID, Cands: cands})
+				if m.Relay != "" && h.cfg.ServeRelay != nil {
+					go h.serveRelay(ctx, m.Relay)
+				}
 				h.cfg.Endpoint.Punch(ctx, m.Cands, 8*time.Second)
 			}(m)
 		}
 	}
+}
+
+// serveRelay joins the relay session the app asked for and serves the QUIC connection
+// that arrives through it. If the app found a direct path, nothing arrives and the
+// session is dropped.
+func (h *Host) serveRelay(ctx context.Context, session string) {
+	rc, err := DialRelay(ctx, h.cfg.Introducer, session, "host")
+	if err != nil {
+		h.cfg.Logf("relay: %v", err)
+		return
+	}
+	tr := &quic.Transport{Conn: rc}
+	ln, err := tr.Listen(h.cfg.ServerTLS, QUICConfig())
+	if err != nil {
+		tr.Close()
+		rc.Close()
+		return
+	}
+	actx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	conn, err := ln.Accept(actx)
+	cancel()
+	if err != nil {
+		tr.Close()
+		rc.Close()
+		return
+	}
+	h.relays.Add(1)
+	go func() {
+		<-conn.Context().Done()
+		tr.Close()
+		rc.Close()
+	}()
+	h.cfg.ServeRelay(conn)
 }

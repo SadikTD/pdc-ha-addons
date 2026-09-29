@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"sentinel/p2p"
@@ -29,6 +30,7 @@ func main() {
 	path := fs.String("path", "/big", "paths to fetch, comma separated")
 	user := fs.String("user", "", "app username (dial)")
 	pass := fs.String("pass", "", "app password (dial)")
+	relayOnly := fs.Bool("relayonly", false, "dial through the relay only")
 	dur := fs.Duration("dur", 8*time.Second, "longest time to read one response")
 	fs.Parse(os.Args[2:])
 	switch mode {
@@ -60,6 +62,7 @@ func main() {
 			}
 		})
 		srv := &http3.Server{Handler: mux}
+		serveRelay := func(c *quic.Conn) { log.Printf("relayed connection"); srv.ServeQUICConn(c) }
 		go func() {
 			for {
 				c, err := ln.Accept(context.Background())
@@ -70,7 +73,7 @@ func main() {
 				go srv.ServeQUICConn(c)
 			}
 		}()
-		host := p2p.NewHost(p2p.HostConfig{Identity: ident, Endpoint: ep, Introducer: tunnel.DefaultIntroducer, Name: "test", Version: "test", Logf: log.Printf,
+		host := p2p.NewHost(p2p.HostConfig{Identity: ident, Endpoint: ep, Introducer: tunnel.DefaultIntroducer, Name: "test", Version: "test", Logf: log.Printf, ServerTLS: tc, ServeRelay: serveRelay,
 			LANAddrs: func() []string { return []string{fmt.Sprintf("%s:%d", p2p.OutboundIP(), *port)} }})
 		log.Printf("serving %s on %d", p2p.FormatID(ident.ID), *port)
 		host.Run(context.Background())
@@ -79,6 +82,7 @@ func main() {
 		dir, _ := os.MkdirTemp("", "tun")
 		t := tunnel.New(dir)
 		t.SetServer(*id, "")
+		t.SetRelayOnly(*relayOnly)
 		base, _ := t.Start()
 		start := time.Now()
 		if err := t.Connect(); err != nil {

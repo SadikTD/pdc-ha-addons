@@ -42,6 +42,13 @@ const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    // Relay for networks where a direct path is impossible: /v1/relay/<session>?role=host|client
+    const r = url.pathname.match(/^\/v1\/relay\/([0-9a-f]{32})$/);
+    if (r) {
+      if (request.headers.get("Upgrade") !== "websocket") return json({ error: "expected a WebSocket" }, 426);
+      const stub = env.RELAYS.get(env.RELAYS.idFromName(r[1]), { locationHint: "apac" });
+      return stub.fetch(request);
+    }
     const m = url.pathname.match(/^\/v1\/(host|connect)\/([^/]+)$/);
     if (!m) return new Response("Sentinel introducer\n", { headers: { "content-type": "text/plain" } });
     const id = normalizeId(m[2]);
@@ -95,7 +102,8 @@ export class Server {
       this.pending.set(sid, resolve);
       setTimeout(() => resolve(null), 8000);
     });
-    host.send(JSON.stringify({ t: "connect", sid, cands }));
+    const relay = typeof body.relay === "string" && /^[0-9a-f]{32}$/.test(body.relay) ? body.relay : undefined;
+    host.send(JSON.stringify({ t: "connect", sid, cands, relay }));
     const a = await answer;
     this.pending.delete(sid);
     if (!a) return json({ error: "Sentinel didn't answer" }, 504);
@@ -139,5 +147,47 @@ export class Server {
     try {
       ws.close(code === 1005 ? 1000 : code, "bye");
     } catch {}
+  }
+}
+
+// One relay session: pipes binary messages between the app ("client") and Sentinel
+// ("host"). The traffic is QUIC, encrypted end to end between them, so the relay only
+// ever sees ciphertext. Messages that arrive before the other side are held briefly.
+export class Relay {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.sides = {};
+    this.queue = { host: [], client: [] };
+  }
+
+  async fetch(request) {
+    const role = new URL(request.url).searchParams.get("role") === "host" ? "host" : "client";
+    const other = role === "host" ? "client" : "host";
+    const pair = new WebSocketPair();
+    const ws = pair[1];
+    ws.accept();
+    ws.binaryType = "arraybuffer"; // forward bytes as bytes (the default hands out Blobs)
+    this.sides[role]?.close(4000, "replaced");
+    this.sides[role] = ws;
+    for (const m of this.queue[role]) ws.send(m);
+    this.queue[role] = [];
+    ws.addEventListener("message", (e) => {
+      const o = this.sides[other];
+      if (o) {
+        try {
+          o.send(e.data);
+        } catch {}
+      } else if (this.queue[other].length < 512) this.queue[other].push(e.data);
+    });
+    const done = () => {
+      if (this.sides[role] !== ws) return;
+      delete this.sides[role];
+      try {
+        this.sides[other]?.close(1000, "peer left");
+      } catch {}
+    };
+    ws.addEventListener("close", done);
+    ws.addEventListener("error", done);
+    return new Response(null, { status: 101, webSocket: pair[0] });
   }
 }

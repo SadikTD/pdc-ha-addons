@@ -39,12 +39,20 @@ type DialConfig struct {
 	Endpoint   *Endpoint
 	// LocalIPs of this device; OutboundIP() when empty.
 	LocalIPs []string
+	// NoRelay: direct paths only. RelayOnly: skip direct paths (for testing).
+	NoRelay   bool
+	RelayOnly bool
 }
+
+// relayHeadStart: how long direct paths get before the relay is tried. At home and on
+// friendly networks a direct path answers well within this.
+const relayHeadStart = 700 * time.Millisecond
 
 type DialResult struct {
 	Conn  *quic.Conn
 	Addr  string
 	Local bool     // on the same network as the server
+	Relay bool     // through the relay (no direct path was possible)
 	Cands []string // every address the server offered (worth keeping as hints)
 }
 
@@ -69,10 +77,11 @@ func Dial(ctx context.Context, cfg DialConfig) (*DialResult, error) {
 	var mu sync.Mutex
 	tried := map[string]bool{}
 	outstanding := 0
+	directLeft := 0 // direct dials still in progress
 	try := func(addr string) {
 		mu.Lock()
 		defer mu.Unlock()
-		if tried[addr] {
+		if tried[addr] || cfg.RelayOnly {
 			return
 		}
 		tried[addr] = true
@@ -81,10 +90,14 @@ func Dial(ctx context.Context, cfg DialConfig) (*DialResult, error) {
 			return
 		}
 		outstanding++
+		directLeft++
 		debugf("dialing %s", addr)
 		go func() {
 			c, err := ep.Transport.Dial(ctx, ua, ClientTLS(id), QUICConfig())
 			debugf("dial %s: %v", addr, err)
+			mu.Lock()
+			directLeft--
+			mu.Unlock()
 			results <- attempt{c, addr, err}
 		}()
 	}
@@ -98,13 +111,61 @@ func Dial(ctx context.Context, cfg DialConfig) (*DialResult, error) {
 		mu.Lock()
 		outstanding++ // the introducer counts as an attempt until it has answered
 		mu.Unlock()
+		session := ""
+		var relayConn chan *RelayConn
+		if !cfg.NoRelay {
+			// Open the relay WebSocket right away, so it's ready if direct paths fail.
+			session = NewRelaySession()
+			relayConn = make(chan *RelayConn, 1)
+			go func() {
+				rc, err := DialRelay(ctx, cfg.Introducer, session, "client")
+				if err != nil {
+					debugf("relay: %v", err)
+				}
+				relayConn <- rc
+			}()
+		}
 		go func() {
-			cands, err := introduce(ctx, cfg, id)
+			cands, err := introduce(ctx, cfg, id, session)
+			useRelay := err == nil && relayConn != nil
 			mu.Lock()
 			introErr, serverCands = err, cands
+			if useRelay {
+				outstanding++ // the relay attempt
+			}
 			mu.Unlock()
 			for _, c := range cands {
 				try(c)
+			}
+			switch {
+			case useRelay:
+				go func() {
+					// Give direct paths a head start; stop waiting once they've all failed.
+					deadline := time.Now().Add(relayHeadStart)
+					for time.Now().Before(deadline) && ctx.Err() == nil {
+						mu.Lock()
+						left := directLeft
+						mu.Unlock()
+						if left == 0 {
+							break
+						}
+						time.Sleep(40 * time.Millisecond)
+					}
+					rc := <-relayConn
+					if rc == nil {
+						results <- attempt{addr: "relay", err: errors.New("can't reach the relay")}
+						return
+					}
+					c, err := dialRelayed(ctx, rc, id)
+					debugf("relay dial: %v", err)
+					results <- attempt{c, "relay", err}
+				}()
+			case relayConn != nil:
+				go func() {
+					if rc := <-relayConn; rc != nil {
+						rc.Close()
+					}
+				}()
 			}
 			results <- attempt{addr: "introducer", err: err}
 		}()
@@ -164,7 +225,7 @@ func Dial(ctx context.Context, cfg DialConfig) (*DialResult, error) {
 		cands := serverCands
 		mu.Unlock()
 		ap, _ := netip.ParseAddrPort(r.addr)
-		return &DialResult{Conn: r.conn, Addr: r.addr, Local: ap.Addr().IsPrivate(), Cands: cands}, nil
+		return &DialResult{Conn: r.conn, Addr: r.addr, Local: ap.Addr().IsPrivate(), Relay: r.addr == "relay", Cands: cands}, nil
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -176,12 +237,30 @@ func Dial(ctx context.Context, cfg DialConfig) (*DialResult, error) {
 	case introErr != nil && len(tried) == 0:
 		return nil, introErr
 	}
-	return nil, errors.New("couldn't reach Sentinel: the networks on both sides blocked a direct connection")
+	return nil, errors.New("couldn't reach Sentinel from this network")
 }
 
-// introduce sends this device's addresses to the server through the introducer and
-// returns the server's.
-func introduce(ctx context.Context, cfg DialConfig, id string) ([]string, error) {
+// dialRelayed runs QUIC over the relay. The transport and the WebSocket live as long as
+// the connection.
+func dialRelayed(ctx context.Context, rc *RelayConn, id string) (*quic.Conn, error) {
+	tr := &quic.Transport{Conn: rc}
+	c, err := tr.Dial(ctx, RelayAddr{rc.session}, ClientTLS(id), QUICConfig())
+	if err != nil {
+		tr.Close()
+		rc.Close()
+		return nil, err
+	}
+	go func() {
+		<-c.Context().Done()
+		tr.Close()
+		rc.Close()
+	}()
+	return c, nil
+}
+
+// introduce sends this device's addresses (and the relay session to join, if any) to
+// the server through the introducer and returns the server's addresses.
+func introduce(ctx context.Context, cfg DialConfig, id, relay string) ([]string, error) {
 	ep := cfg.Endpoint
 	port := strconv.Itoa(ep.Port())
 	var cands []string
@@ -202,7 +281,7 @@ func introduce(ctx context.Context, cfg DialConfig, id string) ([]string, error)
 	debugf("my candidates: %v", cands)
 	sid := make([]byte, 8)
 	rand.Read(sid)
-	body, _ := json.Marshal(map[string]any{"sid": hex.EncodeToString(sid), "cands": cands})
+	body, _ := json.Marshal(map[string]any{"sid": hex.EncodeToString(sid), "cands": cands, "relay": relay})
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.Introducer, "/")+"/v1/connect/"+id, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
