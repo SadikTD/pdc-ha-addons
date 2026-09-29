@@ -38,13 +38,15 @@ const (
 var verifyMin = map[string]float64{"person": 0.55, "cat": 0.5, "dog": 0.5}
 
 // Frames looked at, as offsets from the start of the event; after these, one every
-// longFrameGap while the event lasts, up to maxFrames.
-var scanOffsets = []time.Duration{700 * time.Millisecond, 1800 * time.Millisecond, 3200 * time.Millisecond, 5 * time.Second, 7500 * time.Millisecond, 10500 * time.Millisecond, 14 * time.Second, 19 * time.Second}
+// longFrameGap while the event lasts, up to maxFrames. After emptyFrames frames in a row
+// with nothing at all in them (leaves, light, rain), only one every longFrameGap.
+var scanOffsets = []time.Duration{800 * time.Millisecond, 2200 * time.Millisecond, 4 * time.Second, 7 * time.Second, 11 * time.Second, 16 * time.Second}
 
 const (
-	longFrameGap = 12 * time.Second
-	maxFrames    = 14
+	longFrameGap = 8 * time.Second
+	maxFrames    = 12
 	busyFrames   = 4 // when events queue up
+	emptyFrames  = 3
 )
 
 type LabelerStatus struct {
@@ -191,13 +193,23 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 		return nil, nil, false, 0
 	}
 	start := time.UnixMilli(e.Start)
-	// The scene just before the motion: whatever was already there doesn't count.
+	ctx = lowPriority(ctx)
+	// The scene just before the motion: whatever was already there doesn't count. Only
+	// needed once something is found (most events are leaves, light and shadows).
 	var bg frameRGB
 	var bgDets []Detection
-	if f, err := a.decodeRGB(ctx, e.Cam, start.Add(-3*time.Second), fullFrame, size); err == nil {
-		bg = f
-		bgDets, _ = a.detectIn(ctx, modelScan, f)
+	bgDone := false
+	before := func() {
+		if bgDone {
+			return
+		}
+		bgDone = true
+		if f, err := a.decodeRGB(ctx, e.Cam, start.Add(-3*time.Second), fullFrame, size); err == nil {
+			bg = f
+			bgDets, _ = a.detectIn(ctx, modelScan, f)
+		}
 	}
+	empty := 0
 	mask := maskGrid(cam, shotW, shotH)
 	seen := map[string][]sighting{}
 	tried := map[string][]time.Time{}
@@ -228,12 +240,15 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 		}
 	}
 
+	var off time.Duration
 	for i := 0; i < limit && ctx.Err() == nil; i++ {
-		var off time.Duration
-		if i < len(scanOffsets) {
+		switch {
+		case empty >= emptyFrames:
+			off += longFrameGap
+		case i < len(scanOffsets):
 			off = scanOffsets[i]
-		} else {
-			off = scanOffsets[len(scanOffsets)-1] + time.Duration(i-len(scanOffsets)+1)*longFrameGap
+		default:
+			off += longFrameGap
 		}
 		t := start.Add(off)
 		end := e.End
@@ -259,6 +274,12 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 			break
 		}
 		checked++
+		if !slices.ContainsFunc(dets, func(d Detection) bool { return d.Score >= scanFound }) {
+			empty++
+		} else {
+			empty = 0
+			before()
+		}
 		for _, d := range dets {
 			if done[d.Label] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea {
 				continue

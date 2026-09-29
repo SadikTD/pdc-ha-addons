@@ -715,6 +715,16 @@ func (a *App) frameFromRecording(ctx context.Context, cam string, t time.Time) (
 
 var errNoFrame = errors.New("no recording at that moment yet")
 
+type priorityKey struct{}
+
+var lowPriorityKey = priorityKey{}
+
+// lowPriority marks work (e.g. frame decoding for object detection) that should yield
+// to recording and live viewers.
+func lowPriority(ctx context.Context) context.Context {
+	return context.WithValue(ctx, lowPriorityKey, true)
+}
+
 // fragmentAt returns the init section plus the fragment of the recording containing t
 // (each fragment starts with a keyframe), and how far into that fragment t is. With
 // exact, the fragment must already contain t (it may not be on disk yet).
@@ -776,6 +786,9 @@ func (a *App) runDecode(ctx context.Context, cam string, t time.Time, exact bool
 	}
 	args = append(append(args, "-frames:v", "1"), out...)
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	if ctx.Value(lowPriorityKey) != nil { // background work: recording and viewers first
+		cmd = exec.CommandContext(ctx, "nice", append([]string{"-n", "10", "ffmpeg"}, args...)...)
+	}
 	cmd.Stdin = bytes.NewReader(data)
 	b, err := cmd.Output()
 	if err != nil || len(b) < 100 {
