@@ -409,7 +409,7 @@ export function DriveCard({ draft, set, cameras }: { draft: Settings; set: SetFn
   const d = draft.drive;
   return (
     <Card className="p-5">
-      <SectionTitle sub="Copies clips to your Google Drive as soon as they're saved, so evidence survives even if the Pi is stolen or broken.">
+      <SectionTitle sub="Copies clips to your Google Drive as soon as they're saved, so evidence survives even if the Pi is stolen or broken. Kept by day and camera: Sentinel / 2026-09-30 / Drawing Room / 21.14.03 · Person.mp4.">
         <span className="flex items-center gap-2"><CloudUpload className="size-4" /> Google Drive backup</span>
       </SectionTitle>
       {!st ? (
@@ -437,9 +437,33 @@ export function DriveCard({ draft, set, cameras }: { draft: Settings; set: SetFn
           <div>
             <div className="mb-1 text-xs font-medium text-slate-400">Back up automatically</div>
             <div className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2">
-              <Toggle checked={d.backup_motion} onChange={(v) => set("drive", { ...d, backup_motion: v })} label="Every motion event" hint="Each motion, from 10 s before to 10 s after, uploaded as it happens" />
+              <Toggle
+                checked={d.backup_motion}
+                onChange={(v) => set("drive", { ...d, backup_motion: v })}
+                label="Motion events"
+                hint={d.motion_who === "all" ? "Each motion, from 10 s before to 10 s after, uploaded as it happens" : "Only when a person, cat or dog was seen, uploaded once it's checked (a few seconds to a minute after). Laundry, light and leaves stay off Drive."}
+              />
               {d.backup_motion && (
-                <div className="flex flex-wrap gap-1.5 pb-2 pt-1">
+                <div className="flex rounded-xl bg-white/5 p-0.5 text-xs font-medium">
+                  {(
+                    [
+                      ["people_animals", "People & animals only"],
+                      ["all", "All motion"],
+                    ] as const
+                  ).map(([v, l]) => (
+                    <button
+                      type="button"
+                      key={v}
+                      onClick={() => set("drive", { ...d, motion_who: v })}
+                      className={clsx("flex-1 rounded-lg px-3 py-1.5 transition", (d.motion_who ?? "people_animals") === v ? "bg-white/10 text-white" : "text-slate-400 hover:text-white")}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {d.backup_motion && (
+                <div className="flex flex-wrap gap-1.5 pb-2 pt-2">
                   <button type="button" onClick={() => set("drive", { ...d, motion_cameras: [] })} className={clsx("rounded-full border px-2.5 py-1 text-xs font-medium transition", d.motion_cameras.length === 0 ? "border-violet-400/40 bg-violet-500/15 text-violet-100" : "border-white/10 text-slate-400 hover:text-white")}>
                     All cameras
                   </button>

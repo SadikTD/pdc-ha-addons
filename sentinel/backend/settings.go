@@ -125,7 +125,10 @@ type DriveBackup struct {
 	Mode   string `json:"mode,omitempty"` // pre-1.4 setting, migrated to the flags below
 	Alerts bool   `json:"backup_alerts"`  // night alert clips
 	Saved  bool   `json:"backup_saved"`   // clips saved by hand
-	Motion bool   `json:"backup_motion"`  // every motion event
+	Motion bool   `json:"backup_motion"`  // motion events
+	// Which motion events: "people_animals" (only those where a person, cat or dog was
+	// seen; the default) or "all".
+	MotionWho string `json:"motion_who"`
 	// Cameras whose motion is backed up; empty = all.
 	MotionCameras []string `json:"motion_cameras"`
 	// Sentinel never uses more than this on Drive (0 = no limit); the oldest backups
@@ -318,6 +321,9 @@ func (s *Settings) normalize() error {
 	s.Drive.Mode = ""
 	if s.Drive.MotionCameras == nil {
 		s.Drive.MotionCameras = []string{}
+	}
+	if s.Drive.MotionWho != "all" {
+		s.Drive.MotionWho = "people_animals"
 	}
 	s.Drive.QuotaGB = min(max(s.Drive.QuotaGB, 0), 100000)
 	s.Drive.RetentionDays = max(s.Drive.RetentionDays, 0)

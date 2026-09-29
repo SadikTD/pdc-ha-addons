@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,10 +46,18 @@ type Drive struct {
 	lastErr   string
 	lastOK    int64
 	wake      chan struct{}
-	days      map[string]string // "2026-09-28" -> day folder id
+	folders   map[string]string // "2026-09-28" or "2026-09-28/Drawing Room" -> folder id
 	usage     driveUsage
-	// Motion backup: the event window being collected per camera.
-	motion map[string]*motionWindow
+	// Motion backup: the event window being collected per camera, and finished windows
+	// waiting for object detection to say whether anyone was in them.
+	motion  map[string]*motionWindow
+	waiting []motionJob
+}
+
+type motionJob struct {
+	cam      string
+	from, to int64
+	since    time.Time
 }
 
 type driveUsage struct {
@@ -64,7 +73,7 @@ type motionWindow struct {
 }
 
 func newDrive(app *App) *Drive {
-	return &Drive{app: app, client: &http.Client{Timeout: 5 * time.Minute}, wake: make(chan struct{}, 1), days: map[string]string{}, motion: map[string]*motionWindow{}}
+	return &Drive{app: app, client: &http.Client{Timeout: 5 * time.Minute}, wake: make(chan struct{}, 1), folders: map[string]string{}, motion: map[string]*motionWindow{}}
 }
 
 func (d *Drive) poke() {
@@ -314,20 +323,21 @@ func (d *Drive) folder() (string, error) {
 	}
 	_ = d.app.secrets.Update(func(s *Secrets) { s.DriveFolderID = f.ID })
 	d.mu.Lock()
-	d.days = map[string]string{}
+	d.folders = map[string]string{}
 	d.mu.Unlock()
 	return f.ID, nil
 }
 
-// dayFolder returns the folder for one day ("2026-09-28") inside the Sentinel folder.
-func (d *Drive) dayFolder(root, day string) (string, error) {
+// subFolder returns the folder called name inside parent, creating it if needed; key
+// caches it ("2026-09-28", "2026-09-28/Drawing Room").
+func (d *Drive) subFolder(parent, name, key string) (string, error) {
 	d.mu.Lock()
-	id, ok := d.days[day]
+	id, ok := d.folders[key]
 	d.mu.Unlock()
 	if ok {
 		return id, nil
 	}
-	q := url.QueryEscape(fmt.Sprintf("name = '%s' and '%s' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false", day, root))
+	q := url.QueryEscape(fmt.Sprintf("name = '%s' and '%s' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false", strings.ReplaceAll(name, "'", "\\'"), parent))
 	var r struct {
 		Files []struct {
 			ID string `json:"id"`
@@ -343,16 +353,105 @@ func (d *Drive) dayFolder(root, day string) (string, error) {
 			ID string `json:"id"`
 		}
 		if _, err := d.api("POST", "https://www.googleapis.com/drive/v3/files?fields=id", map[string]any{
-			"name": day, "mimeType": "application/vnd.google-apps.folder", "parents": []string{root},
+			"name": name, "mimeType": "application/vnd.google-apps.folder", "parents": []string{parent},
 		}, &f); err != nil {
 			return "", err
 		}
 		id = f.ID
 	}
 	d.mu.Lock()
-	d.days[day] = id
+	d.folders[key] = id
 	d.mu.Unlock()
 	return id, nil
+}
+
+// clipFolder is where a clip goes: Sentinel/<day>/<camera>/.
+func (d *Drive) clipFolder(c *Clip) (string, error) {
+	root, err := d.folder()
+	if err != nil {
+		return "", err
+	}
+	day := time.UnixMilli(c.From).In(time.Local).Format("2006-01-02")
+	dayID, err := d.subFolder(root, day, day)
+	if err != nil {
+		return "", err
+	}
+	cam := driveName(c.CameraName)
+	return d.subFolder(dayID, cam, day+"/"+cam)
+}
+
+// driveName makes a name safe for Drive (which allows almost anything but "/").
+func driveName(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r < 32 {
+			return '-'
+		}
+		return r
+	}, strings.TrimSpace(s))
+	if s == "" {
+		return "Camera"
+	}
+	return s
+}
+
+// clipDriveName: "21.14.03 · Person, Cat.mp4" (motion), "21.14.03 · Night alert.mp4",
+// or the name given to a saved clip.
+func clipDriveName(c *Clip) string {
+	what := c.Name
+	switch {
+	case c.Auto:
+		// Named after who was seen (see flushMotion).
+	case c.Alert:
+		what = "Night alert"
+	}
+	return time.UnixMilli(c.From).In(time.Local).Format("15.04.05") + " · " + driveName(what) + ".mp4"
+}
+
+// migrateLayout moves backups made before the camera folders to Drive's trash (the
+// user chose not to keep them); Drive empties its trash by itself after 30 days.
+func (d *Drive) migrateLayout() {
+	sec := d.app.secrets.Get()
+	if sec.DriveLayout >= 2 || sec.DriveFolderID == "" {
+		if sec.DriveLayout < 2 {
+			_ = d.app.secrets.Update(func(s *Secrets) { s.DriveLayout = 2 })
+		}
+		return
+	}
+	root, err := d.folder()
+	if err != nil {
+		return
+	}
+	var r struct {
+		Files []driveFile `json:"files"`
+	}
+	q := url.QueryEscape(fmt.Sprintf("'%s' in parents and trashed = false", root))
+	if _, err := d.api("GET", "https://www.googleapis.com/drive/v3/files?pageSize=1000&fields=files(id,name,mimeType)&q="+q, nil, &r); err != nil {
+		logf("drive: listing old backups: %v", err)
+		return
+	}
+	var files []driveFile
+	if all, err := d.files(); err == nil {
+		files = all
+	}
+	var bytes int64
+	for _, f := range files {
+		bytes += f.bytes()
+	}
+	for _, f := range r.Files {
+		if _, err := d.api("PATCH", "https://www.googleapis.com/drive/v3/files/"+f.ID, map[string]any{"trashed": true}, nil); err != nil {
+			logf("drive: moving %s to the trash: %v", f.Name, err)
+			return // try again next time
+		}
+	}
+	d.mu.Lock()
+	d.folders = map[string]string{}
+	d.usage.Measured = 0
+	d.mu.Unlock()
+	_ = d.app.secrets.Update(func(s *Secrets) { s.DriveLayout = 2 })
+	if len(files) > 0 {
+		logf("drive: moved %d old backups (%.1f GB) to the trash", len(files), float64(bytes)/1e9)
+		d.app.incidents.Add("info", "", "Google Drive now keeps backups by day and camera; the %d older backups (%.1f GB) were moved to Drive's trash", len(files), float64(bytes)/1e9)
+	}
 }
 
 func (d *Drive) Disconnect() {
@@ -360,10 +459,10 @@ func (d *Drive) Disconnect() {
 	if sec.DriveRefreshToken != "" {
 		_, _ = d.client.PostForm("https://oauth2.googleapis.com/revoke", url.Values{"token": {sec.DriveRefreshToken}})
 	}
-	_ = d.app.secrets.Update(func(s *Secrets) { s.DriveRefreshToken, s.DriveAccount, s.DriveFolderID = "", "", "" })
+	_ = d.app.secrets.Update(func(s *Secrets) { s.DriveRefreshToken, s.DriveAccount, s.DriveFolderID, s.DriveLayout = "", "", "", 0 })
 	d.mu.Lock()
 	d.access, d.auth, d.lastErr = "", nil, ""
-	d.days, d.usage = map[string]string{}, driveUsage{}
+	d.folders, d.usage = map[string]string{}, driveUsage{}
 	d.authSeq++
 	d.mu.Unlock()
 }
@@ -447,16 +546,74 @@ func (d *Drive) flushMotion() {
 			delete(d.motion, cam)
 		}
 	}
-	d.mu.Unlock()
-	s := d.app.settings.Get()
 	for _, j := range jobs {
-		name := cameraName(s, j.cam)
-		from := time.UnixMilli(j.from)
-		_, err := d.app.clips.create(Camera{ID: j.cam, Name: name}, from, time.UnixMilli(j.to), fmt.Sprintf("Motion · %s · %s", name, from.In(time.Local).Format("15.04.05")), false, true)
-		if err != nil {
+		d.waiting = append(d.waiting, motionJob{j.cam, j.from, j.to, time.Now()})
+	}
+	d.mu.Unlock()
+}
+
+// Motion windows wait at most this long for object detection; after that (or while
+// detection isn't working) they're uploaded anyway: better one clip too many than a
+// person missing from the backup.
+const motionDecideWait = 30 * time.Minute
+
+// decideMotion uploads the finished motion windows that should be: all of them, or (the
+// default) only those where object detection saw a person, cat or dog. A window is
+// decided once every event in it has been checked.
+func (d *Drive) decideMotion() {
+	s := d.app.settings.Get()
+	d.mu.Lock()
+	jobs := d.waiting
+	d.waiting = nil
+	d.mu.Unlock()
+	var keep []motionJob
+	for _, j := range jobs {
+		labels, checked := []string{}, true
+		for _, e := range d.app.events.List([]string{j.cam}, j.from, j.to, 1000) {
+			if e.End != 0 && e.End < j.from || e.Start > j.to {
+				continue
+			}
+			for _, l := range e.Labels {
+				if !slices.Contains(labels, l) {
+					labels = append(labels, l)
+				}
+			}
+			if e.End == 0 || e.Scan == "" || e.Scan == "scanning" {
+				checked = false
+			}
+		}
+		detecting := d.app.detector.Available()
+		switch {
+		case s.Drive.MotionWho == "all" || !detecting || time.Since(j.since) > motionDecideWait:
+		case len(labels) > 0:
+		case checked:
+			continue // nobody in it (laundry, light, leaves): not uploaded
+		default:
+			keep = append(keep, j) // not checked yet
+			continue
+		}
+		what := "Motion"
+		if len(labels) > 0 {
+			what = describeLabels(labels)
+		}
+		if _, err := d.app.clips.create(Camera{ID: j.cam, Name: cameraName(s, j.cam)}, time.UnixMilli(j.from), time.UnixMilli(j.to), what, false, true); err != nil {
 			logf("drive: motion backup for %s: %v", j.cam, err)
 		}
 	}
+	d.mu.Lock()
+	d.waiting = append(keep, d.waiting...)
+	d.mu.Unlock()
+}
+
+// describeLabels: "Person", "Person, Cat", ... (people first).
+func describeLabels(labels []string) string {
+	out := []string{}
+	for _, l := range watchLabels {
+		if slices.Contains(labels, l) {
+			out = append(out, strings.ToUpper(l[:1])+l[1:])
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 // Queue marks a clip for upload (also used by "Back up now" and "Retry").
@@ -481,9 +638,11 @@ func (d *Drive) Run(ctx context.Context) {
 		case <-tick.C:
 		}
 		d.flushMotion()
+		d.decideMotion()
 		if !d.Connected() {
 			continue
 		}
+		d.migrateLayout()
 		for ctx.Err() == nil {
 			c := d.next()
 			if c == nil {
@@ -552,11 +711,7 @@ func (d *Drive) upload(c *Clip) {
 
 // uploadFile sends the clip with a resumable upload, in chunks, resuming after errors.
 func (d *Drive) uploadFile(c *Clip) (string, error) {
-	root, err := d.folder()
-	if err != nil {
-		return "", err
-	}
-	folder, err := d.dayFolder(root, time.UnixMilli(c.From).In(time.Local).Format("2006-01-02"))
+	folder, err := d.clipFolder(c)
 	if err != nil {
 		return "", err
 	}
@@ -570,7 +725,7 @@ func (d *Drive) uploadFile(c *Clip) (string, error) {
 	defer f.Close()
 	st, _ := f.Stat()
 	size := st.Size()
-	name := time.UnixMilli(c.From).In(time.Local).Format("2006-01-02 15.04.05") + " " + safeFileName(c.Name) + ".mp4"
+	name := clipDriveName(c)
 
 	tok, err := d.token()
 	if err != nil {
@@ -765,29 +920,7 @@ func (d *Drive) prune(need int64) error {
 			touched[p] = true
 		}
 	}
-	root := d.app.secrets.Get().DriveFolderID
-	for folder := range touched {
-		if folder == root {
-			continue
-		}
-		var r struct {
-			Files []struct {
-				ID string `json:"id"`
-			} `json:"files"`
-		}
-		q := url.QueryEscape(fmt.Sprintf("'%s' in parents and trashed = false", folder))
-		if _, err := d.api("GET", "https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files(id)&q="+q, nil, &r); err == nil && len(r.Files) == 0 {
-			if _, err := d.api("DELETE", "https://www.googleapis.com/drive/v3/files/"+folder, nil, nil); err == nil {
-				d.mu.Lock()
-				for day, id := range d.days {
-					if id == folder {
-						delete(d.days, day)
-					}
-				}
-				d.mu.Unlock()
-			}
-		}
-	}
+	d.removeEmpty(touched)
 	d.mu.Lock()
 	d.usage = driveUsage{Used: used - freed, Files: len(files) - removed, Free: free, Measured: time.Now().UnixMilli()}
 	if free >= 0 {
@@ -805,6 +938,46 @@ func (d *Drive) prune(need int64) error {
 		return errors.New("your Google Drive is full")
 	}
 	return nil
+}
+
+// removeEmpty deletes the folders (camera, then day) that pruning left empty.
+func (d *Drive) removeEmpty(folders map[string]bool) {
+	root := d.app.secrets.Get().DriveFolderID
+	for len(folders) > 0 {
+		parents := map[string]bool{}
+		for folder := range folders {
+			if folder == root || folder == "" {
+				continue
+			}
+			var r struct {
+				Files []struct {
+					ID string `json:"id"`
+				} `json:"files"`
+			}
+			q := url.QueryEscape(fmt.Sprintf("'%s' in parents and trashed = false", folder))
+			if _, err := d.api("GET", "https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files(id)&q="+q, nil, &r); err != nil || len(r.Files) > 0 {
+				continue
+			}
+			var f struct {
+				Parents []string `json:"parents"`
+			}
+			_, _ = d.api("GET", "https://www.googleapis.com/drive/v3/files/"+folder+"?fields=parents", nil, &f)
+			if _, err := d.api("DELETE", "https://www.googleapis.com/drive/v3/files/"+folder, nil, nil); err != nil {
+				continue
+			}
+			d.mu.Lock()
+			for k, id := range d.folders {
+				if id == folder {
+					delete(d.folders, k)
+				}
+			}
+			d.mu.Unlock()
+			for _, p := range f.Parents {
+				parents[p] = true
+			}
+		}
+		folders = parents
+	}
 }
 
 // makeRoom checks the limits before an upload, using the cached usage when it clearly

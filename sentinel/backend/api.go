@@ -145,6 +145,19 @@ func (a *App) Routes(www string) http.Handler {
 		a.labeler.Poke()
 		writeJSON(w, 200, map[string]int{"events": n})
 	})
+	// Why an event got (or didn't get) its labels: checks it again, step by step, without
+	// saving or learning anything.
+	mux.HandleFunc("GET /api/detection/explain/{cam}/{id}", func(w http.ResponseWriter, r *http.Request) {
+		e, ok := a.events.Get(r.PathValue("cam"), r.PathValue("id"))
+		if !ok {
+			writeErr(w, 404, "no such event")
+			return
+		}
+		var steps []string
+		trace := func(format string, args ...any) { steps = append(steps, fmt.Sprintf(format, args...)) }
+		objs, rejected, _, checked := a.labeler.scan(r.Context(), e, scanOpts{dry: true, trace: trace})
+		writeJSON(w, 200, map[string]any{"labels_now": e.Labels, "objects": objs, "rejected": rejected, "frames": checked, "steps": steps})
+	})
 	mux.HandleFunc("GET /api/summary", a.handleSummary)
 	mux.HandleFunc("GET /api/preview/{cam}/{ts}", a.handlePreview)
 	mux.HandleFunc("GET /api/cameras/{id}/latest.jpg", func(w http.ResponseWriter, r *http.Request) {

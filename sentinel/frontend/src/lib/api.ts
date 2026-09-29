@@ -48,6 +48,7 @@ export type Settings = {
     backup_alerts: boolean;
     backup_saved: boolean;
     backup_motion: boolean;
+    motion_who?: "people_animals" | "all";
     motion_cameras: string[];
     quota_gb: number;
     retention_days: number;

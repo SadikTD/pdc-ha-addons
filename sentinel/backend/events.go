@@ -34,9 +34,10 @@ type Event struct {
 // Object is one kind of thing seen in an event, at its clearest moment.
 type Object struct {
 	Label string  `json:"label"`
-	Score float64 `json:"score"` // the verifying model's confidence
-	Box   Rect    `json:"box"`   // normalised to the frame
-	T     int64   `json:"t"`     // unix ms of that frame
+	Score float64 `json:"score"`         // the verifying model's confidence
+	Box   Rect    `json:"box"`           // normalised to the frame
+	T     int64   `json:"t"`             // unix ms of that frame
+	Why   string  `json:"why,omitempty"` // (rejected only) why it didn't count
 }
 
 func (e *Event) Has(label string) bool { return slices.Contains(e.Labels, label) }

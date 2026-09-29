@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,14 +17,16 @@ import (
 // (plain motion). It never watches video: when something moves it looks at a handful of
 // frames of the recording, so it costs a few seconds of CPU per event, at low priority.
 //
-// Being wrong is worse than saying nothing, so a label needs two independent yeses:
+// A label needs two independent yeses:
 //  1. the fast model sees it, in two frames (or very clearly in one), big enough to
-//     judge, outside the camera's ignored areas, not where something person-like already
-//     was before the motion (laundry, a coat, a statue), and not in a spot where
-//     lookalikes keep fooling it (see hotspots.go);
+//     judge and outside the camera's ignored areas; when the whole picture shows nobody,
+//     it looks again zoomed in on where the picture changed (small, distant cats);
 //  2. the big model, looking again at a zoomed-in crop of that spot in full quality,
-//     agrees on what it is (surer for things cut off by the picture's edge). If it sees
-//     a different animal, its answer wins; if it sees nothing, there's no label.
+//     agrees on what it is. It must be surer for things cut off by the picture's edge,
+//     and surer again in a spot where lookalikes fooled detection before (laundry, see
+//     hotspots.go) or for something that was already there before the motion and hasn't
+//     moved (a coat, a statue, someone sitting still). If it sees a different animal, its
+//     answer wins; if it sees nothing, there's no label and the spot is remembered.
 // Events it can't check (no footage) say so instead of guessing.
 
 var watchLabels = []string{"person", "cat", "dog"}
@@ -208,11 +213,17 @@ func (l *Labeler) startLive(ctx context.Context, wg *sync.WaitGroup) {
 // maxLive: events checked at the same time while they happen.
 const maxLive = 4
 
-// sighting is one detection by the fast model, in one frame.
+// sighting is one detection by the fast model, in one frame. hot: in a spot where
+// lookalikes fooled detection before; pre: something was already there before the motion.
 type sighting struct {
-	t time.Time
-	d Detection
+	t   time.Time
+	d   Detection
+	hot bool
+	pre bool
 }
+
+// suspicious: could be a lookalike (unless the thing is seen moving).
+func (s sighting) suspicious(moves bool) bool { return !moves && (s.hot || s.pre) }
 
 func (l *Labeler) label(ctx context.Context, e Event, live, busy bool) {
 	a := l.app
@@ -222,7 +233,7 @@ func (l *Labeler) label(ctx context.Context, e Event, live, busy bool) {
 	l.mu.Unlock()
 	// Marked while checked, so a Rescan meanwhile leaves it (and its picture) alone.
 	a.events.SetScan(e.Cam, e.ID, "scanning", nil, nil, false)
-	objs, rejected, snap, checked := l.scan(ctx, e, live, busy)
+	objs, rejected, snap, checked := l.scan(ctx, e, scanOpts{live: live, busy: busy})
 	scan := "done"
 	if checked == 0 {
 		scan = "none"
@@ -245,9 +256,36 @@ func (l *Labeler) label(ctx context.Context, e Event, live, busy bool) {
 	l.mu.Unlock()
 }
 
+// scanOpts: live = the event is happening now (wait for its footage, tell Home Assistant
+// at once); busy = events are queuing up (look at fewer frames); dry = only explain
+// (nothing saved, nothing learned); trace receives every step when explaining.
+type scanOpts struct {
+	live, busy, dry bool
+	trace           func(format string, args ...any)
+}
+
+func (o scanOpts) log(format string, args ...any) {
+	if o.trace != nil {
+		o.trace(format, args...)
+	}
+}
+
+// Why a sighting was not counted (kept with the event, for review).
+const (
+	whyIgnoredArea = "in an ignored area"
+	whyDisagree    = "the closer look disagreed"
+	whyUnsure      = "not sure enough for a lookalike spot"
+)
+
 // scan looks at the event's frames. checked is how many frames could be looked at;
 // rejected is what the fast model saw but didn't pass the checks (kept for review).
-func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rejected []Object, snap bool, checked int) {
+//
+// Nothing the fast model sees is thrown away unchecked: a sighting in a spot where
+// lookalikes fooled it before (laundry), or of something that was already there before
+// the motion and hasn't moved (a coat, a statue, someone sitting still), only needs the
+// big model to be clearly sure on its closer look. Something that moves between frames is
+// never a lookalike.
+func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected []Object, snap bool, checked int) {
 	a := l.app
 	cam := cameraConfig(a.settings.Get(), e.Cam)
 	size, err := a.detector.Size(modelScan)
@@ -258,9 +296,9 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 	start := time.UnixMilli(e.Start)
 	ctx = lowPriority(ctx)
 
-	// The scene before the motion, at two moments: whatever person-like thing was already
-	// there (laundry, a coat, a statue, a sleeping cat) doesn't count. Only decoded once
-	// something is found (most events are leaves, light and shadows).
+	// The scene before the motion: what was already there (for "hasn't moved") and a
+	// small greyscale picture (to find where it moved, for a zoomed-in look). Only
+	// decoded when needed (most events are leaves, light and shadows).
 	var bgDets []Detection
 	bgDone := false
 	before := func() {
@@ -275,40 +313,52 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 				}
 			}
 		}
+		o.log("scene before the motion: %s", fmtDets(bgDets))
 	}
+	var bgGray []byte
+	grayDone := false
 	mask := maskGrid(cam, shotW, shotH)
-	seen := map[string][]sighting{} // sightings that passed the checks
+	masked := func(b Rect) bool {
+		cx, cy := int((b.X+b.W/2)*shotW), int((b.Y+b.H/2)*shotH)
+		return mask[min(max(cy, 0), shotH-1)*shotW+min(max(cx, 0), shotW-1)]
+	}
+
+	seen := map[string][]sighting{} // candidates per group ("person", "animal")
 	tried := map[string][]time.Time{}
 	done := map[string]bool{}
 	limit := maxFrames
-	if busy {
+	if o.busy {
 		limit = busyFrames
 	}
-	reject := func(label string, s sighting, hits float64) {
-		rejected = append(rejected, Object{Label: label, Score: s.d.Score, Box: s.d.Box, T: s.t.UnixMilli()})
-		if hits > 0 {
+	reject := func(label string, s sighting, why string, hits float64) {
+		rejected = append(rejected, Object{Label: label, Score: s.d.Score, Box: s.d.Box, T: s.t.UnixMilli(), Why: why})
+		if hits > 0 && !o.dry {
 			l.hot.Add(e.Cam, s.d.Box, hits)
 		}
 	}
 
-	confirm := func(o Object, t time.Time) {
-		if i := slices.IndexFunc(objs, func(x Object) bool { return x.Label == o.Label }); i >= 0 {
-			if o.Score > objs[i].Score {
-				objs[i] = o
+	confirm := func(obj Object, t time.Time) {
+		o.log("CONFIRMED %s %.2f at %s", obj.Label, obj.Score, t.Format("15:04:05.0"))
+		if i := slices.IndexFunc(objs, func(x Object) bool { return x.Label == obj.Label }); i >= 0 {
+			if obj.Score > objs[i].Score {
+				objs[i] = obj
 			}
 		} else {
-			objs = append(objs, o)
+			objs = append(objs, obj)
 		}
 		sortObjects(objs)
+		if o.dry {
+			return
+		}
 		// The picture shows the most important thing seen (a person over an animal).
-		if objs[0].T == o.T && objs[0].Label == o.Label {
+		if objs[0].T == obj.T && objs[0].Label == obj.Label {
 			if l.saveSnap(ctx, e, t) {
 				snap = true
 			}
 		}
-		if live {
+		if o.live {
 			ev, _ := a.events.SetScan(e.Cam, e.ID, "scanning", objs, nil, snap)
-			a.ObjectSeen(ev, o.Label)
+			a.ObjectSeen(ev, obj.Label)
 		}
 	}
 
@@ -341,38 +391,39 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 	// enough to ask.
 	decide := func(final bool) bool {
 		asked := false
-		for _, group := range []string{"person", "animal"} {
-			ss := seen[group]
-			if done[group] || len(ss) == 0 || len(tried[group]) >= maxVerify || ctx.Err() != nil {
+		for _, g := range []string{"person", "animal"} {
+			ss := seen[g]
+			if done[g] || len(ss) == 0 || len(tried[g]) >= maxVerify || ctx.Err() != nil {
 				continue
 			}
-			best := bestUntried(ss, tried[group])
+			moves := moved(ss)
+			best := bestUntried(ss, tried[g], moves)
 			if best == nil {
 				continue
 			}
 			edge := atEdge(best.d.Box)
 			switch {
-			case len(tried[group]) > 0: // already asked once: keep asking about new frames
+			case len(tried[g]) > 0: // already asked once: keep asking about new frames
 			case len(ss) >= 2 && !edge:
 			case len(ss) >= 2 && edge && best.d.Score >= scanClear:
 			case len(ss) == 1 && !edge && best.d.Score >= scanClear:
 			case final && len(ss) == 1 && !edge && best.d.Score >= 0.45:
+			case final && len(ss) == 1 && edge && best.d.Score >= scanClear:
 			default:
 				continue // not enough yet
 			}
-			tried[group] = append(tried[group], best.t)
+			tried[g] = append(tried[g], best.t)
 			asked = true
+			suspicious := best.suspicious(moves)
 			v := l.verifyScores(ctx, cam, best.t, best.d.Box)
-			need := func(label string) float64 {
-				if edge {
-					return verifyMin[label] + 0.15
-				}
-				return verifyMin[label]
-			}
+			need := func(label string) float64 { return needScore(label, edge, suspicious) }
 			person := v.score["person"]
 			animal := max(v.score["cat"], v.score["dog"])
+			o.log("closer look at %s %.2f %s (%s%s%s): person %.2f (needs %.2f), cat %.2f, dog %.2f (need %.2f)",
+				best.d.Label, best.d.Score, fmtBox(best.d.Box), when(edge, "at the edge ", ""), when(best.hot, "in a lookalike spot ", ""),
+				when(best.pre && !moves, "was already there", when(moves, "moving", "")), person, need("person"), v.score["cat"], v.score["dog"], need("cat"))
 			switch {
-			case person >= need("person") && person >= animal && (group == "person" || person >= 0.7):
+			case person >= need("person") && person >= animal && (g == "person" || person >= 0.7):
 				// A person (the big model is surer than the fast one's animal guess).
 				if !done["person"] {
 					done["person"] = true
@@ -380,21 +431,47 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 				}
 			case animal >= need("cat") && !done["animal"]:
 				animalChecks++
-				for _, l := range []string{"cat", "dog"} {
-					votes[l] += v.score[l]
-					if o := v.object(l, best.t); o.Score > bestAnimal[l].Score {
-						bestAnimal[l] = o
+				for _, lb := range []string{"cat", "dog"} {
+					votes[lb] += v.score[lb]
+					if ob := v.object(lb, best.t); ob.Score > bestAnimal[lb].Score {
+						bestAnimal[lb] = ob
 					}
 				}
 				decideAnimal(false)
+			case suspicious && max(person, animal) >= verifyMin[best.d.Label]:
+				// Probably real, but in a lookalike spot or not moving: not sure enough.
+				// Not learned from: the big model half agreed.
+				reject(best.d.Label, *best, whyUnsure, 0)
 			default:
-				reject(best.d.Label, *best, 1) // the big model disagrees: remember the spot
+				reject(best.d.Label, *best, whyDisagree, 1) // the big model disagrees: remember the spot
 			}
 		}
 		return asked
 	}
 
-	empty := 0
+	// look adds what the fast model sees in part r of frame f (r = the whole frame, or a
+	// zoomed-in part) as candidates; it reports whether there were any.
+	look := func(t time.Time, dets []Detection) bool {
+		found := false
+		for _, d := range dets {
+			if done[group(d.Label)] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea {
+				continue
+			}
+			s := sighting{t: t, d: d}
+			if masked(d.Box) {
+				reject(d.Label, s, whyIgnoredArea, 0)
+				continue
+			}
+			s.hot = l.hot.Suspect(e.Cam, d.Box)
+			before()
+			s.pre = slices.ContainsFunc(bgDets, func(b Detection) bool { return iou(b.Box, d.Box) >= 0.4 })
+			seen[group(d.Label)] = append(seen[group(d.Label)], s)
+			found = true
+		}
+		return found
+	}
+
+	empty, zooms := 0, 0
 	var off time.Duration
 	for i := 0; i < limit && ctx.Err() == nil; i++ {
 		switch {
@@ -416,7 +493,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 			}
 			t = time.UnixMilli(max(end-300, e.Start)) // a short event: its last moment
 		}
-		if live && !l.waitFootage(ctx, e.Cam, t) {
+		if o.live && !l.waitFootage(ctx, e.Cam, t) {
 			continue
 		}
 		f, err := a.decodeRGB(ctx, e.Cam, t, fullFrame, size)
@@ -429,27 +506,27 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 			break
 		}
 		checked++
-		found := false
-		for _, d := range dets {
-			if done[group(d.Label)] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea {
-				continue
+		o.log("frame +%.1fs: %s", t.Sub(start).Seconds(), fmtDets(dets))
+		found := look(t, dets)
+		// Nothing recognised: look again, zoomed in where the picture changed since before
+		// the motion (a cat far down a corridor is only a few pixels in the whole frame).
+		if !found && zooms < maxZooms && !(done["person"] && done["animal"]) {
+			if !grayDone {
+				grayDone = true
+				bgGray, _ = a.decodeGray(ctx, e.Cam, start.Add(-3*time.Second), shotW, shotH)
 			}
-			cx, cy := int((d.Box.X+d.Box.W/2)*shotW), int((d.Box.Y+d.Box.H/2)*shotH)
-			if mask[min(max(cy, 0), shotH-1)*shotW+min(max(cx, 0), shotW-1)] {
-				continue // in an area the camera ignores
+			if bgGray != nil {
+				if g, err := a.decodeGray(ctx, e.Cam, t, shotW, shotH); err == nil {
+					b := biggestChange(g, bgGray, mask, shotW, shotH)
+					if r := frameRect(b.box); b.size >= minShotBlob && b.changed < 0.5 && r.W*r.H < 0.6 {
+						zooms++
+						if zd, err := a.detectAt(ctx, e.Cam, t, r, modelScan); err == nil {
+							o.log("  zoomed in on %s: %s", fmtBox(r), fmtDets(zd))
+							found = look(t, zd)
+						}
+					}
+				}
 			}
-			s := sighting{t, d}
-			if l.hot.Suspect(e.Cam, d.Box) {
-				reject(d.Label, s, 0) // a known lookalike spot
-				continue
-			}
-			before()
-			if slices.ContainsFunc(bgDets, func(b Detection) bool { return iou(b.Box, d.Box) >= 0.4 }) {
-				reject(d.Label, s, 0.5) // already there before the motion
-				continue
-			}
-			seen[group(d.Label)] = append(seen[group(d.Label)], s)
-			found = true // only real candidates: laundry in a known spot counts as nothing
 		}
 		if found {
 			empty = 0
@@ -469,9 +546,64 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 	}
 	decideAnimal(true)
 	if !done["animal"] && animalChecks > 0 {
-		rejected = append(rejected, Object{Label: "animal (cat or dog unclear)", Score: max(votes["cat"], votes["dog"])})
+		rejected = append(rejected, Object{Label: "animal", Score: max(votes["cat"], votes["dog"]), Why: "cat or dog unclear"})
 	}
 	return objs, rejected, snap, checked
+}
+
+// maxZooms: zoomed-in second looks per event (each costs one more detection).
+const maxZooms = 3
+
+// needScore is how sure the big model must be: surer for something cut off by the
+// picture's edge, and surer again for a lookalike spot or something that hasn't moved.
+func needScore(label string, edge, suspicious bool) float64 {
+	n := verifyMin[label]
+	if edge {
+		n += 0.15
+	}
+	if suspicious {
+		n += 0.2
+	}
+	return min(n, 0.9)
+}
+
+// moved: the sightings (of one group, across frames) show something that moves. Laundry
+// sways in place; a person or a cat goes somewhere.
+func moved(ss []sighting) bool {
+	for i := range ss {
+		for j := i + 1; j < len(ss); j++ {
+			a, b := ss[i].d.Box, ss[j].d.Box
+			dx := (a.X + a.W/2) - (b.X + b.W/2)
+			dy := (a.Y + a.H/2) - (b.Y + b.H/2)
+			scale := max(min(a.W, b.W), min(a.H, b.H))
+			if math.Hypot(dx, dy) > 0.6*scale && iou(a, b) < 0.4 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func when(c bool, a, b string) string {
+	if c {
+		return a
+	}
+	return b
+}
+
+func fmtBox(b Rect) string {
+	return fmt.Sprintf("@%.2f,%.2f %.2fx%.2f", b.X, b.Y, b.W, b.H)
+}
+
+func fmtDets(ds []Detection) string {
+	if len(ds) == 0 {
+		return "nothing"
+	}
+	parts := []string{}
+	for _, d := range ds {
+		parts = append(parts, fmt.Sprintf("%s %.2f %s", d.Label, d.Score, fmtBox(d.Box)))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // atEdge: the box touches the picture's border (only part of it is visible, which is
@@ -480,13 +612,26 @@ func atEdge(b Rect) bool {
 	return b.X < 0.01 || b.Y < 0.01 || b.X+b.W > 0.99 || b.Y+b.H > 0.99
 }
 
-func bestUntried(ss []sighting, tried []time.Time) *sighting {
+// bestUntried is the clearest sighting not asked about yet, preferring ones that can't be
+// a lookalike.
+func bestUntried(ss []sighting, tried []time.Time, moves bool) *sighting {
 	var best *sighting
 	for i := range ss {
 		if slices.ContainsFunc(tried, ss[i].t.Equal) {
 			continue
 		}
-		if best == nil || ss[i].d.Score > best.d.Score {
+		if best == nil {
+			best = &ss[i]
+			continue
+		}
+		si, sb := ss[i].suspicious(moves), best.suspicious(moves)
+		if si != sb {
+			if !si {
+				best = &ss[i]
+			}
+			continue
+		}
+		if ss[i].d.Score > best.d.Score {
 			best = &ss[i]
 		}
 	}
@@ -524,9 +669,9 @@ func (l *Labeler) verifyScores(ctx context.Context, cam Camera, t time.Time, box
 }
 
 // verify (for night alerts) says what the big model sees at the spot, if it's sure
-// enough (surer for something cut off by the picture's edge, and clearly one animal
-// rather than the other).
-func (l *Labeler) verify(ctx context.Context, cam Camera, t time.Time, box Rect, edge bool) (Object, bool) {
+// enough (surer for something cut off by the picture's edge or in a lookalike spot, and
+// clearly one animal rather than the other).
+func (l *Labeler) verify(ctx context.Context, cam Camera, t time.Time, box Rect, edge, suspicious bool) (Object, bool) {
 	v := l.verifyScores(ctx, cam, t, box)
 	best := ""
 	for _, label := range watchLabels {
@@ -534,11 +679,7 @@ func (l *Labeler) verify(ctx context.Context, cam Camera, t time.Time, box Rect,
 			best = label
 		}
 	}
-	need := verifyMin[best]
-	if edge {
-		need += 0.15
-	}
-	if v.score[best] < need {
+	if v.score[best] < needScore(best, edge, suspicious) {
 		return Object{}, false
 	}
 	if best != "person" && v.score["cat"] > 0 && v.score["dog"] > 0 && max(v.score["cat"], v.score["dog"]) < 1.5*min(v.score["cat"], v.score["dog"]) {

@@ -15,6 +15,8 @@ type Secrets struct {
 	DriveRefreshToken string `json:"drive_refresh_token,omitempty"`
 	DriveAccount      string `json:"drive_account,omitempty"`
 	DriveFolderID     string `json:"drive_folder_id,omitempty"`
+	// 2 = Sentinel/<day>/<camera>/ (older backups were all in Sentinel/<day>/).
+	DriveLayout int `json:"drive_layout,omitempty"`
 	// Firebase (push notifications to the Sentinel app): service account key and the
 	// app's public config.
 	FirebaseAccount string `json:"firebase_account,omitempty"`
