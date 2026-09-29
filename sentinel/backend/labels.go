@@ -135,6 +135,7 @@ func (l *Labeler) Run(ctx context.Context) {
 			// Nothing happening: catch up on older events, newest first.
 			if old := l.app.events.Unscanned(time.Now().Add(-backfillWindow).UnixMilli(), 1); len(old) > 0 {
 				e := old[0]
+				began := time.Now()
 				l.app.events.SetScan(e.Cam, e.ID, "scanning", nil, nil, false) // not picked twice
 				backfilling = true
 				done := make(chan struct{})
@@ -156,7 +157,18 @@ func (l *Labeler) Run(ctx context.Context) {
 					}
 				}
 				backfilling = false
-				sleepCtx(ctx, 200*time.Millisecond) // background work: leave room
+				// Background work: rest twice as long as it took, so catching up never
+				// takes more than a third of the time (live events aren't held back).
+				for rest := time.After(2 * time.Since(began)); ; {
+					select {
+					case <-l.wake:
+						l.startLive(ctx, &wg) // live events don't wait for the rest to end
+						continue
+					case <-rest:
+					case <-ctx.Done():
+					}
+					break
+				}
 				continue
 			}
 		}
@@ -422,7 +434,6 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 			if done[group(d.Label)] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea {
 				continue
 			}
-			found = true
 			cx, cy := int((d.Box.X+d.Box.W/2)*shotW), int((d.Box.Y+d.Box.H/2)*shotH)
 			if mask[min(max(cy, 0), shotH-1)*shotW+min(max(cx, 0), shotW-1)] {
 				continue // in an area the camera ignores
@@ -438,11 +449,15 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 				continue
 			}
 			seen[group(d.Label)] = append(seen[group(d.Label)], s)
+			found = true // only real candidates: laundry in a known spot counts as nothing
 		}
 		if found {
 			empty = 0
 		} else {
 			empty++
+		}
+		if empty >= 2*emptyFrames && checked >= 2*emptyFrames {
+			break // a long event with nobody in it (wind, rain, light)
 		}
 		decide(false)
 		if done["person"] && done["animal"] {
