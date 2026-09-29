@@ -29,6 +29,7 @@ type App struct {
 	incidents *IncidentLog
 	go2rtc    *Go2RTC
 	mqtt      *MQTT
+	remote    *Remote
 	started   time.Time
 	heartbeat atomic.Int64
 

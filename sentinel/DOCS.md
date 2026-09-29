@@ -129,6 +129,28 @@ Sentinel uses the `drive.file` permission, so it can only see the files it uploa
 (into a "Sentinel" folder). Uploads resume after network drops, and old backups can be
 removed from Drive automatically.
 
+## Sentinel app (Android)
+
+The Sentinel app shows everything the Sentinel pages do, on your phone: live cameras,
+recordings with the scrubbing timeline, events, clips and system health. It works
+at home and from anywhere, with no port forwarding, VPN or other add-on:
+
+- **At home** the app connects straight to Sentinel over Wi-Fi.
+- **Away** it connects directly to Sentinel across the internet: both sides find each
+  other through a tiny introducer (a Cloudflare Worker that only swaps addresses) and
+  open a path through the routers (UDP hole punching). Video goes phone ↔ Sentinel and
+  never passes through anyone else's server.
+- Everything is **end-to-end encrypted** (QUIC with TLS 1.3). The app checks
+  Sentinel's key against its **Sentinel ID**, so nobody can pretend to be your Sentinel.
+- **Accounts:** under Settings → Sentinel app, add a user for each person (username and
+  password). Viewers can be limited to some cameras; admins can also delete clips,
+  restart cameras and see the system log. Each signed-in phone is listed and can be
+  signed out on its own. Five wrong passwords lock the username for a growing time.
+
+Setup: install the app (APK from the GitHub releases), then log in. At home the app
+finds Sentinel by itself; elsewhere, scan the QR code or type the Sentinel ID shown in
+Settings. Sentinel uses UDP port 8555 on the Home Assistant host.
+
 ## Home Assistant dashboard card
 
 Sentinel installs a dashboard card at `/local/sentinel/sentinel-card.js`. Add it as a

@@ -84,7 +84,10 @@ func main() {
 	incidents.Add("info", "", "Sentinel %s started with %d camera(s)", version, len(s.Cameras))
 	go app.Background()
 
-	srv := &http.Server{Addr: listen, Handler: app.Routes(www), ReadHeaderTimeout: 10 * time.Second}
+	app.remote = app.newRemote(configDir)
+	routes := app.Routes(www)
+	app.remote.Start(routes)
+	srv := &http.Server{Addr: listen, Handler: routes, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http: %v", err)

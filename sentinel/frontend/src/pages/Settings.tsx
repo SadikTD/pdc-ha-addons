@@ -5,6 +5,7 @@ import { Bell, Camera as CamIcon, CheckCircle2, Eye, EyeOff, HardDrive, Loader2,
 import { Button, Card, Empty, Field, IconButton, PageHeader, SectionTitle, StatePill, Toggle, inputCls, recState } from "../components/ui";
 import { ZoneSummary, rectToZone } from "../components/ZoneEditor";
 import { DriveCard, NightAlertsCard } from "../components/AlertsSettings";
+import { AppAccessCard } from "../components/AppAccess";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { api, type Camera, type Settings, type StreamInfo } from "../lib/api";
@@ -156,6 +157,8 @@ export function SettingsPage() {
         <NightAlertsCard draft={draft} set={set} cameras={saved.cameras} />
         <DriveCard draft={draft} set={set} cameras={saved.cameras} />
       </div>
+
+      <AppAccessCard cameras={saved.cameras} />
 
       <AnimatePresence>
         {dirty && (

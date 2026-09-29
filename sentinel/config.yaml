@@ -1,5 +1,5 @@
 name: Sentinel
-version: "1.7.1"
+version: "1.8.0"
 slug: sentinel
 description: Reliable 24/7 camera recorder (NVR) with motion detection and a modern UI
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/sentinel
@@ -13,6 +13,11 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:cctv
 panel_title: Sentinel
+# The Sentinel app (Android): QUIC, end-to-end encrypted, only app users can log in.
+ports:
+  8555/udp: 8555
+ports_description:
+  8555/udp: Sentinel app
 # Motion/recording sensors and snapshot cameras via the Mosquitto add-on (optional).
 services:
   - mqtt:want

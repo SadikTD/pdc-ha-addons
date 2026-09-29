@@ -162,6 +162,17 @@ export type Clip = {
   alert?: boolean;
   backup?: { state: "pending" | "uploading" | "done" | "failed"; progress: number; file_id?: string; error?: string; at: number; tries: number };
 };
+export type AppUser = { id: string; username: string; name: string; admin: boolean; cameras: string[]; disabled: boolean; created: number; last_login: number };
+export type AppUserInput = Partial<{ username: string; name: string; password: string; admin: boolean; cameras: string[]; disabled: boolean }>;
+export type AppSession = { id: string; user_id: string; username: string; device: string; created: number; last_seen: number; addr: string; via: string; push: boolean };
+export type AppStatus = {
+  id?: string;
+  port: number;
+  error: string;
+  users: number;
+  lan?: string[];
+  host?: { online: boolean; public: string; error: string; since: number; connects: number; last_app: number; public_err: string };
+};
 export type Incident = { t: number; level: "info" | "warn" | "error"; camera?: string; message: string };
 
 // timeoutMs aborts a request that hangs (e.g. the connection dropped mid-way).
@@ -224,6 +235,13 @@ export const api = {
   driveConnect: (client_id: string, client_secret: string) =>
     request<{ user_code: string; url: string; expires: number }>("POST", "api/drive/connect", { client_id, client_secret }),
   driveDisconnect: () => request<{ ok: boolean }>("POST", "api/drive/disconnect"),
+  appStatus: () => request<AppStatus>("GET", "api/app/status"),
+  appUsers: () => request<AppUser[]>("GET", "api/app/users"),
+  createAppUser: (u: AppUserInput) => request<AppUser>("POST", "api/app/users", u),
+  updateAppUser: (id: string, u: AppUserInput) => request<AppUser>("PATCH", `api/app/users/${id}`, u),
+  deleteAppUser: (id: string) => request<{ ok: boolean }>("DELETE", `api/app/users/${id}`),
+  appSessions: () => request<AppSession[]>("GET", "api/app/sessions"),
+  deleteAppSession: (id: string) => request<{ ok: boolean }>("DELETE", `api/app/sessions/${id}`),
   deleteRecordings: (id: string) => request<{ ok: boolean }>("DELETE", `api/recordings/${id}`),
 };
 

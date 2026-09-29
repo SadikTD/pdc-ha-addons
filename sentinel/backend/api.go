@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,7 +81,7 @@ func (a *App) Routes(www string) http.Handler {
 	mux.HandleFunc("GET /api/clips", func(w http.ResponseWriter, r *http.Request) {
 		out := []Clip{}
 		for _, c := range a.clips.List() {
-			if !c.Auto {
+			if !c.Auto && camAllowed(r, c.Camera) {
 				out = append(out, c)
 			}
 		}
@@ -204,6 +205,9 @@ func (a *App) Routes(www string) http.Handler {
 		a.store.DeleteCamera(id)
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
+	if a.remote != nil {
+		a.remote.panelRoutes(mux)
+	}
 	mux.Handle("/go2rtc/", a.go2rtc.Proxy())
 
 	// The single-page app; hashed assets can be cached forever.
@@ -237,6 +241,9 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	var cams []CameraStatus
 	a.mu.Lock()
 	for _, c := range s.Cameras {
+		if !camAllowed(r, c.ID) {
+			continue
+		}
 		cs := CameraStatus{Camera: c, Storage: stats[c.ID], LastEvent: a.events.Last(c.ID)}
 		cs.MainURL, cs.SubURL = redact(c.MainURL), redact(c.SubURL)
 		if rec := a.recorders[c.ID]; rec != nil {
@@ -422,6 +429,18 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 500
+	}
+	if u := appUser(r); u != nil {
+		if len(cams) == 0 {
+			for _, c := range a.settings.Get().Cameras {
+				cams = append(cams, c.ID)
+			}
+		}
+		cams = slices.DeleteFunc(cams, func(c string) bool { return !u.CanSee(c) })
+		if len(cams) == 0 {
+			writeJSON(w, 200, []Event{})
+			return
+		}
 	}
 	writeJSON(w, 200, a.events.List(cams, from.UnixMilli(), to.UnixMilli(), limit))
 }
