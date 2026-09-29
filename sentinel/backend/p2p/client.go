@@ -42,6 +42,9 @@ type DialConfig struct {
 	// NoRelay: direct paths only. RelayOnly: skip direct paths (for testing).
 	NoRelay   bool
 	RelayOnly bool
+	// RelayHeadStart overrides relayHeadStart (negative: try the relay at once, e.g. on a
+	// network where it was needed before).
+	RelayHeadStart time.Duration
 }
 
 // relayHeadStart: how long direct paths get before the relay is tried. At home and on
@@ -141,7 +144,11 @@ func Dial(ctx context.Context, cfg DialConfig) (*DialResult, error) {
 			case useRelay:
 				go func() {
 					// Give direct paths a head start; stop waiting once they've all failed.
-					deadline := time.Now().Add(relayHeadStart)
+					head := relayHeadStart
+					if cfg.RelayHeadStart != 0 {
+						head = max(cfg.RelayHeadStart, 0)
+					}
+					deadline := time.Now().Add(head)
 					for time.Now().Before(deadline) && ctx.Err() == nil {
 						mu.Lock()
 						left := directLeft

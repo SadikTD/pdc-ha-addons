@@ -27,6 +27,9 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.MonitorHeart
+import androidx.compose.material.icons.rounded.Refresh
+import kotlinx.coroutines.launch
+import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
@@ -63,12 +66,13 @@ import app.sentinel.ui.components.glass
 import app.sentinel.ui.theme.C
 
 @Composable
-fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onSystem: () -> Unit, onSettings: () -> Unit) {
+fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onSystem: () -> Unit, onSettings: () -> Unit, onNotifications: () -> Unit) {
     val auth by state.auth.collectAsStateWithLifecycle()
     val status by state.status.collectAsStateWithLifecycle()
     val conn by state.engine.state.collectAsStateWithLifecycle()
     val a = auth as? Auth.LoggedIn ?: return
     var confirmLogout by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -100,12 +104,22 @@ fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onS
                 }
                 Gap(10.dp)
                 InfoLine("Sentinel ID", Engine.formatId(a.serverId), mono = true)
-                InfoLine("Connection", when (conn.path) { "home" -> "Direct, on your home network"; "internet" -> "Direct over the internet (end-to-end encrypted)"; else -> conn.state })
+                InfoLine("Connection", when (conn.path) { "home" -> "Direct, home network"; "internet" -> "Direct, over the internet"; "relay" -> "Through the relay"; else -> conn.state })
+                if (conn.path == "relay") Text(
+                    "This network blocks direct connections, so traffic goes through a fast relay. It stays end-to-end encrypted.",
+                    color = C.TextFaint, fontSize = 12.sp, modifier = Modifier.padding(bottom = 4.dp),
+                )
                 status?.let { InfoLine("Sentinel version", it.version) ; InfoLine("Running for", fmtDuration(it.uptimeMs)) }
                 InfoLine("App version", BuildConfig.VERSION_NAME)
+                Gap(10.dp)
+                app.sentinel.ui.components.SubtleButton("Reconnect", Modifier.fillMaxWidth(), icon = Icons.Rounded.Refresh) {
+                    state.engine.reconnect()
+                    scope.launch { state.engine.connect(); state.refreshStatus() }
+                }
             }
         }
         Gap(16.dp)
+        MenuItem(Icons.Rounded.Notifications, "Notifications", "Night alerts, camera problems, motion", onNotifications)
         MenuItem(Icons.Rounded.MonitorHeart, "System", "Health, storage, recorders${if (a.user.admin) ", activity log" else ""}", onSystem)
         if (a.user.admin) MenuItem(Icons.Rounded.Group, "Users", "Who can use the app, and signed-in phones", onUsers)
         MenuItem(Icons.Rounded.Tune, "App settings", "Layout, data saver, app lock, camera order", onSettings)

@@ -86,6 +86,8 @@ import app.sentinel.ui.screens.EventsScreen
 import app.sentinel.ui.screens.LiveScreen
 import app.sentinel.ui.screens.LoginScreen
 import app.sentinel.ui.screens.MoreScreen
+import app.sentinel.ui.screens.NotificationsScreen
+import app.sentinel.ui.screens.NotificationPrompt
 import app.sentinel.ui.screens.SettingsScreen
 import app.sentinel.ui.screens.SystemScreen
 import app.sentinel.ui.screens.TimelineScreen
@@ -138,6 +140,7 @@ object Routes {
     const val Users = "users"
     const val System = "system"
     const val Settings = "settings"
+    const val Notifications = "notifications"
     fun camera(id: String, t: Long? = null) = "camera/$id" + (if (t != null) "?t=$t" else "")
 }
 
@@ -173,6 +176,7 @@ private fun MainNav(state: AppState) {
         composable(Routes.Users) { UsersScreen(state, onBack = { nav.popBackStack() }) }
         composable(Routes.System) { SystemScreen(state, onBack = { nav.popBackStack() }, onOpenCamera = { nav.navigate(Routes.camera(it)) }) }
         composable(Routes.Settings) { SettingsScreen(state, onBack = { nav.popBackStack() }) }
+        composable(Routes.Notifications) { NotificationsScreen(state, onBack = { nav.popBackStack() }) }
     }
 }
 
@@ -207,10 +211,11 @@ private fun Tabs(state: AppState, nav: NavHostController) {
                 1 -> EventsScreen(state, padding, openCamera)
                 2 -> TimelineScreen(state, padding, openCamera)
                 3 -> ClipsScreen(state, padding)
-                else -> MoreScreen(state, padding, onUsers = { nav.navigate(Routes.Users) }, onSystem = { nav.navigate(Routes.System) }, onSettings = { nav.navigate(Routes.Settings) })
+                else -> MoreScreen(state, padding, onUsers = { nav.navigate(Routes.Users) }, onSystem = { nav.navigate(Routes.System) }, onSettings = { nav.navigate(Routes.Settings) }, onNotifications = { nav.navigate(Routes.Notifications) })
             }
         }
         TabBar(tab, Modifier.align(Alignment.BottomCenter)) { tab = it }
+        NotificationPrompt(state)
     }
 }
 

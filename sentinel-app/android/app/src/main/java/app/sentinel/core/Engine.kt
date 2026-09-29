@@ -72,7 +72,7 @@ class Engine(context: Context) {
         runCatching { tunnel.connect() }
     }
 
-    fun reconnect() = scope.launch { tunnel.reconnect() }
+    fun reconnect() = tunnel.reconnect()
 
     suspend fun discover(): List<Found> = withContext(Dispatchers.IO) {
         runCatching { json.decodeFromString<List<Found>>(Tunnel.discover(localIPv4().firstOrNull() ?: "", 1600)) }.getOrDefault(emptyList())
@@ -95,6 +95,7 @@ class Engine(context: Context) {
                 val changed = currentNetwork != null && currentNetwork != network
                 currentNetwork = network
                 tunnel.setLocalIPs(localIPv4(cm.getLinkProperties(network)).joinToString(","))
+                tunnel.setNetwork(networkKey(cm, network))
                 if (changed) reconnect()
             }
 
@@ -108,6 +109,20 @@ class Engine(context: Context) {
                 if (network == currentNetwork) currentNetwork = null
             }
         })
+    }
+
+    /**
+     * A name for the network the phone is on (Wi-Fi by its gateway, mobile data by
+     * carrier), so the engine remembers where only the relay works.
+     */
+    private fun networkKey(cm: ConnectivityManager, network: Network): String {
+        val nc = cm.getNetworkCapabilities(network)
+        if (nc?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) {
+            val tm = app.getSystemService(android.telephony.TelephonyManager::class.java)
+            return "cell:" + (runCatching { tm?.networkOperator }.getOrNull() ?: "")
+        }
+        val gw = cm.getLinkProperties(network)?.routes?.firstOrNull { it.isDefaultRoute && it.gateway != null }?.gateway?.hostAddress
+        return "net:" + (gw ?: "")
     }
 
     val isOnWifi: Boolean

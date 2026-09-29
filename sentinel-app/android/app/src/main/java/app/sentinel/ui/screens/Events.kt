@@ -95,7 +95,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
             2 -> now - 3 * DAY
             else -> now - 7 * DAY
         }
-        runCatching { state.api.events(camFilter?.let { listOf(it) } ?: emptyList(), from, null, 800) }
+        runCatching { state.api.events(camFilter?.let { listOf(it) } ?: emptyList(), from, null, LIMIT) }
             .onSuccess { events = it.sortedByDescending { e -> e.start } }
     }
     LaunchedEffect(range, camFilter) {
@@ -108,7 +108,10 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
 
     val minPeak = when (size) { 1 -> 3.0; 2 -> 10.0; else -> 0.0 }
     val list = events?.filter { it.peak >= minPeak }
-    val grouped = list?.groupBy { startOfDay(it.start) }?.toSortedMap(compareByDescending { it })
+    // Back-to-back motion on one camera is one activity (a person walking through
+    // trips the detector several times).
+    val activities = list?.let { groupActivities(it) }
+    val grouped = activities?.groupBy { startOfDay(it.start) }?.toSortedMap(compareByDescending { it })
 
     PullToRefreshBox(refreshing, onRefresh = { scope.launch { refreshing = true; load(); refreshing = false } }, modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
@@ -122,7 +125,10 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Events", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
-                        if (list != null) Text("${list.size}${if ((events?.size ?: 0) >= 800) "+" else ""} motion${if (list.size == 1) "" else "s"}", color = C.TextDim, fontSize = 13.sp)
+                        if (activities != null) Text(
+                            "${activities.size} activit${if (activities.size == 1) "y" else "ies"} · ${list.size}${if ((events?.size ?: 0) >= LIMIT) "+" else ""} motions",
+                            color = C.TextDim, fontSize = 13.sp,
+                        )
                     }
                     Gap(12.dp)
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -150,16 +156,45 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
                         Text("  ${evs.size}", color = C.TextFaint, fontSize = 13.sp)
                     }
                 }
-                items(evs, key = { "${it.camera}/${it.id}" }) { e ->
-                    EventCard(state, e, names[e.camera] ?: e.camera, aspects[e.camera] ?: (16f / 9f)) { openCamera(e.camera, e.start - 2000) }
+                items(evs, key = { "${it.first.camera}/${it.first.id}" }) { a ->
+                    EventCard(state, a, names[a.first.camera] ?: a.first.camera, aspects[a.first.camera] ?: (16f / 9f)) { openCamera(a.first.camera, a.start - 2000) }
                 }
             }
         }
     }
 }
 
+private const val LIMIT = 3000
+
+/** Motion on one camera with less than 90 s between events. */
+private data class Activity(val events: List<SentinelEvent>) {
+    val first get() = events.first() // the newest, whose picture is shown
+    val start get() = events.minOf { it.start }
+    val end get() = if (events.any { it.ongoing }) 0L else events.maxOf { it.end }
+    val peak get() = events.maxOf { it.peak }
+    val ongoing get() = events.any { it.ongoing }
+}
+
+private fun groupActivities(list: List<SentinelEvent>): List<Activity> {
+    val out = ArrayList<Activity>()
+    val open = HashMap<String, MutableList<SentinelEvent>>()
+    // Newest first: an event joins its camera's current group if it ended within 90 s
+    // of that group's oldest start.
+    for (e in list.sortedByDescending { it.start }) {
+        val g = open[e.camera]
+        if (g != null && g.last().start - e.endOr(e.start) < 90_000 && g.first().start - e.start < 10 * 60_000) g += e
+        else {
+            val n = mutableListOf(e)
+            open[e.camera] = n
+            out += Activity(n)
+        }
+    }
+    return out.sortedByDescending { it.first.start }
+}
+
 @Composable
-private fun EventCard(state: AppState, e: SentinelEvent, camName: String, aspect: Float, onClick: () -> Unit) {
+private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Float, onClick: () -> Unit) {
+    val e = a.first
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     Column(Modifier.scale(if (pressed) 0.97f else 1f).clip(RoundedCornerShape(16.dp)).clickable(interaction, null, onClick = onClick)) {
@@ -168,20 +203,24 @@ private fun EventCard(state: AppState, e: SentinelEvent, camName: String, aspect
             Box(Modifier.fillMaxWidth().height(40.dp).align(Alignment.BottomCenter).background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xAA000000)))))
             Row(Modifier.align(Alignment.BottomStart).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                Text(if (e.ongoing) "now" else fmtDuration(e.end - e.start), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text(if (a.ongoing) "now" else fmtDuration(a.end - a.start), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             }
-            if (e.ongoing) Text(
+            if (a.events.size > 1) Text(
+                "×${a.events.size}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.TopStart).padding(8.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xAA000000)).padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            if (a.ongoing) Text(
                 "LIVE", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(6.dp)).background(C.Amber).padding(horizontal = 6.dp, vertical = 2.dp),
             )
             // Motion strength
             Box(Modifier.align(Alignment.BottomEnd).padding(10.dp).size(width = 36.dp, height = 4.dp).clip(CircleShape).background(Color(0x55FFFFFF))) {
-                Box(Modifier.fillMaxSize().fillMaxWidth((e.peak.toFloat() / 25f).coerceIn(0.08f, 1f)).clip(CircleShape).background(C.Amber))
+                Box(Modifier.fillMaxSize().fillMaxWidth((a.peak.toFloat() / 25f).coerceIn(0.08f, 1f)).clip(CircleShape).background(C.Amber))
             }
         }
         Row(Modifier.padding(top = 7.dp, start = 2.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(camName, color = C.Text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text(fmtTime(e.start), color = C.TextDim, fontSize = 12.sp)
+            Text(if (a.events.size > 1) "${fmtTime(a.start)}–${fmtTime(if (a.ongoing) e.start else a.end)}" else fmtTime(a.start), color = C.TextDim, fontSize = 12.sp, maxLines = 1)
         }
     }
 }

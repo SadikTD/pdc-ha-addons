@@ -217,7 +217,11 @@ fun StatePill(state: String, compact: Boolean = false) {
 @Composable
 fun ConnectionPill(st: TunnelState, modifier: Modifier = Modifier) {
     val (label, color) = when (st.state) {
-        "connected" -> (if (st.path == "home") "Home" else "Internet") + (if (st.rttMs > 0) " · ${st.rttMs} ms" else "") to C.Emerald
+        "connected" -> when (st.path) {
+            "home" -> "Home"
+            "relay" -> "Relay"
+            else -> "Direct"
+        } + (if (st.rttMs > 0) " · ${st.rttMs} ms" else "") to (if (st.path == "relay") C.Cyan else C.Emerald)
         "connecting" -> "Connecting…" to C.Sky
         "offline" -> "Offline" to C.Rose
         else -> "Standby" to C.TextDim

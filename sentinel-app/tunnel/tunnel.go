@@ -49,6 +49,7 @@ type Tunnel struct {
 	secret     string
 	gen        int // bumps on Reconnect so stale connections are dropped
 	relayOnly  bool
+	network    string // which network the phone is on (set by the app)
 }
 
 // State as JSON for the app: {"state":"connecting|connected|offline|idle", …}.
@@ -218,6 +219,9 @@ func (t *Tunnel) ensure(ctx context.Context) (*quic.Conn, error) {
 			t.ep = ep
 		}
 		cfg := p2p.DialConfig{ID: t.id, Introducer: t.introducer, Hints: t.loadHints(), Endpoint: t.ep, LocalIPs: slices.Clone(t.localIPs), RelayOnly: t.relayOnly}
+		if t.network != "" && slices.Contains(t.loadRelayNets(), t.network) {
+			cfg.RelayHeadStart = -1 // this network needed the relay last time
+		}
 		t.state = State{State: "connecting", Since: now()}
 		t.mu.Unlock()
 
@@ -248,6 +252,7 @@ func (t *Tunnel) ensure(ctx context.Context) (*quic.Conn, error) {
 		}
 		t.state = State{State: "connected", Path: path, Addr: res.Addr, Since: now()}
 		t.saveHints(res)
+		t.rememberNetwork(res.Relay)
 		close(ch)
 		c := res.Conn
 		t.mu.Unlock()
@@ -448,4 +453,40 @@ func (t *Tunnel) SetRelayOnly(on bool) {
 	t.relayOnly = on
 	t.dropLocked("")
 	t.mu.Unlock()
+}
+
+// SetNetwork tells the engine which network the phone is on (e.g. "wifi:<id>" or
+// "cell"), so it remembers where only the relay works and uses it at once there.
+func (t *Tunnel) SetNetwork(key string) {
+	t.mu.Lock()
+	t.network = key
+	t.mu.Unlock()
+}
+
+func (t *Tunnel) relayNetsPath() string { return filepath.Join(t.dataDir, "relay-networks.json") }
+
+func (t *Tunnel) loadRelayNets() []string {
+	var nets []string
+	if b, err := os.ReadFile(t.relayNetsPath()); err == nil {
+		json.Unmarshal(b, &nets)
+	}
+	return nets
+}
+
+func (t *Tunnel) rememberNetwork(relay bool) {
+	if t.network == "" {
+		return
+	}
+	nets := t.loadRelayNets()
+	has := slices.Contains(nets, t.network)
+	switch {
+	case relay && !has:
+		nets = append(nets, t.network)
+	case !relay && has:
+		nets = slices.DeleteFunc(nets, func(n string) bool { return n == t.network })
+	default:
+		return
+	}
+	b, _ := json.Marshal(nets)
+	os.WriteFile(t.relayNetsPath(), b, 0o600)
 }

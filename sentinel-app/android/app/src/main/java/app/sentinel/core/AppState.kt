@@ -31,6 +31,8 @@ data class AppPrefs(
     val keepScreenOn: Boolean = true,
     val cameraOrder: List<String> = emptyList(),
     val hidden: Set<String> = emptySet(),
+    val tipsSeen: Boolean = false,
+    val askedNotifications: Boolean = false,
 )
 
 sealed interface Auth {
@@ -58,6 +60,8 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
         val screenOn = booleanPreferencesKey("keep_screen_on")
         val order = stringPreferencesKey("camera_order")
         val hidden = stringPreferencesKey("hidden")
+        val tips = booleanPreferencesKey("tips_seen")
+        val asked = booleanPreferencesKey("asked_notifications")
     }
 
     private val _auth = MutableStateFlow<Auth>(Auth.Loading)
@@ -88,6 +92,8 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
         keepScreenOn = this[K.screenOn] ?: true,
         cameraOrder = this[K.order]?.split(",")?.filter { it.isNotBlank() } ?: emptyList(),
         hidden = this[K.hidden]?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet(),
+        tipsSeen = this[K.tips] ?: false,
+        askedNotifications = this[K.asked] ?: false,
     )
 
     init {
@@ -203,6 +209,8 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
             it[K.screenOn] = n.keepScreenOn
             it[K.order] = n.cameraOrder.joinToString(",")
             it[K.hidden] = n.hidden.joinToString(",")
+            it[K.tips] = n.tipsSeen
+            it[K.asked] = n.askedNotifications
         }
     }
 

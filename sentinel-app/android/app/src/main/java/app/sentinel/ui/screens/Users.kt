@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -162,8 +164,9 @@ private fun UserSheet(state: AppState, user: AppUser?, isMe: Boolean, onDismiss:
     var busy by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
+    val navBottom = androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     ModalBottomSheet(onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = C.Ink850) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).imePadding().navigationBarsPadding()) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).imePadding().padding(bottom = navBottom)) {
             Text(if (user == null) "Add user" else "Edit ${user.username}", style = MaterialTheme.typography.titleLarge)
             Gap(16.dp)
             OutlinedTextField(username, { username = it.lowercase().filter { c -> c.isLetterOrDigit() || c in "._-" }.take(32) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp))

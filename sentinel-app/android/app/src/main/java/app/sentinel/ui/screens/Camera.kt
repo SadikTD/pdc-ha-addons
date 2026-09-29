@@ -57,7 +57,13 @@ import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.SensorsOff
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Hd
+import androidx.compose.material.icons.rounded.Sd
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.TipsAndUpdates
+import androidx.compose.material.icons.rounded.ZoomIn
+import androidx.compose.material.icons.rounded.ZoomOut
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -187,6 +193,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
     var playTime by remember { mutableLongStateOf(startAt ?: state.serverNow()) }
     var muted by remember { mutableStateOf(true) }
     var speed by remember { mutableFloatStateOf(1f) }
+    var hd by remember { mutableStateOf(!prefs.dataSaver) }
     var clipRange by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var savingClip by remember { mutableStateOf(false) }
     var showGoTo by remember { mutableStateOf(false) }
@@ -220,17 +227,17 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
     LaunchedEffect(cam.id) { if (startAt != null) seekTo(startAt) }
 
     // Live players run only while live and the screen is visible (or in picture-in-picture).
-    LifecycleStartEffect(live, cam.id, prefs.dataSaver) {
+    LifecycleStartEffect(live, cam.id, hd) {
         if (live) {
             sub.play(api.liveUrl(cam.id, hq = false))
-            if (!prefs.dataSaver) main.play(api.liveUrl(cam.id, hq = true))
+            if (hd) main.play(api.liveUrl(cam.id, hq = true)) else main.stop()
         } else {
             sub.stop(); main.stop()
         }
         onStopOrDispose { if (!activity.inPip) { sub.stop(); main.stop() } }
     }
     // Once full quality plays, the substream isn't needed.
-    LaunchedEffect(mainUi.firstFrame) { if (mainUi.firstFrame) sub.stop() }
+    LaunchedEffect(mainUi.firstFrame, hd) { if (hd && mainUi.firstFrame) sub.stop() }
     LaunchedEffect(muted, live) {
         sub.muted = muted; main.muted = muted; rec.muted = muted
     }
@@ -300,15 +307,14 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
     }
     DisposableEffect(Unit) { onDispose { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED } }
     BackHandler(landscape) { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
-    // Controls fade out in fullscreen when not touched.
-    LaunchedEffect(landscape, lastTouch, controlsVisible) {
-        if (landscape && controlsVisible && !tl.scrubbing) {
-            delay(4000)
+    val playing = if (live) true else recUi.playing
+    // Controls on the picture fade out while it plays and nobody touches it.
+    LaunchedEffect(landscape, lastTouch, controlsVisible, playing) {
+        if (controlsVisible && playing && !tl.scrubbing) {
+            delay(if (landscape) 4000 else 3000)
             controlsVisible = false
         }
     }
-
-    val playing = if (live) true else recUi.playing
     val loading = if (live) !(subUi.firstFrame || mainUi.firstFrame) || (subUi.loading && mainUi.loading && !mainUi.firstFrame) else recUi.loading
     val timelineCenter = if (tl.scrubbing) tl.scrubTime else playTime
 
@@ -333,6 +339,12 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
         }
     }
 
+    fun shareSnapshot() {
+        val bmp = texture?.bitmap ?: return Toaster.error("Nothing to share yet")
+        val uri = Gallery.shareBitmapFile(context, bmp, "${Gallery.safeName(cam.name)}_${System.currentTimeMillis() / 1000}")
+        Gallery.share(context, uri, "image/jpeg", "${cam.name} · ${fmtTimeSec(timelineCenter)}")
+    }
+
     fun toggleFullscreen() {
         activity.requestedOrientation = if (landscape) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
     }
@@ -345,7 +357,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
             sub = sub,
             main = main,
             rec = rec,
-            showMain = mainUi.firstFrame,
+            showMain = hd && mainUi.firstFrame,
             scrubbing = tl.scrubbing,
             scrubTime = tl.scrubTime,
             loading = loading,
@@ -395,24 +407,34 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
         }
     }
 
+    // Every action visible at once: two rows of four.
     val actions: @Composable () -> Unit = {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ActionChip(if (live) "Live" else "Go live", null, highlighted = live) { goLive() }
-            ActionChip("${if (speed < 1) "½" else speed.toInt().toString()}×", Icons.Rounded.Speed, enabled = !live) {
-                speed = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.size]
-            }
-            if (cam.hasAudio) ActionChip(if (muted) "Sound off" else "Sound on", if (muted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp, highlighted = !muted) { muted = !muted }
-            ActionChip("Snapshot", Icons.Rounded.CameraAlt) { snapshot() }
-            ActionChip("Clip", Icons.Rounded.ContentCut, highlighted = clipRange != null) {
-                clipRange = if (clipRange != null) null else {
-                    val c = minOf(timelineCenter, state.serverNow() - 1000)
-                    (c - 15_000) to minOf(c + 15_000, state.serverNow())
+        Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ActionTile("Snapshot", Icons.Rounded.CameraAlt, Modifier.weight(1f)) { snapshot() }
+                ActionTile("Share", Icons.Rounded.Share, Modifier.weight(1f)) { shareSnapshot() }
+                ActionTile(if (clipRange != null) "Cancel clip" else "Save clip", Icons.Rounded.ContentCut, Modifier.weight(1f), highlighted = clipRange != null) {
+                    clipRange = if (clipRange != null) null else {
+                        val c = minOf(timelineCenter, state.serverNow() - 1000)
+                        (c - 15_000) to minOf(c + 15_000, state.serverNow())
+                    }
+                    if (clipRange != null) tl.span = 2f * MINUTE
                 }
-                if (clipRange != null) tl.span = 2f * MINUTE
+                ActionTile("Go to time", Icons.Rounded.Event, Modifier.weight(1f)) { showGoTo = true }
             }
-            ActionChip("Go to", Icons.Rounded.Event) { showGoTo = true }
-            ActionChip("Fullscreen", Icons.Rounded.Fullscreen) { toggleFullscreen() }
-            ActionChip("Mini player", Icons.Rounded.PictureInPictureAlt) { activity.enterPip() }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (live) ActionTile(if (hd) "HD quality" else "SD (saves data)", if (hd) Icons.Rounded.Hd else Icons.Rounded.Sd, Modifier.weight(1f), highlighted = hd) {
+                    hd = !hd
+                    if (!hd) sub.play(api.liveUrl(cam.id, hq = false))
+                    Toaster.show(if (hd) "Full quality" else "Lower quality: uses much less data")
+                }
+                else ActionTile("${if (speed < 1) "½" else speed.toInt().toString()}× speed", Icons.Rounded.Speed, Modifier.weight(1f), highlighted = speed != 1f) {
+                    speed = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.size]
+                }
+                ActionTile(if (muted) "Sound off" else "Sound on", if (muted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp, Modifier.weight(1f), highlighted = !muted, enabled = cam.hasAudio) { muted = !muted }
+                ActionTile("Mini player", Icons.Rounded.PictureInPictureAlt, Modifier.weight(1f)) { activity.enterPip() }
+                ActionTile("Fullscreen", Icons.Rounded.Fullscreen, Modifier.weight(1f)) { toggleFullscreen() }
+            }
         }
     }
 
@@ -432,7 +454,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
     if (landscape) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             Box(Modifier.align(Alignment.Center).aspectRatio(aspect.coerceIn(0.5f, 3f), matchHeightConstraintsFirst = true)) { video() }
-            AnimatedVisibility(controlsVisible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+            androidx.compose.animation.AnimatedVisibility(controlsVisible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize()) {
                     Row(
                         Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color(0xE6000000), Color(0x80000000), Color.Transparent))).padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 28.dp),
@@ -470,17 +492,48 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
                 }
                 StatePill(if (cam.occasional && cam.state != "recording") "offline" else cam.state)
             }
-            // Video
+            // Video, with its controls on top (tap the picture to show or hide them).
             Box(
                 Modifier.padding(horizontal = 12.dp).fillMaxWidth().aspectRatio(aspect.coerceIn(0.6f, 2.4f)).clip(RoundedCornerShape(20.dp)).background(Color.Black)
                     .border(1.dp, if (cam.motion?.active == true) C.Amber.copy(alpha = 0.8f) else C.GlassBorder, RoundedCornerShape(20.dp)),
             ) {
                 video()
                 Box(Modifier.align(Alignment.TopStart).padding(10.dp).clip(CircleShape).background(Color(0x99000000)).padding(horizontal = 10.dp, vertical = 5.dp)) { timeLabel() }
-                ConnectionPill(conn, Modifier.align(Alignment.TopEnd).padding(10.dp))
+                if (live) ConnectionPill(conn, Modifier.align(Alignment.TopEnd).padding(10.dp))
+                else Row(
+                    Modifier.align(Alignment.TopEnd).padding(10.dp).clip(CircleShape).background(C.Rose).clickable { goLive() }.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PulsingDot(Color.White, size = 7.dp)
+                    Text("  Back to live", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                androidx.compose.animation.AnimatedVisibility(controlsVisible && !tl.scrubbing, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.Center)) {
+                    Box(
+                        Modifier.size(62.dp).clip(CircleShape).background(Color(0x80000000)).clickable {
+                            lastTouch = System.currentTimeMillis()
+                            if (live) seekTo(state.serverNow() - 15_000) else rec.togglePlay()
+                        },
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "Pause" else "Play", tint = Color.White, modifier = Modifier.size(34.dp)) }
+                }
+                androidx.compose.animation.AnimatedVisibility(controlsVisible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomStart)) {
+                    if (cam.hasAudio) RoundIcon(
+                        if (muted) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp, if (muted) "Turn sound on" else "Turn sound off",
+                        Modifier.padding(10.dp), size = 38.dp, background = if (muted) Color(0x80000000) else C.Violet,
+                    ) { muted = !muted; lastTouch = System.currentTimeMillis() }
+                }
+                androidx.compose.animation.AnimatedVisibility(controlsVisible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomEnd)) {
+                    RoundIcon(Icons.Rounded.Fullscreen, "Fullscreen", Modifier.padding(10.dp), size = 38.dp, background = Color(0x80000000)) { toggleFullscreen() }
+                }
             }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                Gap(10.dp)
+                // Timeline header: what's in view, and zoom buttons for those who don't pinch.
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(fmtDay(timelineCenter, state.serverNow()), color = C.Text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("  ·  ${spanLabel(tl.span)} in view", color = C.TextFaint, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    RoundIcon(Icons.Rounded.ZoomOut, "Show more time", size = 34.dp, background = Color(0x10FFFFFF)) { tl.span = (tl.span * 2f).coerceAtMost(TimelineState.MAX_SPAN) }
+                    RoundIcon(Icons.Rounded.ZoomIn, "Show less time", Modifier.padding(start = 6.dp), size = 34.dp, background = Color(0x10FFFFFF)) { tl.span = (tl.span / 2f).coerceAtLeast(TimelineState.MIN_SPAN) }
+                }
                 timeline(Modifier.padding(horizontal = 12.dp))
                 AnimatedVisibility(clipRange != null, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                     clipRange?.let { r ->
@@ -497,11 +550,12 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
                 }
                 Gap(8.dp)
                 transport()
-                Gap(14.dp)
-                Box(Modifier.padding(horizontal = 12.dp)) { actions() }
+                Gap(16.dp)
+                actions()
+                if (!prefs.tipsSeen) Tips { state.setPrefs { it.copy(tipsSeen = true) } }
                 Gap(20.dp)
                 if (todayEvents.isNotEmpty()) {
-                    Text("MOTION · LAST 24 HOURS", color = C.TextDim, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp))
+                    Text("MOTION · LAST 24 HOURS · ${todayEvents.size}", color = C.TextDim, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp))
                     Gap(10.dp)
                     LazyRow(contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         items(todayEvents, key = { it.id }) { e ->
@@ -577,6 +631,49 @@ private fun BoxScope.VideoArea(
             )
         }
         if (loading && !scrubbing) CircularProgressIndicator(Modifier.align(Alignment.Center).size(34.dp), color = Color.White.copy(alpha = 0.8f), strokeWidth = 3.dp)
+    }
+}
+
+private fun spanLabel(span: Float): String = when {
+    span >= DAY -> "${(span / DAY).let { if (it % 1f == 0f) it.toInt().toString() else "%.1f".format(it) }} day${if (span >= 2 * DAY) "s" else ""}"
+    span >= HOUR -> "${(span / HOUR).let { if (it % 1f < 0.05f) it.toInt().toString() else "%.1f".format(it) }} h"
+    else -> "${(span / MINUTE).toInt()} min"
+}
+
+/** A square action button with its label underneath. */
+@Composable
+private fun ActionTile(label: String, icon: ImageVector, modifier: Modifier = Modifier, highlighted: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier
+            .graphicsLayer { alpha = if (enabled) 1f else 0.35f }
+            .clip(shape)
+            .then(if (highlighted) Modifier.background(C.accent) else Modifier.background(Color(0x0DFFFFFF)).border(1.dp, C.GlassBorder, shape))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
+        Text(label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp, start = 4.dp, end = 4.dp))
+    }
+}
+
+/** First-time help for the camera page. */
+@Composable
+private fun Tips(onDismiss: () -> Unit) {
+    Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp).fillMaxWidth().glass().padding(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.TipsAndUpdates, null, tint = C.Amber, modifier = Modifier.size(20.dp))
+            Text("  Quick tips", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text("Got it", color = C.VioletLight, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.clip(CircleShape).clickable(onClick = onDismiss).padding(horizontal = 10.dp, vertical = 4.dp))
+        }
+        Gap(8.dp)
+        listOf(
+            "Drag the timeline left or right to go back in time; let go to play from there.",
+            "Pinch the timeline (or use − / +) to see minutes or whole days.",
+            "Amber bars are motion; ⏮ ⏭ jump between them.",
+            "Pinch or double-tap the picture to zoom in.",
+        ).forEach { Text("•  $it", color = C.TextDim, fontSize = 13.sp, modifier = Modifier.padding(vertical = 2.dp)) }
     }
 }
 

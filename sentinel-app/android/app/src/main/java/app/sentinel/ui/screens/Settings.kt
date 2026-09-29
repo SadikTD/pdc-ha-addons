@@ -3,6 +3,8 @@ package app.sentinel.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,6 +45,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.ui.text.style.TextAlign
 import app.sentinel.core.AppState
 import app.sentinel.core.Push
 import app.sentinel.ui.components.Gap
@@ -80,7 +87,6 @@ fun SettingsScreen(state: AppState, onBack: () -> Unit) {
                 }
             }
         }
-        item { NotificationsCard(state) }
         item { SectionTitle("Camera order") }
         item { Text("Order and visibility on this phone only. Hidden cameras are still recorded.", color = C.TextFaint, fontSize = 12.sp) }
         itemsIndexed(cams, key = { _, c -> c.id }) { i, c ->
@@ -120,7 +126,7 @@ fun SettingsScreen(state: AppState, onBack: () -> Unit) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun NotificationsCard(state: AppState) {
+fun NotificationsCard(state: AppState) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val available by state.pushAvailable.collectAsStateWithLifecycle()
@@ -170,6 +176,56 @@ private fun NotificationsCard(state: AppState) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun NotificationsScreen(state: AppState, onBack: () -> Unit) {
+    SubPage("Notifications", onBack) {
+        item {
+            Text(
+                "Choose what this phone is told about. Pictures come straight from your Sentinel over the encrypted connection.",
+                color = C.TextDim, fontSize = 13.sp,
+            )
+        }
+        item { NotificationsCard(state) }
+    }
+}
+
+/** Asks once, right after logging in, whether this phone should get alerts. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NotificationPrompt(state: AppState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val available by state.pushAvailable.collectAsStateWithLifecycle()
+    val prefs by state.prefs.collectAsStateWithLifecycle()
+    if (!available || prefs.askedNotifications || Push.canNotify(context)) return
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        state.setPrefs { it.copy(askedNotifications = true) }
+        if (ok) scope.launch { state.registerPush(); Toaster.show("Notifications are on") }
+    }
+    val navBottom = androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    ModalBottomSheet({ state.setPrefs { it.copy(askedNotifications = true) } }, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = C.Ink850) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 16.dp + navBottom), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.size(64.dp).clip(CircleShape).background(C.accent), contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.Notifications, null, tint = androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(32.dp))
+            }
+            Gap(16.dp)
+            Text("Get alerts on this phone?", style = MaterialTheme.typography.titleLarge)
+            Gap(8.dp)
+            Text(
+                "Sentinel can tell you when someone is seen at night (with the picture) and when a camera stops recording, even when the app is closed.",
+                color = C.TextDim, fontSize = 14.sp, textAlign = TextAlign.Center,
+            )
+            Gap(20.dp)
+            GradientButton("Allow notifications", Modifier.fillMaxWidth()) {
+                if (Build.VERSION.SDK_INT >= 33) ask.launch(Manifest.permission.POST_NOTIFICATIONS)
+                else state.setPrefs { it.copy(askedNotifications = true) }
+            }
+            Gap(8.dp)
+            TextButton({ state.setPrefs { it.copy(askedNotifications = true) } }) { Text("Not now", color = C.TextDim) }
         }
     }
 }

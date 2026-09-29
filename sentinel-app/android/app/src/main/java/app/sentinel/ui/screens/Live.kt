@@ -68,7 +68,29 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.material.icons.rounded.OpenInFull
+import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.style.TextAlign
 import app.sentinel.core.AppState
+import app.sentinel.core.Gallery
+import app.sentinel.core.stateLabel
+import app.sentinel.ui.components.ConnectionProblem
+import app.sentinel.ui.components.Gap
+import app.sentinel.ui.components.Toaster
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import app.sentinel.core.CameraStatus
 import app.sentinel.core.fmtAgo
 import app.sentinel.media.LivePlayer
@@ -83,6 +105,7 @@ import app.sentinel.ui.theme.C
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveScreen(state: AppState, contentPadding: PaddingValues, onOpen: (CameraStatus) -> Unit) {
     val status by state.status.collectAsStateWithLifecycle()
@@ -91,8 +114,23 @@ fun LiveScreen(state: AppState, contentPadding: PaddingValues, onOpen: (CameraSt
     val error by state.statusError.collectAsStateWithLifecycle()
     val cams = state.orderedCameras(status, prefs)
     var soundOn by remember { mutableStateOf<String?>(null) }
+    var menuFor by remember { mutableStateOf<CameraStatus?>(null) }
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
 
+    PullToRefreshBox(
+        refreshing,
+        onRefresh = {
+            scope.launch {
+                refreshing = true
+                if (conn.state != "connected") state.engine.reconnect()
+                state.refreshStatus()
+                refreshing = false
+            }
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth > 700.dp
         val cols = when {
@@ -135,7 +173,9 @@ fun LiveScreen(state: AppState, contentPadding: PaddingValues, onOpen: (CameraSt
                     }
                 }
             }
-            if (status == null) {
+            if (status == null && (error != null || conn.state == "offline")) {
+                item(span = { GridItemSpan(maxLineSpan) }) { ConnectionProblem(state, Modifier.padding(top = 24.dp)) }
+            } else if (status == null) {
                 items(4) { Shimmer(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp))) }
             } else if (cams.isEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
@@ -151,10 +191,105 @@ fun LiveScreen(state: AppState, contentPadding: PaddingValues, onOpen: (CameraSt
                     soundOn = soundOn == cam.id,
                     onSound = { soundOn = if (soundOn == cam.id) null else cam.id },
                     onClick = { onOpen(cam) },
+                    onLongClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        menuFor = cam
+                    },
                     modifier = Modifier.animateItem(),
                 )
             }
+            if (status != null && cams.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    "Tip: press and hold a camera for more options",
+                    color = C.TextFaint, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
+    }
+    }
+    menuFor?.let { cam ->
+        CameraMenu(
+            state, cam, soundOn = soundOn == cam.id, onDismiss = { menuFor = null }, onOpen = { menuFor = null; onOpen(cam) },
+            onSound = { soundOn = if (soundOn == cam.id) null else cam.id; menuFor = null },
+        )
+    }
+}
+
+/** Long-press actions for a camera on the Live grid. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CameraMenu(state: AppState, cam: CameraStatus, soundOn: Boolean, onDismiss: () -> Unit, onOpen: () -> Unit, onSound: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var confirmRestart by remember { mutableStateOf(false) }
+    // The sheet is its own window, where the navigation bar inset reads as 0: measure it here.
+    val navBottom = androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    ModalBottomSheet(onDismiss, sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = C.Ink850) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp + navBottom)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(width = 80.dp, height = 46.dp).clip(RoundedCornerShape(10.dp)).background(C.Ink800)) {
+                    AsyncImage(state.api.latestUrl(cam.id), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                }
+                Column(Modifier.padding(start = 12.dp)) {
+                    Text(cam.name, style = MaterialTheme.typography.titleMedium)
+                    Text(stateLabel(cam.state), color = C.TextDim, fontSize = 13.sp)
+                }
+            }
+            Gap(12.dp)
+            MenuRow(Icons.Rounded.OpenInFull, "Open") { onOpen() }
+            if (cam.hasAudio) MenuRow(if (soundOn) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp, if (soundOn) "Stop listening" else "Listen here") { onSound() }
+            MenuRow(Icons.Rounded.CameraAlt, "Save a full-quality snapshot") {
+                onDismiss()
+                scope.launch {
+                    val bmp = withContext(Dispatchers.IO) {
+                        runCatching {
+                            state.engine.http.newCall(okhttp3.Request.Builder().url(state.api.snapshotUrl(cam.id, hq = true, bust = System.currentTimeMillis())).build()).execute()
+                                .use { r -> r.body?.bytes()?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) } }
+                        }.getOrNull()
+                    }
+                    if (bmp == null) {
+                        Toaster.error("Couldn't get a snapshot")
+                    } else {
+                        Gallery.saveBitmap(context, bmp, "${Gallery.safeName(cam.name)}_${System.currentTimeMillis() / 1000}")
+                            .onSuccess { Toaster.show("Saved to Pictures/Sentinel") }
+                            .onFailure { Toaster.error(it.message ?: "Couldn't save") }
+                    }
+                }
+            }
+            MenuRow(Icons.Rounded.VisibilityOff, "Hide from Live") {
+                state.setPrefs { it.copy(hidden = it.hidden + cam.id) }
+                Toaster.show("${cam.name} hidden. Show it again in More → App settings.")
+                onDismiss()
+            }
+            if (state.isAdmin && cam.enabled) MenuRow(Icons.Rounded.RestartAlt, "Restart this camera's recorder", tint = C.Amber) { confirmRestart = true }
+        }
+    }
+    if (confirmRestart) {
+        AlertDialog(
+            onDismissRequest = { confirmRestart = false },
+            title = { Text("Restart ${cam.name}?") },
+            text = { Text("Reconnects the camera's recorder. A few seconds of footage may be missing.") },
+            confirmButton = {
+                TextButton({
+                    scope.launch { runCatching { state.api.restartCamera(cam.id) }.onSuccess { Toaster.show("${cam.name} is reconnecting") }.onFailure { Toaster.error(it.message ?: "Failed") } }
+                    confirmRestart = false
+                    onDismiss()
+                }) { Text("Restart", color = C.Amber) }
+            },
+            dismissButton = { TextButton({ confirmRestart = false }) { Text("Cancel", color = C.TextDim) } },
+            containerColor = C.Ink800,
+        )
+    }
+}
+
+@Composable
+fun MenuRow(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, tint: Color = C.Text, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp))
+        Text(text, color = tint, fontSize = 15.sp, modifier = Modifier.padding(start = 16.dp))
     }
 }
 
@@ -172,6 +307,7 @@ fun LiveTile(
     soundOn: Boolean,
     onSound: () -> Unit,
     onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -215,7 +351,7 @@ fun LiveTile(
             .clip(shape)
             .background(C.Ink900)
             .border(if (motion) 2.dp else 1.dp, borderColor, shape)
-            .combinedClickable(interaction, indication = null, onClick = onClick),
+            .combinedClickable(interaction, indication = null, onLongClick = onLongClick, onClick = onClick),
     ) {
         if (cam.enabled) {
             AsyncImage(
