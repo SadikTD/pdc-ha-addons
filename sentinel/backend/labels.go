@@ -35,7 +35,7 @@ const (
 	scanFound  = 0.35 // fast model: worth a closer look
 	scanClear  = 0.60 // fast model: clear enough in a single frame
 	minBoxArea = 0.0004
-	maxVerify  = 3 // second opinions per label per event
+	maxVerify  = 5 // second opinions per label per event
 )
 
 // verifyMin is how sure the big model must be.
@@ -325,6 +325,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 
 	seen := map[string][]sighting{} // candidates per group ("person", "animal")
 	tried := map[string][]time.Time{}
+	triedBest := map[string]float64{}
 	done := map[string]bool{}
 	limit := maxFrames
 	if o.busy {
@@ -378,7 +379,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 		}
 		clear := animalChecks >= 2 && votes[win] >= 1.5*votes[lose] ||
 			animalChecks == 1 && votes[lose] == 0 && bestAnimal[win].Score >= 0.75 ||
-			final && votes[win] > 1.2*votes[lose]
+			final && votes[win] >= votes[lose] // sure it's an animal: the likelier one
 		if !clear || bestAnimal[win].Label == "" {
 			return
 		}
@@ -403,7 +404,8 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			}
 			edge := atEdge(best.d.Box)
 			switch {
-			case len(tried[g]) > 0: // already asked once: keep asking about new frames
+			case len(tried[g]) > 0 && best.d.Score >= triedBest[g]+0.1: // clearly better than what was asked about
+			case len(tried[g]) > 0 && len(tried[g]) < 3: // already asked: keep asking about new frames
 			case len(ss) >= 2 && !edge:
 			case len(ss) >= 2 && edge && best.d.Score >= scanClear:
 			case len(ss) == 1 && !edge && best.d.Score >= scanClear:
@@ -413,9 +415,11 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 				continue // not enough yet
 			}
 			tried[g] = append(tried[g], best.t)
+			triedBest[g] = max(triedBest[g], best.d.Score)
 			asked = true
 			suspicious := best.suspicious(moves)
 			v := l.verifyScores(ctx, cam, best.t, best.d.Box)
+			o.log("  big model in %s: %s", fmtBox(verifyRect(best.d.Box, a.frameAspect(cam.ID))), fmtDets(v.raw))
 			need := func(label string) float64 { return needScore(label, edge, suspicious) }
 			person := v.score["person"]
 			animal := max(v.score["cat"], v.score["dog"])
@@ -451,10 +455,14 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 
 	// look adds what the fast model sees in part r of frame f (r = the whole frame, or a
 	// zoomed-in part) as candidates; it reports whether there were any.
-	look := func(t time.Time, dets []Detection) bool {
+	look := func(t time.Time, dets []Detection, zoom *zoomLook) bool {
 		found := false
 		for _, d := range dets {
 			if done[group(d.Label)] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea {
+				continue
+			}
+			if zoom != nil && overlapOfSmaller(d.Box, zoom.changed) < 0.25 {
+				o.log("  (%s %.2f is not where the picture changed)", d.Label, d.Score)
 				continue
 			}
 			s := sighting{t: t, d: d}
@@ -464,7 +472,8 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			}
 			s.hot = l.hot.Suspect(e.Cam, d.Box)
 			before()
-			s.pre = slices.ContainsFunc(bgDets, func(b Detection) bool { return iou(b.Box, d.Box) >= 0.4 })
+			wasThere := func(b Detection) bool { return iou(b.Box, d.Box) >= 0.4 }
+			s.pre = slices.ContainsFunc(bgDets, wasThere) || zoom != nil && slices.ContainsFunc(zoom.before, wasThere)
 			seen[group(d.Label)] = append(seen[group(d.Label)], s)
 			found = true
 		}
@@ -507,7 +516,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 		}
 		checked++
 		o.log("frame +%.1fs: %s", t.Sub(start).Seconds(), fmtDets(dets))
-		found := look(t, dets)
+		found := look(t, dets, nil)
 		// Nothing recognised: look again, zoomed in where the picture changed since before
 		// the motion (a cat far down a corridor is only a few pixels in the whole frame).
 		if !found && zooms < maxZooms && !(done["person"] && done["animal"]) {
@@ -521,8 +530,14 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 					if r := frameRect(b.box); b.size >= minShotBlob && b.changed < 0.5 && r.W*r.H < 0.6 {
 						zooms++
 						if zd, err := a.detectAt(ctx, e.Cam, t, r, modelScan); err == nil {
-							o.log("  zoomed in on %s: %s", fmtBox(r), fmtDets(zd))
-							found = look(t, zd)
+							o.log("  zoomed in on %s (changed %s): %s", fmtBox(r), fmtBox(b.box), fmtDets(zd))
+							if len(zd) > 0 {
+								// What was there before, seen at the same zoom (a gate in a
+								// bright doorway looks like a person only up close).
+								zb, _ := a.detectAt(ctx, e.Cam, start.Add(-3*time.Second), r, modelScan)
+								o.log("  before, same zoom: %s", fmtDets(zb))
+								found = look(t, zd, &zoomLook{changed: b.box, before: zb})
+							}
 						}
 					}
 				}
@@ -549,6 +564,12 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 		rejected = append(rejected, Object{Label: "animal", Score: max(votes["cat"], votes["dog"]), Why: "cat or dog unclear"})
 	}
 	return objs, rejected, snap, checked
+}
+
+// zoomLook: a zoomed-in look at where the picture changed, and what was there before.
+type zoomLook struct {
+	changed Rect
+	before  []Detection
 }
 
 // maxZooms: zoomed-in second looks per event (each costs one more detection).
@@ -642,6 +663,7 @@ func bestUntried(ss []sighting, tried []time.Time, moves bool) *sighting {
 type verdict struct {
 	score map[string]float64
 	box   map[string]Rect
+	raw   []Detection // everything it saw in the crop
 }
 
 func (v verdict) object(label string, t time.Time) Object {
@@ -657,8 +679,9 @@ func (l *Labeler) verifyScores(ctx context.Context, cam Camera, t time.Time, box
 	if err != nil {
 		return v
 	}
+	v.raw = dets
 	for _, d := range dets {
-		if iou(d.Box, box) < 0.3 && overlapOfSmaller(d.Box, box) < 0.6 {
+		if !sameThing(d.Box, box) {
 			continue // something else in the crop
 		}
 		if d.Score > v.score[d.Label] {
@@ -708,6 +731,18 @@ func verifyRect(b Rect, aspect float64) Rect {
 	x := min(max(cx-w/2, 0), 1-w)
 	y := min(max(cy-h/2, 0), 1-h)
 	return Rect{X: x, Y: y, W: w, H: h}
+}
+
+// sameThing: the two models' boxes are about the same thing (they rarely frame it the
+// same way: the fast model often cuts off legs or includes a shadow).
+func sameThing(a, b Rect) bool {
+	if iou(a, b) >= 0.3 || overlapOfSmaller(a, b) >= 0.6 {
+		return true
+	}
+	cx, cy := a.X+a.W/2, a.Y+a.H/2
+	inside := cx >= b.X && cx <= b.X+b.W && cy >= b.Y && cy <= b.Y+b.H
+	ratio := (a.W * a.H) / max(b.W*b.H, 1e-6)
+	return inside && ratio >= 0.25 && ratio <= 4 && overlapOfSmaller(a, b) >= 0.35
 }
 
 func overlapOfSmaller(a, b Rect) float64 {
