@@ -210,7 +210,7 @@ func busiestPersonCam(sum DaySummary) string {
 // summaryDue sends yesterday's summary to phones at the configured time (once a day).
 func (a *App) summaryDue(now time.Time) {
 	s := a.settings.Get()
-	if !s.DailySummary.Enabled {
+	if !s.DailySummary.Enabled && !(s.WhatsApp.MorningReport && s.WhatsApp.To != "") {
 		return
 	}
 	at := hhmm(s.DailySummary.Time)
@@ -230,6 +230,13 @@ func (a *App) summaryDue(now time.Time) {
 		return
 	}
 	_ = writeFileAtomic(a.media+"/summary-sent", []byte(today), 0o644)
-	y := now.AddDate(0, 0, -1)
-	a.push.Summary(y.Format("2006-01-02"), func(allowed func(string) bool) string { return a.Summary(y, allowed).Text })
+	if s.DailySummary.Enabled {
+		y := now.AddDate(0, 0, -1)
+		a.push.Summary(y.Format("2006-01-02"), func(allowed func(string) bool) string { return a.Summary(y, allowed).Text })
+	}
+	go func() {
+		if err := a.morningReport(now); err != nil {
+			a.incidents.Add("warn", "", "Morning report not sent to WhatsApp: %v", err)
+		}
+	}()
 }

@@ -264,6 +264,34 @@ export function NightAlertsCard({ draft, set, cameras }: { draft: Settings; set:
                 </div>
               )}
 
+              {wa.token_set && draft.whatsapp.to && (
+                <Field label="Cats and dogs go to" hint="Night alerts about animals can go to a different chat, so the main one is only about people.">
+                  <select
+                    value={draft.whatsapp.animals_to}
+                    onChange={(e) => {
+                      const o = [...options, ...saved].find((x) => x.id === e.target.value);
+                      set("whatsapp", { ...draft.whatsapp, animals_to: e.target.value, animals_to_name: o?.short ?? "" });
+                    }}
+                    className={inputCls}
+                  >
+                    <option value="">The same chat</option>
+                    {[
+                      ...(draft.whatsapp.animals_to && ![...saved, ...options].some((o) => o.id === draft.whatsapp.animals_to)
+                        ? [{ id: draft.whatsapp.animals_to, name: draft.whatsapp.animals_to_name || draft.whatsapp.animals_to }]
+                        : []),
+                      ...saved,
+                      ...options,
+                    ].map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+
+              {wa.token_set && draft.whatsapp.to && <MorningReport draft={draft} set={set} />}
+
               <button type="button" onClick={() => setAdvanced((a) => !a)} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300">
                 <ChevronDown className={clsx("size-3.5 transition", advanced && "rotate-180")} /> Bridge address
               </button>
@@ -524,5 +552,59 @@ export function DriveCard({ draft, set, cameras }: { draft: Settings; set: SetFn
         </div>
       )}
     </Card>
+  );
+}
+
+// The WhatsApp morning report: on/off, a preview of what would be sent now, and a test.
+function MorningReport({ draft, set }: { draft: Settings; set: <K extends keyof Settings>(k: K, v: Settings[K]) => void }) {
+  const [preview, setPreview] = useState<{ caption: string; at: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const show = () => {
+    setMsg(null);
+    api
+      .morningReport()
+      .then((r) => setPreview({ caption: r.caption, at: Date.now() }))
+      .catch((e) => setMsg((e as Error).message));
+  };
+  return (
+    <div className="space-y-2">
+      <Toggle
+        checked={draft.whatsapp.morning_report}
+        onChange={(v) => set("whatsapp", { ...draft.whatsapp, morning_report: v })}
+        label="Morning report"
+        hint={`One picture of last night's people (night alert hours) with a short caption, at ${draft.daily_summary.time} to the chat above.`}
+      />
+      {draft.whatsapp.morning_report && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" type="button" onClick={show}>
+            Preview
+          </Button>
+          <Button
+            size="sm"
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setMsg(null);
+              api
+                .testMorningReport()
+                .then(() => setMsg("Sent."))
+                .catch((e) => setMsg((e as Error).message))
+                .finally(() => setBusy(false));
+            }}
+          >
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Send it now
+          </Button>
+          {msg && <span className="text-xs text-slate-400">{msg}</span>}
+        </div>
+      )}
+      {preview && draft.whatsapp.morning_report && (
+        <div className="overflow-hidden rounded-xl border border-white/10 bg-ink-900">
+          <img src={`api/whatsapp/morning-report?format=jpg&t=${preview.at}`} className="w-full" />
+          <p className="whitespace-pre-line px-3 py-2 text-xs text-slate-300">{preview.caption.replace(/\*/g, "")}</p>
+        </div>
+      )}
+    </div>
   );
 }

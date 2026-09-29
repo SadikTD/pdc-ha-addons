@@ -1,5 +1,5 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import clsx from "clsx";
 import { LayoutGrid, GanttChart, Zap, Film, HeartPulse, Settings2, Columns2, ArrowLeft, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
@@ -102,12 +102,13 @@ export function Shell({ children }: { children: ReactNode }) {
           </div>
         </header>
         <main className="min-h-0 flex-1 overflow-y-auto">
-          <AnimatePresence mode="wait">
-            <motion.div
+          {/* Pages only fade in. (Waiting for the old page to animate out could get stuck
+              when the new page's code was still loading: the page stayed invisible until
+              a second click.) */}
+          <motion.div
               key={section}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
               transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
               className="mx-auto w-full max-w-[1600px] px-4 pb-28 pt-5 md:px-8 md:pb-10 md:pt-8"
             >
@@ -117,8 +118,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 </Link>
               )}
               {children}
-            </motion.div>
-          </AnimatePresence>
+          </motion.div>
         </main>
         {/* Mobile tab bar */}
         <nav className="fixed inset-x-0 bottom-0 z-50 flex border-t border-white/5 bg-ink-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl md:hidden">

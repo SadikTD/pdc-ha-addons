@@ -88,6 +88,40 @@ func (a *App) Routes(www string) http.Handler {
 		e, _ := a.events.Get(cam, id)
 		writeJSON(w, 200, e)
 	})
+	// The WhatsApp morning report as it would be sent now (preview), and a test send.
+	mux.HandleFunc("GET /api/whatsapp/morning-report", func(w http.ResponseWriter, r *http.Request) {
+		s := a.settings.Get()
+		rep := a.nightReport(time.Now())
+		if r.URL.Query().Get("format") == "jpg" {
+			img, err := rep.picture(a, s)
+			if err != nil {
+				writeErr(w, 500, err.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Header().Set("Cache-Control", "no-store")
+			w.Write(img)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"caption": rep.caption(s), "from": rep.From.UnixMilli(), "to": rep.To.UnixMilli(), "people": len(rep.People)})
+	})
+	mux.HandleFunc("POST /api/whatsapp/morning-report/test", func(w http.ResponseWriter, r *http.Request) {
+		s := a.settings.Get()
+		if s.WhatsApp.To == "" {
+			writeErr(w, 400, "choose the chat for night alerts first")
+			return
+		}
+		rep := a.nightReport(time.Now())
+		img, err := rep.picture(a, s)
+		if err == nil {
+			err = a.alerts.wa.SendImage(s.WhatsApp.To, img, rep.caption(s), fmt.Sprintf("sentinel:report-test:%d", time.Now().UnixMilli()))
+		}
+		if err != nil {
+			writeErr(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
 	mux.HandleFunc("GET /api/detection/hotspots/{cam}", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, a.labeler.hot.List(r.PathValue("cam")))
 	})

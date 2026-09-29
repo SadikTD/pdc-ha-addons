@@ -111,6 +111,11 @@ type WhatsApp struct {
 	// Group JID ("...@g.us") or the bridge's recipient number ("+880...").
 	To     string `json:"to"`
 	ToName string `json:"to_name"`
+	// Night alerts about cats and dogs go here instead ("" = the same chat).
+	AnimalsTo     string `json:"animals_to"`
+	AnimalsToName string `json:"animals_to_name"`
+	// A picture of last night's people each morning (at the daily summary time).
+	MorningReport bool `json:"morning_report"`
 	// Empty = find the bridge add-on automatically.
 	BridgeURL string `json:"bridge_url"`
 }
@@ -144,6 +149,7 @@ func defaultSettings() Settings {
 		},
 		Drive:        DriveBackup{Alerts: true, MotionCameras: []string{}, QuotaGB: 10, RetentionDays: 90},
 		DailySummary: DailySummary{Enabled: true, Time: "08:00"},
+		WhatsApp:     WhatsApp{MorningReport: true},
 	}
 }
 
@@ -294,7 +300,8 @@ func (s *Settings) normalize() error {
 	n.MinSeconds = min(max(n.MinSeconds, 0), 30)
 	w := &s.WhatsApp
 	w.To, w.BridgeURL = strings.TrimSpace(w.To), strings.TrimRight(strings.TrimSpace(w.BridgeURL), "/")
-	if w.To != "" && !waChatRe.MatchString(w.To) {
+	w.AnimalsTo = strings.TrimSpace(w.AnimalsTo)
+	if w.To != "" && !waChatRe.MatchString(w.To) || w.AnimalsTo != "" && !waChatRe.MatchString(w.AnimalsTo) {
 		return fmt.Errorf("WhatsApp chat must be a group or a +international number")
 	}
 	if w.BridgeURL != "" && !strings.HasPrefix(w.BridgeURL, "http://") && !strings.HasPrefix(w.BridgeURL, "https://") {

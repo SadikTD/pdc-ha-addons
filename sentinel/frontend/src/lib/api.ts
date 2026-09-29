@@ -42,7 +42,7 @@ export type Settings = {
     any_motion?: boolean;
     save_clip: boolean;
   };
-  whatsapp: { to: string; to_name: string; bridge_url: string };
+  whatsapp: { to: string; to_name: string; animals_to: string; animals_to_name: string; morning_report: boolean; bridge_url: string };
   daily_summary: { enabled: boolean; time: string };
   drive: {
     backup_alerts: boolean;
@@ -272,6 +272,8 @@ export const api = {
   alerts: () => request<AlertRecord[]>("GET", "api/alerts"),
   testAlert: (camera: string) => request<{ ok: boolean }>("POST", "api/alerts/test", { camera }),
   whatsapp: () => request<WhatsAppInfo>("GET", "api/whatsapp"),
+  morningReport: () => request<{ caption: string; from: number; to: number; people: number }>("GET", "api/whatsapp/morning-report"),
+  testMorningReport: () => request<{ ok: boolean }>("POST", "api/whatsapp/morning-report/test"),
   setWhatsAppToken: (token: string) => request<{ ok: boolean }>("PUT", "api/whatsapp/token", { token }),
   drive: () => request<DriveStatus>("GET", "api/drive"),
   driveConnect: (client_id: string, client_secret: string) =>

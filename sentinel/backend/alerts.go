@@ -256,11 +256,12 @@ func (al *Alerter) fire(cam string, e Event) {
 	al.put(rec)
 	al.app.push.Alert(cam, name, pic.t, pic.what, e.ID)
 	var err error
-	if s.WhatsApp.To != "" {
-		err = al.deliver(cam, name, pic.t, s.WhatsApp.To, e.ID, pic.what, note, 15*time.Minute)
+	to := alertChat(s, pic.what)
+	if to != "" {
+		err = al.deliver(cam, name, pic.t, to, e.ID, pic.what, note, 15*time.Minute)
 	}
 	al.finish(rec.ID, err)
-	if s.WhatsApp.To == "" {
+	if to == "" {
 		al.app.incidents.Add("info", cam, "Night alert sent to the Sentinel app")
 	} else if err != nil {
 		al.app.incidents.Add("error", cam, "Night alert not sent to WhatsApp: %v", err)
@@ -301,12 +302,20 @@ func (al *Alerter) fire(cam string, e Event) {
 			label = b.what + " still there"
 		}
 		al.app.push.Alert(cam, name, b.t, label, e.ID)
-		if s.WhatsApp.To != "" {
-			err = al.deliver(cam, name, b.t, s.WhatsApp.To, id, label, note, 5*time.Minute)
+		if to := alertChat(s, b.what); to != "" {
+			err = al.deliver(cam, name, b.t, to, id, label, note, 5*time.Minute)
 		}
 		al.finish(id, err)
 		n = al.app.settings.Get().NightAlerts
 	}
+}
+
+// alertChat: where a night alert goes. Cats and dogs can go to a separate chat.
+func alertChat(s Settings, what string) string {
+	if (what == "Cat" || what == "Dog") && s.WhatsApp.AnimalsTo != "" {
+		return s.WhatsApp.AnimalsTo
+	}
+	return s.WhatsApp.To
 }
 
 type shotResult struct {
