@@ -88,6 +88,16 @@ class Api(private val engine: Engine) {
     suspend fun wrongLabel(e: SentinelEvent, label: String): SentinelEvent =
         Engine.json.decodeFromString(call("POST", "api/events/${e.camera}/${e.id}/wrong", """{"label":"$label"}"""))
 
+    // People (recognised by face; naming is for admins)
+    suspend fun people(): PeopleResponse = get("api/people")
+    suspend fun personFaces(id: String, limit: Int = 90): List<FaceInfo> = get("api/people/$id/faces?limit=$limit")
+    suspend fun unknownFaces(limit: Int = 40): List<FaceGroup> = get("api/faces/unknown?limit=$limit")
+    suspend fun nameFaces(ids: List<String>, person: String? = null, name: String? = null): PersonInfo = send("POST", "api/faces/name", NameFaces(ids, person, name))
+    suspend fun notPerson(ids: List<String>, person: String) = call("POST", "api/faces/not", Engine.json.encodeToString(NotPerson(ids, person)))
+    suspend fun notFaces(ids: List<String>) = call("POST", "api/faces/junk", Engine.json.encodeToString(FaceIds(ids)))
+    suspend fun renamePerson(id: String, name: String): PersonInfo = send("PATCH", "api/people/$id", mapOf("name" to name))
+    suspend fun forgetPerson(id: String) = call("DELETE", "api/people/$id")
+
     suspend fun clips(): List<Clip> = get("api/clips")
     suspend fun createClip(camera: String, from: Long, to: Long, name: String): Clip =
         Engine.json.decodeFromString(call("POST", "api/clips", """{"camera":${Engine.json.encodeToString(camera)},"from":$from,"to":$to,"name":${Engine.json.encodeToString(name)}}"""))
@@ -124,6 +134,7 @@ class Api(private val engine: Engine) {
     fun vodUrl(cam: String, from: Long, to: Long) = engine.url("api/vod.m3u8?camera=$cam&from=$from&to=$to")
     /** Live video as fragmented MP4. FLAC audio comes straight from go2rtc (no ffmpeg), which starts faster. */
     fun liveUrl(cam: String, hq: Boolean) = engine.url("go2rtc/api/stream.mp4?src=${if (hq) cam else "${cam}_sub"}&mp4=flac")
+    fun faceUrl(id: String) = engine.url("api/faces/$id.jpg")
     fun clipVideoUrl(id: String) = engine.url("api/clips/$id/video")
     fun clipThumbUrl(c: Clip) = engine.url("api/clips/${c.id}/thumb.jpg?v=${c.status}")
 }

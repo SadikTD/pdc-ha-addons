@@ -51,6 +51,8 @@ data class SentinelEvent(
     val scan: String = "",
     /** A picture of who was seen (snap.jpg). */
     val snap: Boolean = false,
+    /** Who the people were, when recognised (by face, or the same day by their clothes). */
+    val who: List<Who> = emptyList(),
 ) {
     /** Motion still going on (Sentinel sends end = 0). */
     val ongoing: Boolean get() = end == 0L
@@ -286,3 +288,54 @@ data class UserInput(
     val cameras: List<String>? = null,
     val disabled: Boolean? = null,
 )
+
+/** A recognised person in an event: by "face", or the same day by "clothing". */
+@Serializable
+data class Who(val person: String, val name: String, val by: String = "face")
+
+@Serializable
+data class LastSeen(val cam: String, val event: String, val t: Long)
+
+@Serializable
+data class PersonInfo(
+    val id: String,
+    val name: String,
+    val created: Long = 0,
+    val faces: Int = 0,
+    val sightings: Int = 0,
+    val last: LastSeen? = null,
+    val cover: String? = null,
+)
+
+@Serializable
+data class FaceStatus(val enabled: Boolean = false, val error: String? = null, val backlog: Int = 0, val done: Int = 0, val faces: Int = 0)
+
+@Serializable
+data class PeopleResponse(val people: List<PersonInfo> = emptyList(), val status: FaceStatus = FaceStatus())
+
+@Serializable
+data class FaceInfo(
+    val id: String,
+    val cam: String,
+    val event: String,
+    val t: Long,
+    val q: Double = 0.0,
+    val by: String? = null,
+    val sim: Double = 0.0,
+    val person: String? = null,
+)
+
+@Serializable
+data class Suggestion(val person: String, val name: String)
+
+@Serializable
+data class FaceGroup(val faces: List<FaceInfo> = emptyList(), val size: Int = 0, val ids: List<String> = emptyList(), val suggest: Suggestion? = null)
+
+@Serializable
+data class NameFaces(val faces: List<String>, val person: String? = null, val name: String? = null)
+
+@Serializable
+data class NotPerson(val faces: List<String>, val person: String)
+
+@Serializable
+data class FaceIds(val faces: List<String>)

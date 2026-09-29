@@ -98,10 +98,15 @@ export function PeoplePage() {
         ) : (
           <div className="flex flex-col gap-3">
             <AnimatePresence initial={false}>
-              {groups.map((g) => (
-                <GroupCard key={g.ids[0]} g={g} names={names} onDone={load} />
-              ))}
+              {groups
+                .filter((g) => g.size > 1 || g.suggest)
+                .map((g) => (
+                  <GroupCard key={g.ids[0]} g={g} names={names} onDone={load} />
+                ))}
             </AnimatePresence>
+            {groups.some((g) => g.size === 1 && !g.suggest) && (
+              <Singles faces={groups.filter((g) => g.size === 1 && !g.suggest).map((g) => g.faces[0])} names={names} onDone={load} />
+            )}
           </div>
         )}
       </section>
@@ -226,6 +231,72 @@ function GroupCard({ g, names, onDone }: { g: FaceGroup; names: string[]; onDone
         </div>
       </Card>
     </motion.div>
+  );
+}
+
+// Faces seen once: tap the ones of the same person, then name them together.
+function Singles({ faces, names, onDone }: { faces: FaceInfo[]; names: string[]; onDone: () => void }) {
+  const toast = useToast();
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ids = [...picked];
+  const toggle = (id: string) => setPicked((s) => (s.has(id) ? new Set([...s].filter((x) => x !== id)) : new Set(s).add(id)));
+  const act = async (fn: () => Promise<unknown>, msg: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      toast(msg, "success");
+      setPicked(new Set());
+      setName("");
+      onDone();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Card className="p-4">
+      <div className="mb-2 text-sm font-semibold text-white">Seen once</div>
+      <p className="mb-3 text-xs text-slate-400">Tap the faces of one person (they may be seen from different angles), then name them together.</p>
+      <div className="flex flex-wrap gap-2">
+        {faces.map((f) => (
+          <div key={f.id} className={clsx("rounded-xl", picked.has(f.id) && "ring-2 ring-violet-400")}>
+            <Face f={f} onClick={() => toggle(f.id)} badge={picked.has(f.id) ? <Check className="absolute right-1 top-1 size-4 rounded-full bg-violet-500 p-0.5 text-white" /> : undefined} />
+          </div>
+        ))}
+      </div>
+      {ids.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-slate-400">{ids.length} picked</span>
+          <form
+            className="flex min-w-60 flex-1 items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const n = name.trim();
+              if (n) act(() => api.nameFaces(ids, { name: n }), `${ids.length} face${ids.length === 1 ? "" : "s"} named ${n}.`);
+            }}
+          >
+            <input list="people-names-once" value={name} onChange={(e) => setName(e.target.value)} placeholder="Who is this?" className={clsx(inputCls, "h-9 flex-1")} />
+            <datalist id="people-names-once">
+              {names.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+            <Button size="sm" type="submit" variant="primary" disabled={busy || !name.trim()}>
+              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Save
+            </Button>
+          </form>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => act(() => api.notFaces(ids), "Ignored.")}>
+            Not a face
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setPicked(new Set())}>
+            Clear
+          </Button>
+        </div>
+      )}
+    </Card>
   );
 }
 

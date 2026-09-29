@@ -1,5 +1,6 @@
 package app.sentinel.ui
 
+import app.sentinel.ui.screens.PeopleScreen
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Spring
@@ -142,6 +143,7 @@ object Routes {
     const val System = "system"
     const val Settings = "settings"
     const val Notifications = "notifications"
+    const val People = "people"
     const val Summary = "summary?date={date}"
     fun summary(date: String? = null) = "summary" + (date?.takeIf { it.isNotBlank() }?.let { "?date=$it" } ?: "")
     fun camera(id: String, t: Long? = null, ev: String? = null) = "camera/$id" + (if (t != null) "?t=$t" else "") + (if (ev != null) "${if (t != null) "&" else "?"}ev=${android.net.Uri.encode(ev)}" else "")
@@ -195,6 +197,7 @@ private fun MainNav(state: AppState) {
         composable(Routes.System) { SystemScreen(state, onBack = { nav.popBackStack() }, onOpenCamera = { nav.navigate(Routes.camera(it)) }) }
         composable(Routes.Settings) { SettingsScreen(state, onBack = { nav.popBackStack() }) }
         composable(Routes.Notifications) { NotificationsScreen(state, onBack = { nav.popBackStack() }) }
+        composable(Routes.People) { PeopleScreen(state, onBack = { nav.popBackStack() }, openCamera = { id, t -> nav.navigate(Routes.camera(id, t)) }) }
         composable(Routes.Summary, arguments = listOf(navArgument("date") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
             SummaryScreen(state, entry.arguments?.getString("date"), onBack = { nav.popBackStack() }, openCamera = { id, t -> nav.navigate(Routes.camera(id, t)) })
         }
@@ -232,7 +235,7 @@ private fun Tabs(state: AppState, nav: NavHostController) {
                 1 -> EventsScreen(state, padding) { nav.navigate(Routes.camera(it.c, it.t, it.id)) }
                 2 -> TimelineScreen(state, padding, openCamera)
                 3 -> ClipsScreen(state, padding)
-                else -> MoreScreen(state, padding, onUsers = { nav.navigate(Routes.Users) }, onSystem = { nav.navigate(Routes.System) }, onSettings = { nav.navigate(Routes.Settings) }, onNotifications = { nav.navigate(Routes.Notifications) }, onSummary = { nav.navigate(Routes.summary()) })
+                else -> MoreScreen(state, padding, onUsers = { nav.navigate(Routes.Users) }, onSystem = { nav.navigate(Routes.System) }, onSettings = { nav.navigate(Routes.Settings) }, onNotifications = { nav.navigate(Routes.Notifications) }, onSummary = { nav.navigate(Routes.summary()) }, onPeople = { nav.navigate(Routes.People) })
             }
         }
         TabBar(tab, Modifier.align(Alignment.BottomCenter)) { tab = it }

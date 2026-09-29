@@ -1,5 +1,6 @@
 package app.sentinel.ui.components
 
+import app.sentinel.core.Who
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -49,11 +50,15 @@ fun mainLabel(e: SentinelEvent): String? = LABEL_ORDER.firstOrNull { it in e.lab
 
 /** Small badges for who was seen ("Motion" when checked and nobody was). */
 @Composable
-fun LabelChips(labels: List<String>, modifier: Modifier = Modifier, small: Boolean = false, showMotion: Boolean = false, checked: Boolean = true) {
-    val shown = LABEL_ORDER.filter { it in labels }
+fun LabelChips(labels: List<String>, modifier: Modifier = Modifier, small: Boolean = false, showMotion: Boolean = false, checked: Boolean = true, who: List<Who> = emptyList()) {
+    // Recognised people show by name instead of "Person" (≈ = going by their clothes).
+    val shown = LABEL_ORDER.filter { it in labels && (it != "person" || who.isEmpty()) }
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (shown.isEmpty() && showMotion) {
+        if (shown.isEmpty() && who.isEmpty() && showMotion) {
             Chiplet(if (checked) "Motion" else "Checking…", Icons.Rounded.Bolt, Color(0xAA000000), C.Amber, small)
+        }
+        who.take(3).forEach { w ->
+            Chiplet(if (w.by == "clothing") "≈ ${w.name}" else w.name, Icons.Rounded.Person, LABELS.getValue("person").color, Color.White, small)
         }
         shown.forEach { l ->
             val s = LABELS.getValue(l)

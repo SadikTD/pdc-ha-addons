@@ -273,6 +273,8 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
     var eventList: List<ListItem> = emptyList()
     /** The event last opened from the list, marked there when coming back. */
     var lastWatched by mutableStateOf<String?>(null)
+    /** The people Sentinel recognises (for filters, shown at once). */
+    var peopleCache: List<PersonInfo> = emptyList()
 }
 
 /** An event in a list: its camera, id, and where playback starts. */

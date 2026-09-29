@@ -1,5 +1,6 @@
 package app.sentinel.ui.screens
 
+import androidx.compose.material.icons.rounded.Person
 import app.sentinel.core.ListItem
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -109,6 +110,10 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) 
     var camFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var kind by rememberSaveable { mutableStateOf("all") } // all, person, cat, dog, motion
     var size by rememberSaveable { mutableIntStateOf(0) }
+    var whoFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    // People Sentinel recognises (named on the People page), for the filter.
+    var people by remember { mutableStateOf(state.peopleCache) }
+    LaunchedEffect(Unit) { runCatching { state.api.people().people }.onSuccess { people = it; state.peopleCache = it } }
     var text by rememberSaveable { mutableStateOf("") }
     var asked by rememberSaveable { mutableStateOf("") }
     var parsed by remember { mutableStateOf<SearchQuery?>(null) }
@@ -168,7 +173,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) 
             "all" -> true
             "motion" -> it.scan == "done" && it.labels.isEmpty()
             else -> kind in it.labels
-        }
+        } && (whoFilter == null || it.who.any { w -> w.person == whoFilter })
     }
     // Back-to-back motion on one camera is one activity (a person walking through
     // trips the detector several times).
@@ -240,6 +245,15 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) 
                             Chip("${s.plural} ${counts[l]}", kind == l, icon = s.icon) { kind = if (kind == l) "all" else l }
                         }
                         Chip("Motion only ${counts["motion"]}", kind == "motion", icon = Icons.Rounded.Bolt) { kind = if (kind == "motion") "all" else "motion" }
+                    }
+                    if (people.isNotEmpty()) {
+                        Gap(8.dp)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            people.forEach { p ->
+                                val n = sized?.count { e -> e.who.any { it.person == p.id } }
+                                Chip("${p.name}${if (n != null) " $n" else ""}", whoFilter == p.id, icon = Icons.Rounded.Person) { whoFilter = if (whoFilter == p.id) null else p.id }
+                            }
+                        }
                     }
                     if (asked.isBlank()) {
                         Gap(8.dp)
@@ -333,6 +347,8 @@ private data class Activity(val events: List<SentinelEvent>) {
     val ongoing get() = events.any { it.ongoing }
     /** Who was seen in any of them. */
     val labels get() = LABEL_ORDER.filter { l -> events.any { l in it.labels } }
+    /** The recognised people in any of them (by face beats by clothing). */
+    val who get() = events.flatMap { it.who }.sortedBy { if (it.by == "face") 0 else 1 }.distinctBy { it.person }
     /** The event whose picture is shown: someone seen (a person first), else the newest. */
     val shown get() = LABEL_ORDER.firstNotNullOfOrNull { l -> events.firstOrNull { l in it.labels && it.snap } } ?: first
     val checked get() = events.all { it.checked }
@@ -377,7 +393,7 @@ private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Flo
                 Icon(Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
                 Text(if (a.ongoing) "now" else fmtDuration(a.end - a.start), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             }
-            LabelChips(a.labels, Modifier.align(Alignment.TopStart).padding(7.dp), small = true, showMotion = true, checked = a.checked)
+            LabelChips(a.labels, Modifier.align(Alignment.TopStart).padding(7.dp), small = true, showMotion = true, checked = a.checked, who = a.who)
             Row(Modifier.align(Alignment.TopEnd).padding(7.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (a.events.size > 1) Text(
                     "×${a.events.size}", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold,

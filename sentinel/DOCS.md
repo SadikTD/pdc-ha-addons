@@ -125,6 +125,35 @@ shows how it's going. Cameras without motion detection aren't checked.
 
 Night alerts use the same checks, so a cat never arrives as "Person".
 
+## Who is it? (people you name)
+
+Sentinel recognises the people you name, on every camera:
+
+- **By face:** after an event gets the Person label, a few of its frames are looked at
+  again in full quality. The face at the top of each person's box, if it is clear enough
+  (big enough, sharp, facing the camera), gets a fingerprint (YuNet finds faces,
+  InsightFace's MobileFaceNet fingerprints them) that is compared with the faces of the
+  people you named. A name is only given when it's a clear match; otherwise the event
+  stays "Person".
+- **By clothing, the same day:** cameras looking down from the ceiling rarely see a
+  face. Each sighting also keeps the colours of the person's clothes; a sighting without
+  a usable face whose clothes clearly match one named person's, within 6 hours and in
+  daylight (infrared has no colours), is shown as "≈ Name".
+- **Naming (People page, or More → People in the app, admins):** faces nobody has named
+  yet are grouped by likeness, the people seen most first. Name a group once (tap faces
+  that don't belong to take them out first), or tap several single faces and name them
+  together. Faces that look like someone you already named are offered as "This is …".
+  Every face you confirm makes that person easier to recognise; tap a wrong face on a
+  person's page to take it out, "Not a face" teaches it to ignore patterns (e.g. wood
+  grain), and "Forget" removes a person.
+- Events show names instead of "Person"; filter Events by person, or search "Abir
+  yesterday".
+
+Faces, fingerprints and names stay on the Pi (`/media/sentinel/faces`); faces you named
+are kept, the rest go with their events. Turn it off under Settings → Alerts →
+Recognise people. Why an event did or didn't give a face:
+`GET /api/faces/explain/<camera>/<event id>`.
+
 ## Night alerts on WhatsApp
 
 Between the hours you choose (default 23:00–06:00), motion on the selected cameras
@@ -218,6 +247,8 @@ at home and from anywhere, with no port forwarding, VPN or other add-on:
   signed out on its own. Five wrong passwords lock the username for a growing time.
 - **Events:** opening one plays it with **‹ 12 / 340 ›** at the top to step through the
   list; back returns to the list where you left it, with the event last watched marked.
+  Recognised people show by name, with a filter per person.
+- **People** (More): who Sentinel recognises; admins name new faces and fix wrong ones.
 
 Setup: install the app (APK from the GitHub releases), then log in. At home the app
 finds Sentinel by itself; elsewhere, scan the QR code or type the Sentinel ID shown in
