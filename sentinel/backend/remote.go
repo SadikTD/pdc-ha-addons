@@ -187,10 +187,35 @@ var panelNets = []netip.Prefix{netip.MustParsePrefix("172.30.32.0/23"), netip.Mu
 
 var lastReject atomic.Int64
 
+// ownAddrs: this machine's own addresses. Other add-ons reaching the host (e.g. through
+// its LAN address) arrive from these; other devices on the LAN never can.
+var ownAddrs = struct {
+	sync.Mutex
+	set map[netip.Addr]bool
+	at  time.Time
+}{}
+
+func isOwnAddr(a netip.Addr) bool {
+	ownAddrs.Lock()
+	defer ownAddrs.Unlock()
+	if ownAddrs.set == nil || time.Since(ownAddrs.at) > time.Minute {
+		ownAddrs.set = map[netip.Addr]bool{}
+		if addrs, err := net.InterfaceAddrs(); err == nil {
+			for _, x := range addrs {
+				if p, err := netip.ParsePrefix(x.String()); err == nil {
+					ownAddrs.set[p.Addr().Unmap()] = true
+				}
+			}
+		}
+		ownAddrs.at = time.Now()
+	}
+	return ownAddrs.set[a.Unmap()]
+}
+
 func panelOnly(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ap, err := netip.ParseAddrPort(r.RemoteAddr)
-		ok := err == nil && ap.Addr().IsLoopback()
+		ok := err == nil && (ap.Addr().IsLoopback() || isOwnAddr(ap.Addr()))
 		for _, p := range panelNets {
 			ok = ok || (err == nil && p.Contains(ap.Addr().Unmap()))
 		}
