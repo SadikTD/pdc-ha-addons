@@ -141,7 +141,7 @@ func (a *App) Routes(www string) http.Handler {
 		if c := r.URL.Query().Get("cameras"); c != "" {
 			cams = strings.Split(c, ",")
 		}
-		n := a.events.Rescan(cams, from.UnixMilli(), to.UnixMilli())
+		n := a.events.Rescan(cams, from.UnixMilli(), to.UnixMilli(), r.URL.Query().Get("only") == "seen")
 		a.labeler.Poke()
 		writeJSON(w, 200, map[string]int{"events": n})
 	})

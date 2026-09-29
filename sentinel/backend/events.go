@@ -141,8 +141,10 @@ func (es *EventStore) RemoveLabel(cam, id, label string) (Object, bool) {
 }
 
 // Rescan forgets detection results of events that started in [from, to] (on these
-// cameras, all when empty), so they're checked again. It returns how many.
-func (es *EventStore) Rescan(cams []string, from, to int64) int {
+// cameras, all when empty), so they're checked again. It returns how many. seenOnly:
+// just the events where something was seen (labelled, or with rejected sightings), and
+// their current labels stay until they're checked again.
+func (es *EventStore) Rescan(cams []string, from, to int64, seenOnly bool) int {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	n := 0
@@ -153,6 +155,14 @@ func (es *EventStore) Rescan(cams []string, from, to int64) int {
 		days := map[string]bool{}
 		for _, e := range list {
 			if e.Start >= from && e.Start <= to && e.End != 0 && e.Scan != "scanning" {
+				if seenOnly {
+					if len(e.Labels) > 0 || len(e.Rejected) > 0 {
+						e.Scan = ""
+						days[dayKey(e.Start)] = true
+						n++
+					}
+					continue
+				}
 				e.Scan, e.Labels, e.Objects, e.Rejected, e.Snap = "", nil, nil, nil, false
 				removePicture(es.SnapPath(cam, e.ID))
 				days[dayKey(e.Start)] = true

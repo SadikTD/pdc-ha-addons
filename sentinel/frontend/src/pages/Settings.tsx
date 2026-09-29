@@ -126,6 +126,28 @@ export function SettingsPage() {
               <QuietWindows value={draft.quiet_windows} onChange={(v) => set("quiet_windows", v)} />
             </Field>
             <Toggle checked={draft.mqtt_enabled} onChange={(v) => set("mqtt_enabled", v)} label="Home Assistant entities (MQTT)" hint="Motion & recording sensors plus a snapshot camera per camera" />
+            <Field label="Animals that live here or visit" hint="With just one kind, every animal seen is called that: cameras looking down often make a cat look like a dog to the detector.">
+              <div className="flex gap-2">
+                {(
+                  [
+                    ["cat", "Cats"],
+                    ["dog", "Dogs"],
+                  ] as const
+                ).map(([k, l]) => {
+                  const on = (draft.animals ?? ["cat", "dog"]).includes(k);
+                  return (
+                    <button
+                      type="button"
+                      key={k}
+                      onClick={() => set("animals", on ? (draft.animals ?? ["cat", "dog"]).filter((x) => x !== k) : [...(draft.animals ?? []), k])}
+                      className={clsx("rounded-full border px-3 py-1.5 text-xs font-medium transition", on ? "border-violet-400/40 bg-violet-500/15 text-violet-100" : "border-white/10 text-slate-400 hover:text-white")}
+                    >
+                      {l}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
           </div>
         </Card>
         <Card className="p-5">

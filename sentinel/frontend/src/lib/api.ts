@@ -44,6 +44,7 @@ export type Settings = {
   };
   whatsapp: { to: string; to_name: string; animals_to: string; animals_to_name: string; morning_report: boolean; bridge_url: string };
   daily_summary: { enabled: boolean; time: string };
+  animals?: ("cat" | "dog")[];
   drive: {
     backup_alerts: boolean;
     backup_saved: boolean;

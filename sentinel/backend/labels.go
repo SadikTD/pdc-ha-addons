@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -222,8 +221,9 @@ type sighting struct {
 	pre bool
 }
 
-// suspicious: could be a lookalike (unless the thing is seen moving).
-func (s sighting) suspicious(moves bool) bool { return !moves && (s.hot || s.pre) }
+// suspicious: could be a lookalike. Something real that moves is also seen elsewhere in
+// other frames, and those sightings are asked about first.
+func (s sighting) suspicious() bool { return s.hot || s.pre }
 
 func (l *Labeler) label(ctx context.Context, e Event, live, busy bool) {
 	a := l.app
@@ -323,7 +323,8 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 		return mask[min(max(cy, 0), shotH-1)*shotW+min(max(cx, 0), shotW-1)]
 	}
 
-	seen := map[string][]sighting{} // candidates per group ("person", "animal")
+	kinds := a.settings.Get().Animals // animals that live here or visit
+	seen := map[string][]sighting{}   // candidates per group ("person", "animal")
 	tried := map[string][]time.Time{}
 	triedBest := map[string]float64{}
 	done := map[string]bool{}
@@ -374,7 +375,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			return
 		}
 		win, lose := "cat", "dog"
-		if votes["dog"] > votes["cat"] {
+		if votes["dog"] > votes["cat"] || !slices.Contains(kinds, "cat") {
 			win, lose = "dog", "cat"
 		}
 		clear := animalChecks >= 2 && votes[win] >= 1.5*votes[lose] ||
@@ -397,8 +398,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			if done[g] || len(ss) == 0 || len(tried[g]) >= maxVerify || ctx.Err() != nil {
 				continue
 			}
-			moves := moved(ss)
-			best := bestUntried(ss, tried[g], moves)
+			best := bestUntried(ss, tried[g])
 			if best == nil {
 				continue
 			}
@@ -417,7 +417,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			tried[g] = append(tried[g], best.t)
 			triedBest[g] = max(triedBest[g], best.d.Score)
 			asked = true
-			suspicious := best.suspicious(moves)
+			suspicious := best.suspicious()
 			v := l.verifyScores(ctx, cam, best.t, best.d.Box)
 			o.log("  big model in %s: %s", fmtBox(verifyRect(best.d.Box, a.frameAspect(cam.ID))), fmtDets(v.raw))
 			need := func(label string) float64 { return needScore(label, edge, suspicious) }
@@ -425,7 +425,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			animal := max(v.score["cat"], v.score["dog"])
 			o.log("closer look at %s %.2f %s (%s%s%s): person %.2f (needs %.2f), cat %.2f, dog %.2f (need %.2f)",
 				best.d.Label, best.d.Score, fmtBox(best.d.Box), when(edge, "at the edge ", ""), when(best.hot, "in a lookalike spot ", ""),
-				when(best.pre && !moves, "was already there", when(moves, "moving", "")), person, need("person"), v.score["cat"], v.score["dog"], need("cat"))
+				when(best.pre, "was already there", ""), person, need("person"), v.score["cat"], v.score["dog"], need("cat"))
 			switch {
 			case person >= need("person") && person >= animal && (g == "person" || person >= 0.7):
 				// A person (the big model is surer than the fast one's animal guess).
@@ -433,11 +433,12 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 					done["person"] = true
 					confirm(v.object("person", best.t), best.t)
 				}
-			case animal >= need("cat") && !done["animal"]:
+			case animal >= need("cat") && !done["animal"] && len(kinds) > 0:
 				animalChecks++
-				for _, lb := range []string{"cat", "dog"} {
-					votes[lb] += v.score[lb]
-					if ob := v.object(lb, best.t); ob.Score > bestAnimal[lb].Score {
+				for _, lb := range kinds {
+					ob := v.animal(lb, kinds, best.t)
+					votes[lb] += ob.Score
+					if ob.Score > bestAnimal[lb].Score {
 						bestAnimal[lb] = ob
 					}
 				}
@@ -458,7 +459,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 	look := func(t time.Time, dets []Detection, zoom *zoomLook) bool {
 		found := false
 		for _, d := range dets {
-			if done[group(d.Label)] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea {
+			if done[group(d.Label)] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea || group(d.Label) == "animal" && len(kinds) == 0 {
 				continue
 			}
 			if zoom != nil && overlapOfSmaller(d.Box, zoom.changed) < 0.25 {
@@ -588,23 +589,6 @@ func needScore(label string, edge, suspicious bool) float64 {
 	return min(n, 0.9)
 }
 
-// moved: the sightings (of one group, across frames) show something that moves. Laundry
-// sways in place; a person or a cat goes somewhere.
-func moved(ss []sighting) bool {
-	for i := range ss {
-		for j := i + 1; j < len(ss); j++ {
-			a, b := ss[i].d.Box, ss[j].d.Box
-			dx := (a.X + a.W/2) - (b.X + b.W/2)
-			dy := (a.Y + a.H/2) - (b.Y + b.H/2)
-			scale := max(min(a.W, b.W), min(a.H, b.H))
-			if math.Hypot(dx, dy) > 0.6*scale && iou(a, b) < 0.4 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func when(c bool, a, b string) string {
 	if c {
 		return a
@@ -635,7 +619,7 @@ func atEdge(b Rect) bool {
 
 // bestUntried is the clearest sighting not asked about yet, preferring ones that can't be
 // a lookalike.
-func bestUntried(ss []sighting, tried []time.Time, moves bool) *sighting {
+func bestUntried(ss []sighting, tried []time.Time) *sighting {
 	var best *sighting
 	for i := range ss {
 		if slices.ContainsFunc(tried, ss[i].t.Equal) {
@@ -645,7 +629,7 @@ func bestUntried(ss []sighting, tried []time.Time, moves bool) *sighting {
 			best = &ss[i]
 			continue
 		}
-		si, sb := ss[i].suspicious(moves), best.suspicious(moves)
+		si, sb := ss[i].suspicious(), best.suspicious()
 		if si != sb {
 			if !si {
 				best = &ss[i]
@@ -668,6 +652,21 @@ type verdict struct {
 
 func (v verdict) object(label string, t time.Time) Object {
 	return Object{Label: label, Score: v.score[label], Box: v.box[label], T: t.UnixMilli()}
+}
+
+// animal is the big model's answer for label among the animals that live here: with
+// only one kind, whichever animal it saw is that kind.
+func (v verdict) animal(label string, kinds []string, t time.Time) Object {
+	if len(kinds) != 1 {
+		return v.object(label, t)
+	}
+	best := "cat"
+	if v.score["dog"] > v.score["cat"] {
+		best = "dog"
+	}
+	o := v.object(best, t)
+	o.Label = label
+	return o
 }
 
 // verifyScores asks the big model about the spot box at t, zoomed in from the
@@ -696,6 +695,16 @@ func (l *Labeler) verifyScores(ctx context.Context, cam Camera, t time.Time, box
 // clearly one animal rather than the other).
 func (l *Labeler) verify(ctx context.Context, cam Camera, t time.Time, box Rect, edge, suspicious bool) (Object, bool) {
 	v := l.verifyScores(ctx, cam, t, box)
+	if kinds := l.app.settings.Get().Animals; len(kinds) < 2 {
+		animal := max(v.score["cat"], v.score["dog"])
+		v.score["cat"], v.score["dog"] = 0, 0
+		if len(kinds) == 1 {
+			v.score[kinds[0]] = animal
+			if v.box[kinds[0]] == (Rect{}) {
+				v.box[kinds[0]] = v.box[map[string]string{"cat": "dog", "dog": "cat"}[kinds[0]]]
+			}
+		}
+	}
 	best := ""
 	for _, label := range watchLabels {
 		if best == "" || v.score[label] > v.score[best] {

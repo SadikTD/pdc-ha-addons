@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -75,6 +76,9 @@ type Settings struct {
 	Drive             DriveBackup `json:"drive"`
 	// Once a day, yesterday's summary goes to the phones with the app.
 	DailySummary DailySummary `json:"daily_summary"`
+	// Animals that live here or visit ("cat", "dog"). With one kind only, any animal
+	// detection is that kind: the detector often calls a cat seen from above a dog.
+	Animals []string `json:"animals"`
 }
 
 type DailySummary struct {
@@ -322,6 +326,13 @@ func (s *Settings) normalize() error {
 	if s.Drive.MotionCameras == nil {
 		s.Drive.MotionCameras = []string{}
 	}
+	animals := []string{}
+	for _, a := range []string{"cat", "dog"} {
+		if s.Animals == nil || slices.Contains(s.Animals, a) {
+			animals = append(animals, a)
+		}
+	}
+	s.Animals = animals
 	if s.Drive.MotionWho != "all" {
 		s.Drive.MotionWho = "people_animals"
 	}
