@@ -576,7 +576,7 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 			people = people[:4]
 		}
 		// The whole frame in full quality, to crop each person from.
-		full, err := a.decodeRGB(ctx, e.Cam, t, fullFrame, 8192)
+		full, err := a.decodeRGB(ctx, e.Cam, t, fullFrame, 0)
 		if err != nil {
 			continue
 		}

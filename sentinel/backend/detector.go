@@ -265,9 +265,13 @@ type frameRGB struct {
 	r    Rect // the part of the frame it shows (normalised)
 }
 
-// decodeRGB decodes the part r (normalised) of the frame at t, scaled to fit size×size.
+// decodeRGB decodes the part r (normalised) of the frame at t, scaled to fit size×size
+// (size 0: as recorded, full resolution).
 func (a *App) decodeRGB(ctx context.Context, cam string, t time.Time, r Rect, size int) (frameRGB, error) {
 	vf := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease:flags=area,format=rgb24", size, size)
+	if size <= 0 {
+		vf = "format=rgb24"
+	}
 	if r != fullFrame {
 		vf = fmt.Sprintf("crop=trunc(iw*%.4f/2)*2:trunc(ih*%.4f/2)*2:trunc(iw*%.4f):trunc(ih*%.4f),", r.W, r.H, r.X, r.Y) + vf
 	}
