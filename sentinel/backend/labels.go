@@ -300,20 +300,47 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 		}
 	}
 
-	// decide asks the big model about labels with enough evidence. final: no more frames
-	// are coming, so a single clear-ish sighting is enough to ask.
-	decide := func(final bool) {
-		for _, label := range watchLabels {
-			ss := seen[label]
-			if done[label] || len(ss) == 0 || len(tried[label]) >= maxVerify || ctx.Err() != nil {
+	// People and animals are decided separately. Cats and dogs are one "animal": which
+	// of the two it is, is voted on by the big model over up to three frames, so one
+	// frame where a cat looks like a dog doesn't decide (and one animal never gets both).
+	votes := map[string]float64{} // animal: summed big-model scores per label
+	bestAnimal := map[string]Object{}
+	animalChecks := 0
+	decideAnimal := func(final bool) {
+		if done["animal"] || animalChecks == 0 {
+			return
+		}
+		win, lose := "cat", "dog"
+		if votes["dog"] > votes["cat"] {
+			win, lose = "dog", "cat"
+		}
+		clear := animalChecks >= 2 && votes[win] >= 1.5*votes[lose] ||
+			animalChecks == 1 && votes[lose] == 0 && bestAnimal[win].Score >= 0.75 ||
+			final && votes[win] > 1.2*votes[lose]
+		if !clear || bestAnimal[win].Label == "" {
+			return
+		}
+		done["animal"] = true
+		confirm(bestAnimal[win], time.UnixMilli(bestAnimal[win].T))
+	}
+
+	// decide asks the big model about whatever has enough evidence; it reports whether it
+	// asked anything. final: no more frames are coming, so a single clear-ish sighting is
+	// enough to ask.
+	decide := func(final bool) bool {
+		asked := false
+		for _, group := range []string{"person", "animal"} {
+			ss := seen[group]
+			if done[group] || len(ss) == 0 || len(tried[group]) >= maxVerify || ctx.Err() != nil {
 				continue
 			}
-			best := bestUntried(ss, tried[label])
+			best := bestUntried(ss, tried[group])
 			if best == nil {
 				continue
 			}
 			edge := atEdge(best.d.Box)
 			switch {
+			case len(tried[group]) > 0: // already asked once: keep asking about new frames
 			case len(ss) >= 2 && !edge:
 			case len(ss) >= 2 && edge && best.d.Score >= scanClear:
 			case len(ss) == 1 && !edge && best.d.Score >= scanClear:
@@ -321,18 +348,38 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 			default:
 				continue // not enough yet
 			}
-			tried[label] = append(tried[label], best.t)
-			v, ok := l.verify(ctx, cam, best.t, best.d.Box, edge)
-			if !ok {
-				reject(label, *best, 1) // the big model disagrees: remember the spot
-				continue
+			tried[group] = append(tried[group], best.t)
+			asked = true
+			v := l.verifyScores(ctx, cam, best.t, best.d.Box)
+			need := func(label string) float64 {
+				if edge {
+					return verifyMin[label] + 0.15
+				}
+				return verifyMin[label]
 			}
-			if done[v.Label] {
-				continue
+			person := v.score["person"]
+			animal := max(v.score["cat"], v.score["dog"])
+			switch {
+			case person >= need("person") && person >= animal && (group == "person" || person >= 0.7):
+				// A person (the big model is surer than the fast one's animal guess).
+				if !done["person"] {
+					done["person"] = true
+					confirm(v.object("person", best.t), best.t)
+				}
+			case animal >= need("cat") && !done["animal"]:
+				animalChecks++
+				for _, l := range []string{"cat", "dog"} {
+					votes[l] += v.score[l]
+					if o := v.object(l, best.t); o.Score > bestAnimal[l].Score {
+						bestAnimal[l] = o
+					}
+				}
+				decideAnimal(false)
+			default:
+				reject(best.d.Label, *best, 1) // the big model disagrees: remember the spot
 			}
-			done[v.Label] = true // the big model's answer wins (it may be another animal)
-			confirm(v, best.t)
 		}
+		return asked
 	}
 
 	empty := 0
@@ -372,7 +419,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 		checked++
 		found := false
 		for _, d := range dets {
-			if done[d.Label] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea {
+			if done[group(d.Label)] || d.Score < scanFound || d.Box.W*d.Box.H < minBoxArea {
 				continue
 			}
 			found = true
@@ -390,7 +437,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 				reject(d.Label, s, 0.5) // already there before the motion
 				continue
 			}
-			seen[d.Label] = append(seen[d.Label], s)
+			seen[group(d.Label)] = append(seen[group(d.Label)], s)
 		}
 		if found {
 			empty = 0
@@ -398,11 +445,17 @@ func (l *Labeler) scan(ctx context.Context, e Event, live, busy bool) (objs, rej
 			empty++
 		}
 		decide(false)
-		if len(done) == len(watchLabels) {
+		if done["person"] && done["animal"] {
 			break
 		}
 	}
-	decide(true)
+	// No more frames: ask about what's left, then settle the animal vote.
+	for i := 0; i < 2*maxVerify && decide(true); i++ {
+	}
+	decideAnimal(true)
+	if !done["animal"] && animalChecks > 0 {
+		rejected = append(rejected, Object{Label: "animal (cat or dog unclear)", Score: max(votes["cat"], votes["dog"])})
+	}
 	return objs, rejected, snap, checked
 }
 
@@ -425,36 +478,66 @@ func bestUntried(ss []sighting, tried []time.Time) *sighting {
 	return best
 }
 
-// verify asks the big model about the spot box at t, zoomed in from the full-quality
-// recording. It answers with what it sees there, if it's sure enough (surer for
-// something cut off by the picture's edge).
-func (l *Labeler) verify(ctx context.Context, cam Camera, t time.Time, box Rect, edge bool) (Object, bool) {
+// verdict is what the big model sees at a spot: its best score for each label there.
+type verdict struct {
+	score map[string]float64
+	box   map[string]Rect
+}
+
+func (v verdict) object(label string, t time.Time) Object {
+	return Object{Label: label, Score: v.score[label], Box: v.box[label], T: t.UnixMilli()}
+}
+
+// verifyScores asks the big model about the spot box at t, zoomed in from the
+// full-quality recording.
+func (l *Labeler) verifyScores(ctx context.Context, cam Camera, t time.Time, box Rect) verdict {
 	a := l.app
+	v := verdict{score: map[string]float64{}, box: map[string]Rect{}}
 	dets, err := a.detectAt(ctx, cam.ID, t, verifyRect(box, a.frameAspect(cam.ID)), modelVerify)
 	if err != nil {
-		return Object{}, false
+		return v
 	}
-	var best *Detection
-	for i := range dets {
-		d := &dets[i]
+	for _, d := range dets {
 		if iou(d.Box, box) < 0.3 && overlapOfSmaller(d.Box, box) < 0.6 {
 			continue // something else in the crop
 		}
-		if best == nil || d.Score > best.Score {
-			best = d
+		if d.Score > v.score[d.Label] {
+			v.score[d.Label], v.box[d.Label] = d.Score, d.Box
 		}
 	}
-	need := 0.0
-	if best != nil {
-		need = verifyMin[best.Label]
-		if edge {
-			need += 0.15
+	return v
+}
+
+// verify (for night alerts) says what the big model sees at the spot, if it's sure
+// enough (surer for something cut off by the picture's edge, and clearly one animal
+// rather than the other).
+func (l *Labeler) verify(ctx context.Context, cam Camera, t time.Time, box Rect, edge bool) (Object, bool) {
+	v := l.verifyScores(ctx, cam, t, box)
+	best := ""
+	for _, label := range watchLabels {
+		if best == "" || v.score[label] > v.score[best] {
+			best = label
 		}
 	}
-	if best == nil || best.Score < need {
+	need := verifyMin[best]
+	if edge {
+		need += 0.15
+	}
+	if v.score[best] < need {
 		return Object{}, false
 	}
-	return Object{Label: best.Label, Score: best.Score, Box: best.Box, T: t.UnixMilli()}, true
+	if best != "person" && v.score["cat"] > 0 && v.score["dog"] > 0 && max(v.score["cat"], v.score["dog"]) < 1.5*min(v.score["cat"], v.score["dog"]) {
+		return Object{}, false // cat or dog? unclear
+	}
+	return v.object(best, t), true
+}
+
+// group: people are decided on their own; cats and dogs together.
+func group(label string) string {
+	if label == "person" {
+		return "person"
+	}
+	return "animal"
 }
 
 // verifyRect is a square (in pixels) around the box, about twice its size, so the big
