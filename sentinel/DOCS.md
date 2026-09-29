@@ -144,6 +144,15 @@ any WhatsApp group the bridge's number is a member of. **Send a test picture** c
 the whole path. If WhatsApp is briefly offline (e.g. a router restart), alerts are
 retried for 15 minutes.
 
+**Cats and dogs** can go to a different chat than people (Settings → Night alerts →
+"Cats and dogs go to"), so the main chat is only about people.
+
+**Morning report:** each morning at the daily summary time, one picture of last night's
+people (the clearest sightings during the night alert hours, framed, with camera and
+time), or a "quiet night" card, with a one-line caption such as "Last night (11 PM –
+6 AM): 2 people (Ground Floor 2:14 AM, 2nd Floor 2:16 AM) · 3 cats." It waits until
+every event of the night has been checked. Preview it or send it now from Settings.
+
 ## Google Drive backup
 
 Sentinel can upload every motion event (10 s before to 10 s after, per camera or all
