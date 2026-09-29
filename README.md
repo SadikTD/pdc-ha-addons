@@ -15,6 +15,10 @@ Reliable 24/7 camera recorder (NVR) with a modern UI, built to keep recording th
 
 See [sentinel/DOCS.md](sentinel/DOCS.md). UI source is in `sentinel/frontend` (`npm run build` writes `sentinel/www`).
 
+## Sentinel app (Android)
+
+A dedicated Android app for Sentinel: live cameras, the scrubbing timeline, events and clips, at home or from anywhere, connecting **directly** to Sentinel (QUIC with NAT hole punching, end-to-end encrypted, no port forwarding or VPN). Per-user logins managed under Sentinel → Settings → Sentinel app. Download the APK from the [releases](https://github.com/SadikTD/pdc-ha-addons/releases/latest); see [sentinel-app/README.md](sentinel-app/README.md).
+
 ## PDC WhatsApp Bridge
 
 Self-hosted [Baileys](https://github.com/WhiskeySockets/Baileys) sender used by the Pitch Duplicate Checker Worker.

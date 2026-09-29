@@ -1,0 +1,210 @@
+package app.sentinel.core
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+// Mirrors Sentinel's JSON API (sentinel/frontend/src/lib/api.ts).
+
+@Serializable
+data class StreamInfo(
+    @SerialName("video_codec") val videoCodec: String = "",
+    val width: Int = 0,
+    val height: Int = 0,
+    val fps: Double = 0.0,
+    @SerialName("audio_codec") val audioCodec: String = "",
+)
+
+@Serializable
+data class RecStatus(
+    val state: String = "starting",
+    val since: Long = 0,
+    @SerialName("last_error") val lastError: String? = null,
+    @SerialName("restarts_24h") val restarts24h: Int = 0,
+    @SerialName("bitrate_kbps") val bitrateKbps: Double = 0.0,
+    @SerialName("last_write") val lastWrite: Long = 0,
+    val audio: Boolean = false,
+    val stream: StreamInfo = StreamInfo(),
+)
+
+@Serializable
+data class MotionStatus(val state: String = "", val active: Boolean = false, val score: Double = 0.0, val error: String? = null)
+
+@Serializable
+data class SentinelEvent(val id: String, val camera: String, val start: Long, val end: Long, val peak: Double = 0.0, val thumb: Boolean = false) {
+    /** Motion still going on (Sentinel sends end = 0). */
+    val ongoing: Boolean get() = end == 0L
+    fun endOr(now: Long): Long = if (ongoing) now else end
+}
+
+@Serializable
+data class CamStorage(
+    val bytes: Long = 0,
+    val count: Int = 0,
+    val oldest: Long = 0,
+    val newest: Long = 0,
+    @SerialName("rate_bph") val rateBph: Long = 0,
+    @SerialName("uptime_24h") val uptime24h: Double = 0.0,
+)
+
+@Serializable
+data class CameraStatus(
+    val id: String,
+    val name: String,
+    val enabled: Boolean = true,
+    val record: Boolean = true,
+    val audio: Boolean = true,
+    val occasional: Boolean = false,
+    @SerialName("retain_days") val retainDays: Double = 0.0,
+    @SerialName("motion_retain_days") val motionRetainDays: Double = 0.0,
+    val recorder: RecStatus? = null,
+    val motion: MotionStatus? = null,
+    val storage: CamStorage = CamStorage(),
+    @SerialName("last_event") val lastEvent: SentinelEvent? = null,
+) {
+    /** Recording state the way the web UI shows it. */
+    val state: String
+        get() = when {
+            !enabled -> "disabled"
+            !record -> "not-recording"
+            else -> recorder?.state ?: "starting"
+        }
+    val aspect: Float
+        get() = recorder?.stream?.let { if (it.width > 0 && it.height > 0) it.width.toFloat() / it.height else null } ?: (16f / 9f)
+    val hasAudio: Boolean get() = audio && (recorder?.stream?.audioCodec?.isNotEmpty() == true)
+}
+
+@Serializable
+data class Disk(val total: Long = 0, val free: Long = 0, val used: Long = 0)
+
+@Serializable
+data class StorageStatus(
+    val disk: Disk = Disk(),
+    val used: Long = 0,
+    @SerialName("rate_bph") val rateBph: Long = 0,
+    @SerialName("capacity_days") val capacityDays: Double = 0.0,
+    @SerialName("min_free_gb") val minFreeGb: Double = 0.0,
+    val clips: Long = 0,
+)
+
+@Serializable
+data class ClockStatus(
+    val synced: Boolean = true,
+    @SerialName("offset_ms") val offsetMs: Long = 0,
+    val server: String = "",
+    val error: String? = null,
+    val jumps: Int = 0,
+)
+
+@Serializable
+data class OnOff(val enabled: Boolean = false, val active: Boolean = false, val connected: Boolean = false, val mode: String = "", val error: String = "")
+
+@Serializable
+data class Status(
+    val version: String = "",
+    @SerialName("uptime_ms") val uptimeMs: Long = 0,
+    val now: Long = 0,
+    val cameras: List<CameraStatus> = emptyList(),
+    val storage: StorageStatus = StorageStatus(),
+    val clock: ClockStatus = ClockStatus(),
+    val live: Boolean = true,
+    val alerts: OnOff = OnOff(),
+    val drive: OnOff = OnOff(),
+    val mqtt: OnOff = OnOff(),
+    val health: Boolean = true,
+)
+
+@Serializable
+data class Span(val s: Long, val e: Long)
+
+@Serializable
+data class ClipBackup(val state: String = "", val progress: Double = 0.0, val error: String? = null)
+
+@Serializable
+data class Clip(
+    val id: String,
+    val name: String,
+    val camera: String,
+    @SerialName("camera_name") val cameraName: String = "",
+    val from: Long,
+    val to: Long,
+    val created: Long = 0,
+    val status: String = "ready",
+    val progress: Double = 0.0,
+    val error: String? = null,
+    val size: Long = 0,
+    val pinned: Boolean = false,
+    val alert: Boolean = false,
+    val backup: ClipBackup? = null,
+)
+
+@Serializable
+data class Incident(val t: Long, val level: String, val camera: String? = null, val message: String)
+
+@Serializable
+data class AlertRecord(
+    val id: String,
+    val camera: String,
+    @SerialName("camera_name") val cameraName: String = "",
+    val at: Long,
+    val status: String,
+    val error: String? = null,
+)
+
+@Serializable
+data class AppUser(
+    val id: String,
+    val username: String,
+    val name: String = "",
+    val admin: Boolean = false,
+    val cameras: List<String> = emptyList(),
+    val disabled: Boolean = false,
+    val created: Long = 0,
+    @SerialName("last_login") val lastLogin: Long = 0,
+) {
+    val display: String get() = name.ifBlank { username }
+}
+
+@Serializable
+data class AppSession(
+    val id: String,
+    @SerialName("user_id") val userId: String,
+    val username: String = "",
+    val device: String = "",
+    val created: Long = 0,
+    @SerialName("last_seen") val lastSeen: Long = 0,
+    val addr: String = "",
+    val via: String = "",
+    val push: Boolean = false,
+)
+
+@Serializable
+data class ServerInfo(val id: String = "", val name: String = "Sentinel", val version: String = "")
+
+@Serializable
+data class LoginResponse(val token: String, val user: AppUser, val server: ServerInfo)
+
+@Serializable
+data class MeResponse(val user: AppUser, val server: ServerInfo)
+
+@Serializable
+data class Found(val id: String, val name: String = "Sentinel", val version: String = "", val addr: String = "")
+
+@Serializable
+data class TunnelState(
+    val state: String = "idle",
+    val path: String? = null,
+    val addr: String? = null,
+    @SerialName("rtt_ms") val rttMs: Long = 0,
+    val error: String? = null,
+    val since: Long = 0,
+)
+
+@Serializable
+data class UserInput(
+    val username: String? = null,
+    val name: String? = null,
+    val password: String? = null,
+    val admin: Boolean? = null,
+    val cameras: List<String>? = null,
+    val disabled: Boolean? = null,
+)
