@@ -62,10 +62,18 @@ through router restarts, power cuts and flaky cameras.
 - **Go to (G):** on a camera or in Playback, type a moment the way you'd say it
   ("yesterday 3:15 pm", "22:40", "mon 9am", "27 sep 2pm", "10 min ago") or pick a
   date and time.
-- **Timeline:** every camera on one timeline with recording gaps and motion, plus
-  recorded percentage per camera.
-- **Events:** motion events with thumbnails, by day, filterable by camera, size and
-  time range (today, 24 hours, 7 days or any custom from–to range).
+- **Timeline:** every camera on one timeline with recording gaps and motion, people,
+  cats and dogs as coloured markers (hover one to see who), which kinds to show, plus
+  recorded percentage and people/animal counts per camera.
+- **Events:** motion events by day with who was seen (Person, Cat, Dog, or plain
+  Motion) and a picture framing them; filter by kind (with counts), camera, size and
+  time range, or **search** in plain words: "person on the roof last night", "cats
+  yesterday after 10pm", "dog ground floor this morning", "people 2 days ago between 1
+  and 4am". The search shows how it understood the question. Hover a label and click ✕
+  if it's wrong ("not a person"): the label goes and the camera learns that spot.
+- **Summary:** one day at a glance: people, cats, dogs and motion per camera, when it
+  was busiest (by hour), the clearest sightings, first and last person per camera, and
+  whether every camera recorded the whole day. Pick any day.
 - **Clips:** every saved clip with thumbnail, progress while saving, player,
   download, rename, pin and delete. Files are in `/media/sentinel/exports` (also
   in Home Assistant's Media panel). Unpinned clips are removed after the clip
@@ -77,6 +85,32 @@ through router restarts, power cuts and flaky cameras.
 - **Ignore zones:** any number per camera, drawn as rectangles or any shape (click
   around a tree or road), movable and reshapable, with a live overlay showing where
   motion is being detected right now and which of it the zones ignore.
+
+## People, cats and dogs
+
+Every motion event is checked for people, cats and dogs. It never watches video: when
+something moves, Sentinel looks at a few frames of the recording (in full quality), at
+low priority, so recording and live view always come first.
+
+Being wrong is worse than saying nothing, so a label needs two independent yeses: a
+fast model (YOLOX-s) must see it, and a bigger one (YOLOX-m), looking again at a
+zoomed-in crop of that spot, must agree. On top of that:
+
+- Something person-like that was already there before the motion (laundry, a coat, a
+  statue, a sleeping cat) doesn't count, and neither does anything in a camera's ignore
+  zones.
+- Each camera learns spots where lookalikes keep fooling detection (laundry flapping on
+  a line) and ignores sightings there unless the person or animal is also seen moving
+  elsewhere in the picture. Removing a wrong label teaches it at once.
+- Cat or dog is voted over several frames, so one animal never gets both labels; when
+  it stays unclear, it gets neither.
+- Things cut off by the picture's edge need a surer answer.
+
+Events that just happened are checked within seconds; older ones (e.g. after an update)
+are checked in the background, using at most a third of the time. The System page
+shows how it's going. Cameras without motion detection aren't checked.
+
+Night alerts use the same checks, so a cat never arrives as "Person".
 
 ## Night alerts on WhatsApp
 
@@ -196,9 +230,33 @@ With the Mosquitto broker add-on installed, each camera becomes a device with
 - `binary_sensor.roof_motion`
 - `binary_sensor.roof_recording` (off = not recording)
 - `camera.roof_last_motion` (snapshot of the last motion)
+- `binary_sensor.roof_person`, `binary_sensor.roof_cat`, `binary_sensor.roof_dog`
+  (on within a few seconds of someone being seen, off 30 s after the motion ends;
+  cameras with motion detection only)
+- `camera.roof_last_person_or_animal` (picture of the last one seen)
 
 plus a "Sentinel NVR" device with `sensor.sentinel_nvr_storage_free`,
-`sensor.sentinel_nvr_recordings_size` and `binary_sensor.sentinel_nvr_clock_problem`.
+`sensor.sentinel_nvr_recordings_size`, `binary_sensor.sentinel_nvr_clock_problem` and
+`binary_sensor.sentinel_nvr_person_any_camera` (and cat / dog).
+
+Example: porch light on when a person is seen at night.
+
+```yaml
+automation:
+  - alias: Person at night → porch light
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.ground_floor_person
+        to: "on"
+    conditions:
+      - condition: sun
+        after: sunset
+        before: sunrise
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.porch
+```
 
 If a camera stops recording for longer than the alert delay, Sentinel creates a
 persistent notification and, if set, sends it to your notify service. It sends
@@ -206,6 +264,11 @@ another when recording resumes. Quiet windows (e.g. `03:55-04:20` for a nightly
 router restart) suppress these alerts; recording is unaffected.
 
 ## Storage
+
+Each camera keeps all footage (24/7) for a number of days, footage with motion
+optionally longer, and footage in which a person was seen longer still (e.g. 2 days of
+everything and 7 days of the moments with people). Events not checked yet count as
+having a person until they are, so nothing important goes early.
 
 Recordings: `/media/sentinel/recordings/<camera>/`, timeline previews (about 3%
 of the recording size) in `/media/sentinel/previews/` (not included in Home

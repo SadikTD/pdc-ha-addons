@@ -24,8 +24,15 @@ code or type the Sentinel ID shown there.
 - **Clips:** mark a range with handles on the timeline and save (cut without
   re-encoding); watch, save to the phone, share, rename, pin, back up to Google Drive,
   delete.
-- **Events:** motion with thumbnails by day, filter by camera, time range and size.
-- **Timeline:** every camera's day on one screen with recorded percentage.
+- **Events:** who was seen (Person, Cat, Dog) with the picture framing them, by day;
+  filter by kind, camera, time range and size, or search in plain words ("person on the
+  roof last night"). Admins can press and hold a wrong label to remove it (Sentinel
+  learns from it).
+- **Daily summary:** people, cats, dogs and motion per camera, busiest hours,
+  highlights, and whether every camera recorded; a notification each morning.
+- **Timeline:** every camera's day on one screen with recorded percentage and people
+  and animals marked in colour; on a camera, the skip buttons can jump between people
+  or animals only.
 - **System:** health, storage forecast, per-camera recorder stats, activity log (admins),
   restart a camera (admins).
 - **Accounts:** each person logs in with their own username; viewers can be limited to

@@ -73,7 +73,8 @@ private val TICK_STEPS = longArrayOf(
 /**
  * A scrubbing timeline. The playhead stays in the middle: drag (or fling) the timeline
  * under it, pinch to zoom, tap to jump. Recorded footage is the gradient band, missing
- * footage is tinted red, motion events are the amber bars above.
+ * footage is tinted red, motion events are the amber bars above (people, cats and dogs
+ * in their colours).
  */
 @Composable
 fun Timeline(
@@ -222,13 +223,24 @@ fun Timeline(
             val xb = x(minOf(s.e, now)).coerceAtMost(w)
             if (xb - xa > 0.5f) drawRect(band, Offset(xa, trackTop), Size(xb - xa, trackH))
         }
-        // Motion events.
+        // Events: plain motion in faint amber; people and animals in their colour, taller,
+        // on top (with a dark ring so neighbours stay apart).
         for (e in events) {
+            val end = e.endOr(now)
+            if (end < t0 || e.start > t1 || mainLabel(e) != null) continue
+            val xa = x(e.start)
+            val xb = maxOf(x(end), xa + 3.dp.toPx())
+            drawRoundRect(C.Amber.copy(alpha = 0.55f), Offset(xa, evTop + evH * 0.2f), Size(xb - xa, evH * 0.6f), CornerRadius(2.dp.toPx()))
+        }
+        for (e in events) {
+            val label = mainLabel(e) ?: continue
             val end = e.endOr(now)
             if (end < t0 || e.start > t1) continue
             val xa = x(e.start)
-            val xb = maxOf(x(end), xa + 3.dp.toPx())
-            drawRoundRect(C.Amber.copy(alpha = 0.9f), Offset(xa, evTop), Size(xb - xa, evH), CornerRadius(2.dp.toPx()))
+            val xb = maxOf(x(end), xa + 6.dp.toPx())
+            val ring = 1.5.dp.toPx()
+            drawRoundRect(C.Ink950, Offset(xa - ring, evTop - evH * 0.35f - ring), Size(xb - xa + 2 * ring, evH * 1.7f + 2 * ring), CornerRadius(4.dp.toPx()))
+            drawRoundRect(LABELS.getValue(label).color, Offset(xa, evTop - evH * 0.35f), Size(xb - xa, evH * 1.7f), CornerRadius(3.dp.toPx()))
         }
         // Clip range.
         clipRange?.let { (a, b) ->

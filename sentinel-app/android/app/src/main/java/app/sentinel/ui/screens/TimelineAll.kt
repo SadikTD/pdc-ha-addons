@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -134,6 +135,14 @@ private fun DayRow(cam: CameraStatus, d: DayData?, dayStart: Long, dayEnd: Long,
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(cam.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                 if (d != null) {
+                    app.sentinel.ui.components.LABEL_ORDER.forEach { l ->
+                        val n = d.events.count { l in it.labels }
+                        if (n > 0) {
+                            val st = app.sentinel.ui.components.LABELS.getValue(l)
+                            androidx.compose.material3.Icon(st.icon, st.plural, tint = st.color, modifier = Modifier.size(14.dp))
+                            Text("$n  ", color = C.Text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                     Text("${d.events.size} motion", color = C.Amber, fontSize = 12.sp)
                     Text("  ·  ", color = C.TextFaint, fontSize = 12.sp)
                     Text("$pct% recorded", color = if (pct >= 99) C.Emerald else if (pct > 80) C.Amber else C.RoseLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -160,8 +169,16 @@ private fun DayRow(cam: CameraStatus, d: DayData?, dayStart: Long, dayEnd: Long,
                     if (b > a) drawRect(band, Offset(a, top), Size(maxOf(b - a, 1f), th))
                 }
                 d?.events?.forEach { e ->
+                    if (app.sentinel.ui.components.mainLabel(e) != null) return@forEach
                     val a = x(e.start)
-                    drawRect(C.Amber, Offset(a, 0f), Size(maxOf(x(e.endOr(now)) - a, 1.5f), h * 0.32f))
+                    drawRect(C.Amber.copy(alpha = 0.6f), Offset(a, h * 0.08f), Size(maxOf(x(e.endOr(now)) - a, 1.5f), h * 0.22f))
+                }
+                // People and animals: taller marks in their colour, over the motion.
+                d?.events?.forEach { e ->
+                    val l = app.sentinel.ui.components.mainLabel(e) ?: return@forEach
+                    val a = x(e.start)
+                    drawRect(C.Ink950, Offset(a - 1f, 0f), Size(maxOf(x(e.endOr(now)) - a, 3f) + 2f, h * 0.38f))
+                    drawRect(app.sentinel.ui.components.LABELS.getValue(l).color, Offset(a, 0f), Size(maxOf(x(e.endOr(now)) - a, 3f), h * 0.36f))
                 }
                 for (hh in 3 until 24 step 3) drawLine(Color(0x22FFFFFF), Offset(w * hh / 24f, top), Offset(w * hh / 24f, h), 1f)
                 if (now in dayStart..dayEnd) drawLine(C.Emerald, Offset(x(now), 0f), Offset(x(now), h), 2.dp.toPx())

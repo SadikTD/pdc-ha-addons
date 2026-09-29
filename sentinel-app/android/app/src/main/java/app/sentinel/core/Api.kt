@@ -70,15 +70,23 @@ class Api(private val engine: Engine) {
     // Sentinel
     suspend fun status(): Status = get("api/status")
     suspend fun coverage(cam: String, from: Long, to: Long): List<Span> = get("api/recordings/$cam?from=$from&to=$to")
-    suspend fun events(cameras: List<String> = emptyList(), from: Long? = null, to: Long? = null, limit: Int = 500): List<SentinelEvent> {
+    suspend fun events(cameras: List<String> = emptyList(), from: Long? = null, to: Long? = null, limit: Int = 500, labels: List<String> = emptyList()): List<SentinelEvent> {
         val q = buildList {
             if (cameras.isNotEmpty()) add("cameras=${cameras.joinToString(",")}")
+            if (labels.isNotEmpty()) add("labels=${labels.joinToString(",")}")
             if (from != null) add("from=$from")
             if (to != null) add("to=$to")
             add("limit=$limit")
         }.joinToString("&")
         return get("api/events?$q")
     }
+
+    /** Plain questions: "person on the roof last night", "cats yesterday after 10pm". */
+    suspend fun search(q: String, limit: Int = 500): SearchResult = get("api/search?q=${java.net.URLEncoder.encode(q, "UTF-8")}&limit=$limit")
+    suspend fun summary(date: String? = null): DaySummary = get("api/summary" + (date?.let { "?date=$it" } ?: ""))
+    /** "That's not a person": removes the label, and the camera learns the spot (admins). */
+    suspend fun wrongLabel(e: SentinelEvent, label: String): SentinelEvent =
+        Engine.json.decodeFromString(call("POST", "api/events/${e.camera}/${e.id}/wrong", """{"label":"$label"}"""))
 
     suspend fun clips(): List<Clip> = get("api/clips")
     suspend fun createClip(camera: String, from: Long, to: Long, name: String): Clip =
@@ -105,6 +113,9 @@ class Api(private val engine: Engine) {
     fun snapshotUrl(cam: String, hq: Boolean = false, bust: Long = 0) = engine.url("api/cameras/$cam/snapshot.jpg?${if (hq) "hq=1&" else ""}t=$bust")
     fun latestUrl(cam: String) = engine.url("api/cameras/$cam/latest.jpg")
     fun thumbUrl(e: SentinelEvent) = if (e.thumb) engine.url("api/events/${e.camera}/${e.id}/thumb.jpg") else previewUrl(e.camera, e.start + 1000)
+    fun snapUrl(e: SentinelEvent) = engine.url("api/events/${e.camera}/${e.id}/snap.jpg")
+    /** The best picture of an event: who was seen, else the moment motion started. */
+    fun pictureUrl(e: SentinelEvent) = if (e.snap) snapUrl(e) else thumbUrl(e)
     /** Preview frames are cached per 2 s, so scrubbing reuses them. */
     fun previewUrl(cam: String, t: Long) = engine.url("api/preview/$cam/${t / 2000 * 2000}.jpg")
     fun vodUrl(cam: String, from: Long, to: Long) = engine.url("api/vod.m3u8?camera=$cam&from=$from&to=$to")

@@ -40,7 +40,15 @@ data class FirebaseClient(
 )
 
 @Serializable
-data class PushPrefs(val alerts: Boolean = true, val status: Boolean = true, val motion: List<String> = emptyList())
+data class PushPrefs(
+    val alerts: Boolean = true,
+    val status: Boolean = true,
+    val motion: List<String> = emptyList(),
+    /** The daily summary (null = on). */
+    val summary: Boolean? = null,
+) {
+    val wantsSummary: Boolean get() = summary != false
+}
 
 /**
  * Notifications through Firebase Cloud Messaging. Sentinel hands the app its Firebase
@@ -51,6 +59,7 @@ object Push {
     const val CH_ALERTS = "alerts"
     const val CH_STATUS = "status"
     const val CH_MOTION = "motion"
+    const val CH_SUMMARY = "summary"
     private const val PREFS = "push"
 
     fun channels(context: Context) {
@@ -65,6 +74,9 @@ object Push {
         })
         nm.createNotificationChannel(NotificationChannel(CH_MOTION, "Motion", NotificationManager.IMPORTANCE_DEFAULT).apply {
             description = "Any motion on the cameras you chose"
+        })
+        nm.createNotificationChannel(NotificationChannel(CH_SUMMARY, "Daily summary", NotificationManager.IMPORTANCE_LOW).apply {
+            description = "Once a day: who was seen yesterday, and whether every camera recorded"
         })
     }
 
@@ -89,6 +101,12 @@ object Push {
 
     fun canNotify(context: Context) =
         Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    fun summaryIntent(context: Context, date: String): PendingIntent {
+        val uri = Uri.parse("sentinel://summary?date=$date")
+        val i = Intent(Intent.ACTION_VIEW, uri, context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(context, uri.hashCode(), i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
 
     fun openIntent(context: Context, cam: String?, t: Long?): PendingIntent {
         val uri = if (cam != null) Uri.parse("sentinel://camera?id=$cam" + (t?.let { "&t=$it" } ?: "")) else Uri.parse("sentinel://home")
@@ -130,6 +148,14 @@ class SentinelMessagingService : FirebaseMessagingService() {
                     b.setLargeIcon(bmp).setStyle(NotificationCompat.BigPictureStyle().bigPicture(bmp).bigLargeIcon(null as Bitmap?)).setOnlyAlertOnce(true)
                     nm.notifySafe(id, b.build())
                 }
+            }
+            "summary" -> {
+                val date = d["date"] ?: ""
+                val text = d["text"] ?: ""
+                b.setChannelId(Push.CH_SUMMARY).setContentTitle("Yesterday on your cameras").setContentText(text)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                    .setContentIntent(Push.summaryIntent(this, date))
+                nm.notifySafe("summary".hashCode(), b.build())
             }
             "motion" -> {
                 b.setChannelId(Push.CH_MOTION).setContentTitle("Motion · $name").setContentText("${fmtTimeSec(t)} · tap to watch")

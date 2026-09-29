@@ -1,8 +1,9 @@
 package app.sentinel.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -24,13 +25,21 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,14 +56,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.sentinel.core.AppState
 import app.sentinel.core.DAY
+import app.sentinel.core.SearchQuery
 import app.sentinel.core.SentinelEvent
 import app.sentinel.core.fmtDay
 import app.sentinel.core.fmtDuration
@@ -62,16 +77,24 @@ import app.sentinel.core.fmtTime
 import app.sentinel.core.startOfDay
 import app.sentinel.ui.components.Chip
 import app.sentinel.ui.components.EmptyState
+import app.sentinel.ui.components.EventPicture
 import app.sentinel.ui.components.Gap
+import app.sentinel.ui.components.LABELS
+import app.sentinel.ui.components.LABEL_ORDER
+import app.sentinel.ui.components.LabelChips
 import app.sentinel.ui.components.Shimmer
+import app.sentinel.ui.components.Toaster
 import app.sentinel.ui.theme.C
-import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val RANGES = listOf("Today", "24 hours", "3 days", "7 days")
+private val EXAMPLES = listOf("People today", "Person last night", "Cats this week", "Dogs yesterday", "People after 10pm")
 
-/** Motion events with thumbnails, by day, filterable by camera and time range. */
+/**
+ * Motion events by day, with who was seen (people, cats, dogs), a search that
+ * understands plain questions, and filters by kind, camera and time range.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, Long?) -> Unit) {
@@ -82,12 +105,28 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
     val aspects = cams.associate { it.id to it.aspect }
     var range by rememberSaveable { mutableIntStateOf(1) }
     var camFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    var kind by rememberSaveable { mutableStateOf("all") } // all, person, cat, dog, motion
     var size by rememberSaveable { mutableIntStateOf(0) }
+    var text by rememberSaveable { mutableStateOf("") }
+    var asked by rememberSaveable { mutableStateOf("") }
+    var parsed by remember { mutableStateOf<SearchQuery?>(null) }
     var events by remember { mutableStateOf<List<SentinelEvent>?>(null) }
+    var searching by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
+    var wrongFor by remember { mutableStateOf<SentinelEvent?>(null) }
     val scope = rememberCoroutineScope()
+    val focus = LocalFocusManager.current
 
     suspend fun load() {
+        if (asked.isNotBlank()) {
+            searching = true
+            runCatching { state.api.search(asked, 1000) }
+                .onSuccess { events = it.events.sortedByDescending { e -> e.start }; parsed = it.query }
+                .onFailure { if (events == null) events = emptyList() }
+            searching = false
+            return
+        }
+        parsed = null
         val now = state.serverNow()
         val from = when (range) {
             0 -> startOfDay(now)
@@ -98,7 +137,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
         runCatching { state.api.events(camFilter?.let { listOf(it) } ?: emptyList(), from, null, LIMIT) }
             .onSuccess { events = it.sortedByDescending { e -> e.start } }
     }
-    LaunchedEffect(range, camFilter) {
+    LaunchedEffect(range, camFilter, asked) {
         events = null
         while (true) {
             state.awaitVisible()
@@ -106,13 +145,31 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
             delay(20_000)
         }
     }
+    fun ask(q: String) {
+        text = q
+        asked = q.trim()
+        focus.clearFocus()
+    }
 
     val minPeak = when (size) { 1 -> 3.0; 2 -> 10.0; else -> 0.0 }
-    val list = events?.filter { it.peak >= minPeak }
+    val sized = events?.filter { it.peak >= minPeak }
+    val counts = remember(sized) {
+        val c = mutableMapOf("all" to (sized?.size ?: 0), "motion" to 0, "person" to 0, "cat" to 0, "dog" to 0)
+        sized?.forEach { e -> if (e.labels.isEmpty()) { if (e.scan == "done") c["motion"] = c["motion"]!! + 1 } else e.labels.forEach { c[it] = (c[it] ?: 0) + 1 } }
+        c
+    }
+    val list = sized?.filter {
+        when (kind) {
+            "all" -> true
+            "motion" -> it.scan == "done" && it.labels.isEmpty()
+            else -> kind in it.labels
+        }
+    }
     // Back-to-back motion on one camera is one activity (a person walking through
     // trips the detector several times).
     val activities = list?.let { groupActivities(it) }
     val grouped = activities?.groupBy { startOfDay(it.start) }?.toSortedMap(compareByDescending { it })
+    val pending = status?.detection?.backlog ?: 0
 
     PullToRefreshBox(refreshing, onRefresh = { scope.launch { refreshing = true; load(); refreshing = false } }, modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
@@ -127,19 +184,72 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Events", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
                         if (activities != null) Text(
-                            "${activities.size} activit${if (activities.size == 1) "y" else "ies"} · ${list.size}${if ((events?.size ?: 0) >= LIMIT) "+" else ""} motions",
+                            "${activities.size} activit${if (activities.size == 1) "y" else "ies"} · ${list.size}${if ((events?.size ?: 0) >= LIMIT) "+" else ""} events",
                             color = C.TextDim, fontSize = 13.sp,
                         )
                     }
                     Gap(12.dp)
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        RANGES.forEachIndexed { i, r -> Chip(r, range == i) { range = i } }
-                        Chip(listOf("Any size", "Medium+", "Large")[size], size > 0) { size = (size + 1) % 3 }
+                    // Search
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(C.Glass).border(1.dp, C.GlassBorder, RoundedCornerShape(16.dp)).padding(horizontal = 12.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (searching) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = C.VioletLight)
+                        else Icon(Icons.Rounded.Search, null, tint = C.TextDim, modifier = Modifier.size(20.dp))
+                        Box(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                            if (text.isEmpty()) Text("Search: \"person on the roof last night\"", color = C.TextFaint, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            BasicTextField(
+                                text, { text = it },
+                                singleLine = true,
+                                textStyle = TextStyle(color = C.Text, fontSize = 14.sp),
+                                cursorBrush = SolidColor(C.VioletLight),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                keyboardActions = KeyboardActions(onSearch = { ask(text) }),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        if (text.isNotEmpty()) Icon(Icons.Rounded.Close, "Clear search", tint = C.TextDim, modifier = Modifier.size(20.dp).clip(CircleShape).combinedClickable(onClick = { ask("") }))
                     }
                     Gap(8.dp)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        val q = parsed
+                        if (asked.isNotBlank() && q != null) {
+                            Text("Showing", color = C.TextFaint, fontSize = 12.sp)
+                            q.chips.forEach { c ->
+                                Text(c, color = C.VioletLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clip(CircleShape).background(C.Violet.copy(alpha = 0.16f)).padding(horizontal = 10.dp, vertical = 4.dp))
+                            }
+                        } else {
+                            Text("Try", color = C.TextFaint, fontSize = 12.sp)
+                            EXAMPLES.forEach { ex ->
+                                Text(ex, color = C.TextDim, fontSize = 12.sp, modifier = Modifier.clip(CircleShape).background(C.Glass).border(1.dp, C.GlassBorder, CircleShape).combinedClickable(onClick = { ask(ex) }).padding(horizontal = 10.dp, vertical = 4.dp))
+                            }
+                        }
+                    }
+                    Gap(10.dp)
+                    // Who
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Chip("All cameras", camFilter == null) { camFilter = null }
-                        cams.forEach { c -> Chip(c.name, camFilter == c.id) { camFilter = if (camFilter == c.id) null else c.id } }
+                        Chip("All ${counts["all"]}", kind == "all") { kind = "all" }
+                        LABEL_ORDER.forEach { l ->
+                            val s = LABELS.getValue(l)
+                            Chip("${s.plural} ${counts[l]}", kind == l, icon = s.icon) { kind = if (kind == l) "all" else l }
+                        }
+                        Chip("Motion only ${counts["motion"]}", kind == "motion", icon = Icons.Rounded.Bolt) { kind = if (kind == "motion") "all" else "motion" }
+                    }
+                    if (asked.isBlank()) {
+                        Gap(8.dp)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            RANGES.forEachIndexed { i, r -> Chip(r, range == i) { range = i } }
+                            Chip(listOf("Any size", "Medium+", "Large")[size], size > 0) { size = (size + 1) % 3 }
+                        }
+                        Gap(8.dp)
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Chip("All cameras", camFilter == null) { camFilter = null }
+                            cams.forEach { c -> Chip(c.name, camFilter == c.id) { camFilter = if (camFilter == c.id) null else c.id } }
+                        }
+                    }
+                    if (pending > 0) {
+                        Gap(8.dp)
+                        Text("$pending older events are still being checked for people and animals", color = C.TextFaint, fontSize = 12.sp)
                     }
                 }
             }
@@ -147,7 +257,16 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
                 items(6) { Shimmer(Modifier.fillMaxWidth().aspectRatio(16f / 11f).clip(RoundedCornerShape(16.dp))) }
             } else if (list.isEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    EmptyState(Icons.Rounded.Bolt, "No motion", "Nothing moved on ${if (camFilter != null) names[camFilter] ?: "this camera" else "your cameras"} in this time.")
+                    EmptyState(
+                        Icons.Rounded.Bolt,
+                        when {
+                            asked.isNotBlank() -> "Nothing found"
+                            kind == "all" -> "No motion"
+                            kind == "motion" -> "No plain motion"
+                            else -> "No ${LABELS.getValue(kind).plural.lowercase()}"
+                        },
+                        if (asked.isNotBlank()) "Try fewer words, another day, or all cameras." else "Nothing matching on ${if (camFilter != null) names[camFilter] ?: "this camera" else "your cameras"} in this time.",
+                    )
                 }
             }
             grouped?.forEach { (day, evs) ->
@@ -158,10 +277,36 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
                     }
                 }
                 items(evs, key = { "${it.first.camera}/${it.first.id}" }) { a ->
-                    EventCard(state, a, names[a.first.camera] ?: a.first.camera, aspects[a.first.camera] ?: (16f / 9f)) { openCamera(a.first.camera, a.start - 2000) }
+                    EventCard(
+                        state, a, names[a.first.camera] ?: a.first.camera, aspects[a.first.camera] ?: (16f / 9f),
+                        onLongClick = if (state.isAdmin && a.shown.labels.isNotEmpty()) ({ wrongFor = a.shown }) else null,
+                    ) { openCamera(a.first.camera, a.shown.bestTime - 2000) }
                 }
             }
         }
+    }
+    wrongFor?.let { e ->
+        AlertDialog(
+            onDismissRequest = { wrongFor = null },
+            title = { Text("Wrong label?") },
+            text = { Text("If Sentinel got it wrong, remove the label. The camera learns that spot, so the same lookalike (laundry, a coat) isn't called a person again.") },
+            confirmButton = {
+                Column(horizontalAlignment = Alignment.End) {
+                    e.labels.forEach { l ->
+                        TextButton({
+                            wrongFor = null
+                            scope.launch {
+                                runCatching { state.api.wrongLabel(e, l) }
+                                    .onSuccess { n -> events = events?.map { if (it.id == n.id) n else it }; Toaster.show("Removed. Thanks, Sentinel learns from this.") }
+                                    .onFailure { Toaster.error(it.message ?: "Couldn't remove it") }
+                            }
+                        }) { Text("Not a ${LABELS[l]?.name?.lowercase() ?: l}", color = C.RoseLight) }
+                    }
+                }
+            },
+            dismissButton = { TextButton({ wrongFor = null }) { Text("Cancel", color = C.TextDim) } },
+            containerColor = C.Ink800,
+        )
     }
 }
 
@@ -169,11 +314,16 @@ private const val LIMIT = 3000
 
 /** Motion on one camera with less than 90 s between events. */
 private data class Activity(val events: List<SentinelEvent>) {
-    val first get() = events.first() // the newest, whose picture is shown
+    val first get() = events.first() // the newest
     val start get() = events.minOf { it.start }
     val end get() = if (events.any { it.ongoing }) 0L else events.maxOf { it.end }
     val peak get() = events.maxOf { it.peak }
     val ongoing get() = events.any { it.ongoing }
+    /** Who was seen in any of them. */
+    val labels get() = LABEL_ORDER.filter { l -> events.any { l in it.labels } }
+    /** The event whose picture is shown: someone seen (a person first), else the newest. */
+    val shown get() = LABEL_ORDER.firstNotNullOfOrNull { l -> events.firstOrNull { l in it.labels && it.snap } } ?: first
+    val checked get() = events.all { it.checked }
 }
 
 private fun groupActivities(list: List<SentinelEvent>): List<Activity> {
@@ -193,27 +343,39 @@ private fun groupActivities(list: List<SentinelEvent>): List<Activity> {
     return out.sortedByDescending { it.first.start }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Float, onClick: () -> Unit) {
-    val e = a.first
+private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Float, onLongClick: (() -> Unit)?, onClick: () -> Unit) {
+    val e = a.shown
+    val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    Column(Modifier.scale(if (pressed) 0.97f else 1f).clip(RoundedCornerShape(16.dp)).clickable(interaction, null, onClick = onClick)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(aspect.coerceIn(1.2f, 2f)).clip(RoundedCornerShape(16.dp)).background(C.Ink800).border(1.dp, C.GlassBorder, RoundedCornerShape(16.dp))) {
-            AsyncImage(state.api.thumbUrl(e), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            Box(Modifier.fillMaxWidth().height(40.dp).align(Alignment.BottomCenter).background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xAA000000)))))
+    Column(
+        Modifier.scale(if (pressed) 0.97f else 1f).clip(RoundedCornerShape(16.dp)).combinedClickable(
+            interaction, null, onClick = onClick,
+            onLongClick = onLongClick?.let { f -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); f() } },
+        ),
+    ) {
+        val ratio = aspect.coerceIn(1.2f, 2f)
+        Box(Modifier.fillMaxWidth().aspectRatio(ratio).clip(RoundedCornerShape(16.dp)).border(1.dp, C.GlassBorder, RoundedCornerShape(16.dp))) {
+            // Boxes line up only when the card has the camera's shape.
+            EventPicture(state.api, e, Modifier.fillMaxSize(), boxes = ratio == aspect)
+            Box(Modifier.fillMaxWidth().height(44.dp).align(Alignment.BottomCenter).background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xAA000000)))))
             Row(Modifier.align(Alignment.BottomStart).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(16.dp))
                 Text(if (a.ongoing) "now" else fmtDuration(a.end - a.start), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             }
-            if (a.events.size > 1) Text(
-                "×${a.events.size}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.TopStart).padding(8.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xAA000000)).padding(horizontal = 6.dp, vertical = 2.dp),
-            )
-            if (a.ongoing) Text(
-                "LIVE", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).clip(RoundedCornerShape(6.dp)).background(C.Amber).padding(horizontal = 6.dp, vertical = 2.dp),
-            )
+            LabelChips(a.labels, Modifier.align(Alignment.TopStart).padding(7.dp), small = true, showMotion = true, checked = a.checked)
+            Row(Modifier.align(Alignment.TopEnd).padding(7.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (a.events.size > 1) Text(
+                    "×${a.events.size}", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Color(0xAA000000)).padding(horizontal = 5.dp, vertical = 2.dp),
+                )
+                if (a.ongoing) Text(
+                    "LIVE", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(C.Amber).padding(horizontal = 5.dp, vertical = 2.dp),
+                )
+            }
             // Motion strength
             Box(Modifier.align(Alignment.BottomEnd).padding(10.dp).size(width = 36.dp, height = 4.dp).clip(CircleShape).background(Color(0x55FFFFFF))) {
                 Box(Modifier.fillMaxSize().fillMaxWidth((a.peak.toFloat() / 25f).coerceIn(0.08f, 1f)).clip(CircleShape).background(C.Amber))
@@ -221,7 +383,7 @@ private fun EventCard(state: AppState, a: Activity, camName: String, aspect: Flo
         }
         Row(Modifier.padding(top = 7.dp, start = 2.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(camName, color = C.Text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Text(if (a.events.size > 1) "${fmtTime(a.start)}–${fmtTime(if (a.ongoing) e.start else a.end)}" else fmtTime(a.start), color = C.TextDim, fontSize = 12.sp, maxLines = 1)
+            Text(if (a.events.size > 1) "${fmtTime(a.start)}–${fmtTime(if (a.ongoing) a.first.start else a.end)}" else fmtTime(a.start), color = C.TextDim, fontSize = 12.sp, maxLines = 1)
         }
     }
 }

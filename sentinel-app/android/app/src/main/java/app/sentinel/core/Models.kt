@@ -30,11 +30,85 @@ data class RecStatus(
 data class MotionStatus(val state: String = "", val active: Boolean = false, val score: Double = 0.0, val error: String? = null)
 
 @Serializable
-data class SentinelEvent(val id: String, val camera: String, val start: Long, val end: Long, val peak: Double = 0.0, val thumb: Boolean = false) {
+data class Box(val x: Double = 0.0, val y: Double = 0.0, val w: Double = 0.0, val h: Double = 0.0)
+
+/** Someone or something seen in an event: "person", "cat" or "dog". */
+@Serializable
+data class DetectedObject(val label: String, val score: Double = 0.0, val box: Box = Box(), val t: Long = 0)
+
+@Serializable
+data class SentinelEvent(
+    val id: String,
+    val camera: String,
+    val start: Long,
+    val end: Long,
+    val peak: Double = 0.0,
+    val thumb: Boolean = false,
+    /** Who was seen, people first; empty with [scan] "done" = plain motion. */
+    val labels: List<String> = emptyList(),
+    val objects: List<DetectedObject> = emptyList(),
+    /** "" not checked yet, "scanning", "done", or "none" (couldn't be checked). */
+    val scan: String = "",
+    /** A picture of who was seen (snap.jpg). */
+    val snap: Boolean = false,
+) {
     /** Motion still going on (Sentinel sends end = 0). */
     val ongoing: Boolean get() = end == 0L
     fun endOr(now: Long): Long = if (ongoing) now else end
+    val checked: Boolean get() = scan == "done" || scan == "none"
+    fun has(label: String) = label in labels
+    /** The moment worth jumping to: where someone was seen, else the start. */
+    val bestTime: Long get() = objects.firstOrNull()?.t ?: start
 }
+
+@Serializable
+data class DetectionStatus(
+    val enabled: Boolean = false,
+    val error: String? = null,
+    val backlog: Int = 0,
+    val scanned: Int = 0,
+    val found: Int = 0,
+    @SerialName("avg_ms") val avgMs: Long = 0,
+)
+
+@Serializable
+data class SearchQuery(
+    val labels: List<String>? = null,
+    val motion: Boolean = false,
+    val cameras: List<String>? = null,
+    val from: Long = 0,
+    val to: Long = 0,
+    val chips: List<String> = emptyList(),
+)
+
+@Serializable
+data class SearchResult(val query: SearchQuery = SearchQuery(), val events: List<SentinelEvent> = emptyList())
+
+@Serializable
+data class CamDay(
+    val id: String,
+    val name: String,
+    val counts: Map<String, Int> = emptyMap(),
+    val recorded: Double = 0.0,
+    val missing: Long = 0,
+    @SerialName("first_person") val firstPerson: Long = 0,
+    @SerialName("last_person") val lastPerson: Long = 0,
+)
+
+@Serializable
+data class DaySummary(
+    val date: String = "",
+    val from: Long = 0,
+    val to: Long = 0,
+    val totals: Map<String, Int> = emptyMap(),
+    val cameras: List<CamDay> = emptyList(),
+    /** Per hour: motion, person, cat, dog. */
+    val hours: List<List<Int>> = emptyList(),
+    val highlights: List<SentinelEvent> = emptyList(),
+    val pending: Int = 0,
+    val problems: Int = 0,
+    val text: String = "",
+)
 
 @Serializable
 data class CamStorage(
@@ -111,6 +185,7 @@ data class Status(
     val drive: OnOff = OnOff(),
     val mqtt: OnOff = OnOff(),
     val health: Boolean = true,
+    val detection: DetectionStatus? = null,
 )
 
 @Serializable

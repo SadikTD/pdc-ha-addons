@@ -26,6 +26,8 @@ class MainActivity : FragmentActivity() {
         private set
     /** A camera to open (from a notification): id and moment. */
     var openCamera by mutableStateOf<Pair<String, Long?>?>(null)
+    /** A day's summary to open (from the daily notification), as YYYY-MM-DD. */
+    var openSummary by mutableStateOf<String?>(null)
     var inPip by mutableStateOf(false)
         private set
     var locked by mutableStateOf(false)
@@ -64,6 +66,7 @@ class MainActivity : FragmentActivity() {
         when (data.host) {
             "connect" -> deepLinkId = data.getQueryParameter("id")
             "camera" -> data.getQueryParameter("id")?.let { openCamera = it to data.getQueryParameter("t")?.toLongOrNull() }
+            "summary" -> openSummary = data.getQueryParameter("date") ?: ""
         }
     }
 

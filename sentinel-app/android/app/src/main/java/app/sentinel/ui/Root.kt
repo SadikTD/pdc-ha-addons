@@ -89,6 +89,7 @@ import app.sentinel.ui.screens.MoreScreen
 import app.sentinel.ui.screens.NotificationsScreen
 import app.sentinel.ui.screens.NotificationPrompt
 import app.sentinel.ui.screens.SettingsScreen
+import app.sentinel.ui.screens.SummaryScreen
 import app.sentinel.ui.screens.SystemScreen
 import app.sentinel.ui.screens.TimelineScreen
 import app.sentinel.ui.screens.UsersScreen
@@ -141,6 +142,8 @@ object Routes {
     const val System = "system"
     const val Settings = "settings"
     const val Notifications = "notifications"
+    const val Summary = "summary?date={date}"
+    fun summary(date: String? = null) = "summary" + (date?.takeIf { it.isNotBlank() }?.let { "?date=$it" } ?: "")
     fun camera(id: String, t: Long? = null) = "camera/$id" + (if (t != null) "?t=$t" else "")
 }
 
@@ -153,6 +156,11 @@ private fun MainNav(state: AppState) {
         val (id, t) = activity.openCamera ?: return@LaunchedEffect
         activity.openCamera = null
         nav.navigate(Routes.camera(id, t)) { popUpTo(Routes.Tabs) }
+    }
+    LaunchedEffect(activity.openSummary) {
+        val d = activity.openSummary ?: return@LaunchedEffect
+        activity.openSummary = null
+        nav.navigate(Routes.summary(d)) { popUpTo(Routes.Tabs) }
     }
     NavHost(
         nav,
@@ -177,6 +185,9 @@ private fun MainNav(state: AppState) {
         composable(Routes.System) { SystemScreen(state, onBack = { nav.popBackStack() }, onOpenCamera = { nav.navigate(Routes.camera(it)) }) }
         composable(Routes.Settings) { SettingsScreen(state, onBack = { nav.popBackStack() }) }
         composable(Routes.Notifications) { NotificationsScreen(state, onBack = { nav.popBackStack() }) }
+        composable(Routes.Summary, arguments = listOf(navArgument("date") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
+            SummaryScreen(state, entry.arguments?.getString("date"), onBack = { nav.popBackStack() }, openCamera = { id, t -> nav.navigate(Routes.camera(id, t)) })
+        }
     }
 }
 
@@ -207,11 +218,11 @@ private fun Tabs(state: AppState, nav: NavHostController) {
             label = "tab",
         ) { t ->
             when (t) {
-                0 -> LiveScreen(state, padding) { openCamera(it.id, null) }
+                0 -> LiveScreen(state, padding, onSummary = { nav.navigate(Routes.summary()) }) { openCamera(it.id, null) }
                 1 -> EventsScreen(state, padding, openCamera)
                 2 -> TimelineScreen(state, padding, openCamera)
                 3 -> ClipsScreen(state, padding)
-                else -> MoreScreen(state, padding, onUsers = { nav.navigate(Routes.Users) }, onSystem = { nav.navigate(Routes.System) }, onSettings = { nav.navigate(Routes.Settings) }, onNotifications = { nav.navigate(Routes.Notifications) })
+                else -> MoreScreen(state, padding, onUsers = { nav.navigate(Routes.Users) }, onSystem = { nav.navigate(Routes.System) }, onSettings = { nav.navigate(Routes.Settings) }, onNotifications = { nav.navigate(Routes.Notifications) }, onSummary = { nav.navigate(Routes.summary()) })
             }
         }
         TabBar(tab, Modifier.align(Alignment.BottomCenter)) { tab = it }

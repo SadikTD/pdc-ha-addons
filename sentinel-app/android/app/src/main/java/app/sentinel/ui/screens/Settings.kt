@@ -158,6 +158,7 @@ fun NotificationsCard(state: AppState) {
                 else -> Column {
                     ToggleRow("Night alerts", "People and animals seen at night, with the picture", prefs.alerts) { state.setPushPrefs(prefs.copy(alerts = it)) }
                     ToggleRow("Camera problems", "A camera stops or starts recording", prefs.status) { state.setPushPrefs(prefs.copy(status = it)) }
+                    ToggleRow("Daily summary", "Each morning: who was seen yesterday, and whether every camera recorded", prefs.wantsSummary) { state.setPushPrefs(prefs.copy(summary = it)) }
                     Text("Any motion on", color = C.Text, fontSize = 15.sp, modifier = Modifier.padding(top = 8.dp))
                     Text("At most one notification a minute per camera", color = C.TextFaint, fontSize = 12.sp)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 10.dp)) {

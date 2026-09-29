@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.Refresh
 import kotlinx.coroutines.launch
 import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
@@ -66,7 +67,7 @@ import app.sentinel.ui.components.glass
 import app.sentinel.ui.theme.C
 
 @Composable
-fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onSystem: () -> Unit, onSettings: () -> Unit, onNotifications: () -> Unit) {
+fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onSystem: () -> Unit, onSettings: () -> Unit, onNotifications: () -> Unit, onSummary: () -> Unit) {
     val auth by state.auth.collectAsStateWithLifecycle()
     val status by state.status.collectAsStateWithLifecycle()
     val conn by state.engine.state.collectAsStateWithLifecycle()
@@ -119,6 +120,7 @@ fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onS
             }
         }
         Gap(16.dp)
+        MenuItem(Icons.Rounded.AutoAwesome, "Daily summary", "Who was seen, when, and whether every camera recorded", onSummary)
         MenuItem(Icons.Rounded.Notifications, "Notifications", "Night alerts, camera problems, motion", onNotifications)
         MenuItem(Icons.Rounded.MonitorHeart, "System", "Health, storage, recorders${if (a.user.admin) ", activity log" else ""}", onSystem)
         if (a.user.admin) MenuItem(Icons.Rounded.Group, "Users", "Who can use the app, and signed-in phones", onUsers)

@@ -86,6 +86,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -286,15 +287,23 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
             loadRange(if (tl.scrubbing) tl.scrubTime else playTime, tl.span.toLong())
         }
     }
-    // Today's motion for the quick list.
+    // The last day's events for the quick list.
     var todayEvents by remember { mutableStateOf<List<SentinelEvent>>(emptyList()) }
     LaunchedEffect(cam.id) {
         while (true) {
             state.awaitVisible()
-            runCatching { api.events(listOf(cam.id), state.serverNow() - DAY, null, 60) }.onSuccess { todayEvents = it.sortedByDescending { e -> e.start } }
+            runCatching { api.events(listOf(cam.id), state.serverNow() - DAY, null, 400) }.onSuccess { todayEvents = it.sortedByDescending { e -> e.start } }
             delay(60_000)
         }
     }
+    // What the skip buttons and the quick list step through: all motion, people, or animals.
+    var jump by rememberSaveable { mutableStateOf("all") }
+    fun ofKind(e: SentinelEvent) = when (jump) {
+        "person" -> e.has("person")
+        "animal" -> e.has("cat") || e.has("dog")
+        else -> true
+    }
+    val jumpName = when (jump) { "person" -> "person"; "animal" -> "animal"; else -> "motion" }
 
     // Picture-in-picture and screen-on while watching.
     val aspect = (if (live) (mainUi.videoAspect.takeIf { it > 0 } ?: subUi.videoAspect) else recUi.videoAspect).takeIf { it > 0 } ?: cam.aspect
@@ -330,14 +339,14 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
 
     fun prevEvent() {
         val t = timelineCenter - 3000
-        val e = (events + todayEvents).filter { it.start < t }.maxByOrNull { it.start }
-        if (e != null) seekTo(e.start - 2000) else Toaster.show("No earlier motion nearby")
+        val e = (events + todayEvents).filter { it.start < t && ofKind(it) }.maxByOrNull { it.start }
+        if (e != null) seekTo(e.bestTime - 2000) else Toaster.show("No earlier $jumpName nearby")
     }
 
     fun nextEvent() {
         val t = timelineCenter + 1000
-        val e = (events + todayEvents).filter { it.start > t }.minByOrNull { it.start }
-        if (e != null) seekTo(e.start - 2000) else Toaster.show("No later motion")
+        val e = (events + todayEvents).filter { it.start > t && ofKind(it) }.minByOrNull { it.start }
+        if (e != null) seekTo(e.bestTime - 2000) else Toaster.show("No later $jumpName")
     }
 
     fun snapshot() {
@@ -398,7 +407,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
 
     val transport: @Composable () -> Unit = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            RoundIcon(Icons.Rounded.SkipPrevious, "Previous motion", size = 46.dp) { prevEvent() }
+            RoundIcon(Icons.Rounded.SkipPrevious, "Previous $jumpName", size = 46.dp) { prevEvent() }
             RoundIcon(Icons.Rounded.Replay10, "Back 10 seconds", size = 46.dp) { seekTo(timelineCenter - 10_000) }
             Box(
                 Modifier.size(64.dp).clip(CircleShape).background(C.accent).clickable {
@@ -413,7 +422,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
                 }
             }
             RoundIcon(Icons.Rounded.Forward10, "Forward 10 seconds", size = 46.dp) { if (!live) seekTo(timelineCenter + 10_000) }
-            RoundIcon(Icons.Rounded.SkipNext, "Next motion", size = 46.dp) { nextEvent() }
+            RoundIcon(Icons.Rounded.SkipNext, "Next $jumpName", size = 46.dp) { nextEvent() }
         }
     }
 
@@ -565,11 +574,22 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
                 if (!prefs.tipsSeen) Tips { state.setPrefs { it.copy(tipsSeen = true) } }
                 Gap(20.dp)
                 if (todayEvents.isNotEmpty()) {
-                    Text("MOTION · LAST 24 HOURS · ${todayEvents.size}", color = C.TextDim, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp))
+                    val shown = todayEvents.filter { ofKind(it) }
+                    Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("LAST 24 HOURS · ${shown.size}", color = C.TextDim, style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
+                        listOf("all" to "All", "person" to "People", "animal" to "Animals").forEach { (k, l) ->
+                            Text(
+                                l, color = if (jump == k) Color.White else C.TextDim, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(start = 6.dp).clip(CircleShape).background(if (jump == k) Color(0x26FFFFFF) else Color.Transparent).clickable { jump = k }.padding(horizontal = 10.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
                     Gap(10.dp)
-                    LazyRow(contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        items(todayEvents, key = { it.id }) { e ->
-                            EventThumb(state, e, cam.aspect) { seekTo(e.start - 2000) }
+                    if (shown.isEmpty()) Text(
+                        "No ${if (jump == "person") "people" else "animals"} in the last 24 hours", color = C.TextFaint, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp),
+                    ) else LazyRow(contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(shown, key = { it.id }) { e ->
+                            EventThumb(state, e, cam.aspect) { seekTo(e.bestTime - 2000) }
                         }
                     }
                     Gap(20.dp)
@@ -735,7 +755,8 @@ private fun ClipPanel(range: Pair<Long, Long>, camName: String, saving: Boolean,
 fun EventThumb(state: AppState, e: SentinelEvent, aspect: Float, onClick: () -> Unit) {
     Column(Modifier.width(150.dp).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick)) {
         Box(Modifier.fillMaxWidth().aspectRatio(aspect.coerceIn(1f, 2f)).clip(RoundedCornerShape(14.dp)).background(C.Ink800)) {
-            AsyncImage(state.api.thumbUrl(e), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            app.sentinel.ui.components.EventPicture(state.api, e, Modifier.fillMaxSize(), boxes = false)
+            app.sentinel.ui.components.LabelChips(e.labels, Modifier.align(Alignment.TopStart).padding(6.dp), small = true)
             Box(Modifier.align(Alignment.BottomEnd).padding(6.dp).clip(CircleShape).background(Color(0xAA000000)).padding(horizontal = 6.dp, vertical = 2.dp)) {
                 Text(if (e.ongoing) "now" else fmtDuration(e.end - e.start), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
             }

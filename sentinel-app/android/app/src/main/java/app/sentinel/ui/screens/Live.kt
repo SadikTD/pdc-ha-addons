@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.VideocamOff
@@ -104,7 +105,7 @@ import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LiveScreen(state: AppState, contentPadding: PaddingValues, onOpen: (CameraStatus) -> Unit) {
+fun LiveScreen(state: AppState, contentPadding: PaddingValues, onSummary: () -> Unit = {}, onOpen: (CameraStatus) -> Unit) {
     val status by state.status.collectAsStateWithLifecycle()
     val prefs by state.prefs.collectAsStateWithLifecycle()
     val conn by state.engine.state.collectAsStateWithLifecycle()
@@ -170,6 +171,7 @@ fun LiveScreen(state: AppState, contentPadding: PaddingValues, onOpen: (CameraSt
                     }
                 }
             }
+            if (status != null && cams.isNotEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { TodayStrip(state, onSummary) }
             if (status == null && (error != null || conn.state == "offline")) {
                 item(span = { GridItemSpan(maxLineSpan) }) { ConnectionProblem(state, Modifier.padding(top = 24.dp)) }
             } else if (status == null) {
@@ -422,5 +424,41 @@ fun LiveTile(
                 modifier = Modifier.align(Alignment.Center).size(26.dp),
             )
         }
+    }
+}
+
+/** Today's people and animals at a glance; opens the daily summary. */
+@Composable
+private fun TodayStrip(state: AppState, onClick: () -> Unit) {
+    var seen by remember { mutableStateOf<List<app.sentinel.core.SentinelEvent>?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            state.awaitVisible()
+            runCatching { state.api.events(from = app.sentinel.core.startOfDay(state.serverNow()), limit = 2000, labels = app.sentinel.ui.components.LABEL_ORDER) }
+                .onSuccess { seen = it }
+            delay(30_000)
+        }
+    }
+    val list = seen ?: return
+    val lastPerson = list.filter { "person" in it.labels }.maxByOrNull { it.start }
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0x0CFFFFFF)).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Today", color = C.Text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        app.sentinel.ui.components.LABEL_ORDER.forEach { l ->
+            val st = app.sentinel.ui.components.LABELS.getValue(l)
+            val n = list.count { l in it.labels }
+            Row(Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(st.icon, st.plural, tint = if (n > 0) st.color else C.TextFaint, modifier = Modifier.size(16.dp))
+                Text(" $n", color = if (n > 0) C.Text else C.TextFaint, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        Text(
+            lastPerson?.let { "  · person ${fmtAgo(it.start, state.serverNow())}" } ?: "",
+            color = C.TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        Text("Summary", color = C.VioletLight, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = C.VioletLight, modifier = Modifier.size(16.dp))
     }
 }
