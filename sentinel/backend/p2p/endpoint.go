@@ -25,8 +25,8 @@ var STUNServers = []string{"stun.cloudflare.com:3478", "stun.l.google.com:19302"
 func QUICConfig() *quic.Config {
 	return &quic.Config{
 		HandshakeIdleTimeout:           6 * time.Second,
-		MaxIdleTimeout:                 30 * time.Second,
-		KeepAlivePeriod:                10 * time.Second,
+		MaxIdleTimeout:                 15 * time.Second, // a dead path (e.g. the phone left Wi-Fi) is noticed quickly
+		KeepAlivePeriod:                4 * time.Second,
 		InitialStreamReceiveWindow:     2 << 20,
 		MaxStreamReceiveWindow:         16 << 20,
 		InitialConnectionReceiveWindow: 4 << 20,

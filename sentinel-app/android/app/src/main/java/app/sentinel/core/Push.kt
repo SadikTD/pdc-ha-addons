@@ -169,6 +169,10 @@ class SentinelMessagingService : FirebaseMessagingService() {
                     if (r.isSuccessful) r.body?.bytes()?.let { BitmapFactory.decodeByteArray(it, 0, it.size) } else null
                 }
             }.getOrNull()
+        }.also {
+            // Woken in the background just for this: don't keep the connection alive.
+            val visible = androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+            if (!visible) app.engine.onBackground()
         }
     }
 

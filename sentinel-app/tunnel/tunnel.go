@@ -5,6 +5,7 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -42,7 +43,7 @@ type Tunnel struct {
 	ep         *p2p.Endpoint
 	conn       *quic.Conn
 	res        *p2p.DialResult
-	connecting chan struct{} // closed when the current attempt ends
+	attempt    *attempt // the connection attempt in progress, if any
 	state      State
 	rt         *http3.Transport
 	ln         net.Listener
@@ -61,6 +62,18 @@ type State struct {
 	Error string `json:"error,omitempty"`
 	Since int64  `json:"since"`
 }
+
+// attempt is one connection attempt; everyone who needs the connection meanwhile waits
+// for it instead of starting their own.
+type attempt struct {
+	done   chan struct{} // closed when it ends
+	cancel context.CancelFunc
+	conn   *quic.Conn
+	err    error
+}
+
+// errSuperseded: the attempt was abandoned (Reconnect, new server); waiters try again.
+var errSuperseded = errors.New("superseded")
 
 func New(dataDir string) *Tunnel {
 	os.MkdirAll(dataDir, 0o700)
@@ -120,7 +133,7 @@ func (t *Tunnel) Start() (string, error) {
 	rand.Read(b)
 	t.secret = hex.EncodeToString(b)
 	t.ln = ln
-	t.rt = &http3.Transport{Dial: t.dialForHTTP3, QUICConfig: p2p.QUICConfig()}
+	t.rt = newTransport(t)
 	srv := &http.Server{Handler: http.HandlerFunc(t.proxy), ReadHeaderTimeout: 10 * time.Second}
 	go srv.Serve(ln)
 	return t.baseLocked(), nil
@@ -138,21 +151,39 @@ func (t *Tunnel) Reconnect() {
 	t.dropLocked("")
 }
 
+// dropLocked forgets the connection, the attempt in progress and the socket, and closes
+// them in the background: closing can wait for a dial to give up, and nothing may wait
+// while holding t.mu (the dial itself needs it, and the app calls in from its UI thread).
 func (t *Tunnel) dropLocked(reason string) {
 	t.gen++
-	if t.conn != nil {
-		t.conn.CloseWithError(0, reason)
-		t.conn = nil
+	conn, rt, ep, at := t.conn, t.rt, t.ep, t.attempt
+	t.conn, t.ep, t.attempt = nil, nil, nil
+	if at != nil {
+		at.cancel()
 	}
-	if t.rt != nil {
-		t.rt.Close()
-		t.rt = &http3.Transport{Dial: t.dialForHTTP3, QUICConfig: p2p.QUICConfig()}
-	}
-	if t.ep != nil {
-		t.ep.Close()
-		t.ep = nil
+	if rt != nil {
+		t.rt = newTransport(t)
 	}
 	t.state = State{State: "idle", Since: now()}
+	// Pooled connections to the introducer may belong to the old network.
+	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
+	go func() {
+		if conn != nil {
+			conn.CloseWithError(0, reason)
+		}
+		if rt != nil {
+			rt.Close()
+		}
+		if ep != nil {
+			ep.Close()
+		}
+	}()
+}
+
+func newTransport(t *Tunnel) *http3.Transport {
+	return &http3.Transport{Dial: t.dialForHTTP3, QUICConfig: p2p.QUICConfig()}
 }
 
 // StateJSON reports the connection for the app's status indicator.
@@ -177,9 +208,12 @@ func (t *Tunnel) Connect() error {
 }
 
 // ensure returns the live connection, connecting if needed. Concurrent callers share
-// one attempt.
+// one attempt; a caller whose ctx ends stops waiting at once.
 func (t *Tunnel) ensure(ctx context.Context) (*quic.Conn, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		t.mu.Lock()
 		if t.conn != nil && t.conn.Context().Err() == nil {
 			c := t.conn
@@ -190,60 +224,67 @@ func (t *Tunnel) ensure(ctx context.Context) (*quic.Conn, error) {
 			t.mu.Unlock()
 			return nil, errors.New("no Sentinel chosen")
 		}
-		if ch := t.connecting; ch != nil {
-			t.mu.Unlock()
-			select {
-			case <-ch:
-				t.mu.Lock()
-				c, st := t.conn, t.state
-				t.mu.Unlock()
-				if c != nil {
-					return c, nil
-				}
-				return nil, errors.New(st.Error)
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-		ch := make(chan struct{})
-		t.connecting = ch
-		gen := t.gen
-		if t.ep == nil {
-			ep, err := p2p.Listen(0)
-			if err != nil {
-				t.connecting = nil
-				close(ch)
+		at := t.attempt
+		if at == nil {
+			var err error
+			if at, err = t.startAttemptLocked(); err != nil {
 				t.mu.Unlock()
 				return nil, err
 			}
-			t.ep = ep
 		}
-		cfg := p2p.DialConfig{ID: t.id, Introducer: t.introducer, Hints: t.loadHints(), Endpoint: t.ep, LocalIPs: slices.Clone(t.localIPs), RelayOnly: t.relayOnly}
-		if t.network != "" && slices.Contains(t.loadRelayNets(), t.network) {
-			cfg.RelayHeadStart = -1 // this network needed the relay last time
-		}
-		t.state = State{State: "connecting", Since: now()}
 		t.mu.Unlock()
+		select {
+		case <-at.done:
+			if at.err == errSuperseded {
+				continue
+			}
+			return at.conn, at.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
 
-		res, err := p2p.Dial(context.Background(), cfg)
-
+// startAttemptLocked starts connecting in the background.
+func (t *Tunnel) startAttemptLocked() (*attempt, error) {
+	if t.ep == nil {
+		ep, err := p2p.Listen(0)
+		if err != nil {
+			return nil, err
+		}
+		t.ep = ep
+	}
+	dctx, cancel := context.WithCancel(context.Background())
+	at := &attempt{done: make(chan struct{}), cancel: cancel}
+	t.attempt = at
+	gen := t.gen
+	cfg := p2p.DialConfig{ID: t.id, Introducer: t.introducer, Hints: t.loadHints(), Endpoint: t.ep, LocalIPs: slices.Clone(t.localIPs), RelayOnly: t.relayOnly}
+	if t.network != "" && slices.Contains(t.loadRelayNets(), t.network) {
+		cfg.RelayHeadStart = -1 // this network needed the relay last time
+	}
+	t.state = State{State: "connecting", Since: now()}
+	go func() {
+		defer cancel()
+		res, err := p2p.Dial(dctx, cfg)
 		t.mu.Lock()
-		t.connecting = nil
+		defer t.mu.Unlock()
+		defer close(at.done)
+		if t.attempt == at {
+			t.attempt = nil
+		}
 		if gen != t.gen { // Reconnect/SetServer happened meanwhile
 			if res != nil {
-				res.Conn.CloseWithError(0, "")
+				go res.Conn.CloseWithError(0, "")
 			}
-			close(ch)
-			t.mu.Unlock()
-			continue
+			at.err = errSuperseded
+			return
 		}
 		if err != nil {
 			t.state = State{State: "offline", Error: err.Error(), Since: now()}
-			close(ch)
-			t.mu.Unlock()
-			return nil, err
+			at.err = err
+			return
 		}
-		t.conn, t.res = res.Conn, res
+		t.conn, t.res, at.conn = res.Conn, res, res.Conn
 		path := "internet"
 		if res.Local {
 			path = "home"
@@ -253,9 +294,7 @@ func (t *Tunnel) ensure(ctx context.Context) (*quic.Conn, error) {
 		t.state = State{State: "connected", Path: path, Addr: res.Addr, Since: now()}
 		t.saveHints(res)
 		t.rememberNetwork(res.Relay)
-		close(ch)
 		c := res.Conn
-		t.mu.Unlock()
 		go func() { // notice when it drops
 			<-c.Context().Done()
 			t.mu.Lock()
@@ -265,8 +304,8 @@ func (t *Tunnel) ensure(ctx context.Context) (*quic.Conn, error) {
 			}
 			t.mu.Unlock()
 		}()
-		return c, nil
-	}
+	}()
+	return at, nil
 }
 
 func (t *Tunnel) dialForHTTP3(ctx context.Context, _ string, _ *tls.Config, _ *quic.Config) (*quic.Conn, error) {
@@ -341,7 +380,7 @@ func (t *Tunnel) proxy(w http.ResponseWriter, r *http.Request) {
 	for try := 0; try < tries; try++ {
 		req, _ := http.NewRequestWithContext(r.Context(), r.Method, u.String(), nil)
 		if body != nil {
-			req.Body = io.NopCloser(strings.NewReader(string(body)))
+			req.Body = io.NopCloser(bytes.NewReader(body))
 			req.ContentLength = int64(len(body))
 		}
 		req.Header = r.Header.Clone()
@@ -355,10 +394,11 @@ func (t *Tunnel) proxy(w http.ResponseWriter, r *http.Request) {
 		if err == nil || r.Context().Err() != nil {
 			break
 		}
+		// One failed request doesn't mean the connection is bad (other streams, e.g. live
+		// video, keep going on it). Retry on whatever transport is current: after a
+		// Reconnect that's a fresh one, otherwise HTTP/3 redials by itself if the
+		// connection has died.
 		t.mu.Lock()
-		if t.rt == rt {
-			t.dropLocked("request failed")
-		}
 		rt = t.rt
 		t.mu.Unlock()
 	}

@@ -132,9 +132,16 @@ class LivePlayer(context: Context, private val http: OkHttpClient) : BasePlayer(
     private var url: String? = null
     private var retry = 0
     private var retryJob: Job? = null
+    private var stalledSince = 0L
     private val catchUp = scope.launch {
         while (isActive) {
             delay(500)
+            // Buffering for long with nothing arriving: the stream is stuck; start it again.
+            if (url != null && exo.playbackState == Player.STATE_BUFFERING && retryJob?.isActive != true) {
+                val now = System.currentTimeMillis()
+                if (stalledSince == 0L) stalledSince = now
+                else if (now - stalledSince > 12_000) { stalledSince = 0L; start() }
+            } else stalledSince = 0L
             if (!exo.isPlaying) continue
             val behind = exo.bufferedPosition - exo.currentPosition
             when {
@@ -179,10 +186,18 @@ class LivePlayer(context: Context, private val http: OkHttpClient) : BasePlayer(
         }
     }
 
+    /** The connection was just re-made (e.g. new network): restart now if not playing. */
+    fun retryNow() {
+        if (url == null || _ui.value.firstFrame && exo.isPlaying) return
+        retry = 0
+        start()
+    }
+
     fun stop() {
         retryJob?.cancel()
         exo.stop()
         url = null
+        _ui.value = _ui.value.copy(firstFrame = false, loading = false)
     }
 
     override fun release() {

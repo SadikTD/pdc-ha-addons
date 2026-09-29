@@ -13,6 +13,12 @@ function loadPlayer() {
   return loader;
 }
 
+// Streams whose video this browser can't decode (go2rtc then sends only the sound):
+// shown as pictures instead, from then on without trying video first.
+const picturesOnly = new Set<string>();
+const neverStarted = new Map<string, number>();
+const hasVideoCodec = (codecs: string) => /avc1|hvc1|hev1/.test(codecs);
+
 type VideoStreamEl = HTMLElement & {
   mode: string;
   media: string;
@@ -82,6 +88,8 @@ export function LiveStream({
   const host = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement | null>(null);
   const [state, setState] = useState<"loading" | "playing" | "error">("loading");
+  // Bumped by the watchdog to throw the player away and start a fresh one.
+  const [attempt, setAttempt] = useState(0);
   const latest = useRef({ muted, onMutedByBrowser, onHasAudio });
   latest.current = { muted, onMutedByBrowser, onHasAudio };
 
@@ -89,16 +97,23 @@ export function LiveStream({
     let el: VideoStreamEl | null = null;
     let cancelled = false;
     let stallTimer = 0;
+    let retryTimer = 0;
+    const key = hq ? camera : `${camera}_sub`;
+    const pictures = picturesOnly.has(key);
+    let posterWatch: MutationObserver | null = null;
+    let lastPoster = 0;
     setState("loading");
     loadPlayer()
       .then(() => {
         if (cancelled || !host.current) return;
         el = document.createElement("video-stream") as VideoStreamEl;
-        el.mode = "mse";
+        // Smooth video (MSE) when the browser can decode the camera's codec; otherwise a
+        // stream of pictures (e.g. H.265 cameras in browsers without HEVC support).
+        el.mode = pictures ? "mjpeg" : "mse";
         el.media = "video,audio";
         el.background = false;
         host.current.appendChild(el);
-        const src = new URL(`go2rtc/api/ws?src=${encodeURIComponent(hq ? camera : `${camera}_sub`)}`, base());
+        const src = new URL(`go2rtc/api/ws?src=${encodeURIComponent(pictures ? `${camera}_pic` : key)}`, base());
         src.protocol = src.protocol === "https:" ? "wss:" : "ws:";
         el.src = src.toString();
         const v = el.video;
@@ -108,8 +123,21 @@ export function LiveStream({
         v.controls = false;
         v.muted = latest.current.muted;
         v.playsInline = true;
-        v.addEventListener("playing", () => {
+        // Pictures mode shows each frame as the video's poster.
+        posterWatch = new MutationObserver(() => {
+          lastPoster = Date.now();
           window.clearTimeout(stallTimer);
+          setState("playing");
+        });
+        posterWatch.observe(v, { attributes: true, attributeFilter: ["poster"] });
+        v.addEventListener("playing", () => {
+          if (stream.mseCodecs && !hasVideoCodec(stream.mseCodecs)) {
+            picturesOnly.add(key);
+            setAttempt((n) => n + 1);
+            return;
+          }
+          window.clearTimeout(stallTimer);
+          neverStarted.delete(key);
           setState("playing");
           latest.current.onHasAudio?.(/mp4a|flac|opus/.test(stream.mseCodecs ?? ""));
         });
@@ -122,16 +150,48 @@ export function LiveStream({
         });
         onVideo?.(v);
       })
-      .catch(() => setState("error"));
+      .catch(() => {
+        setState("error");
+        retryTimer = window.setTimeout(() => setAttempt((n) => n + 1), 5000);
+      });
+    // Watchdog: a stream that never starts, or whose picture stops moving while the page
+    // is visible (the socket can stay open while nothing arrives), is started again
+    // instead of showing a frozen or blank tile forever.
+    let lastTime = -1;
+    let played = false;
+    let lastMove = Date.now();
+    const watchdog = window.setInterval(() => {
+      const v = video.current;
+      const moving = !!v && !v.paused && v.currentTime !== lastTime;
+      if (document.hidden || moving || Date.now() - lastPoster < 4000) {
+        if (v) lastTime = v.currentTime;
+        played ||= moving || lastPoster > 0;
+        lastMove = Date.now();
+        return;
+      }
+      if (played && v?.paused && !lastPoster) v.play().catch(() => {});
+      if (Date.now() - lastMove > (played ? 12_000 : 20_000)) {
+        // Video that never starts twice in a row: this browser can't play it; use pictures.
+        if (!played && !pictures) {
+          const n = (neverStarted.get(key) ?? 0) + 1;
+          neverStarted.set(key, n);
+          if (n >= 2) picturesOnly.add(key);
+        }
+        setAttempt((n) => n + 1);
+      }
+    }, 2000);
     return () => {
       cancelled = true;
+      window.clearInterval(watchdog);
+      posterWatch?.disconnect();
+      window.clearTimeout(retryTimer);
       window.clearTimeout(stallTimer);
       video.current = null;
       onVideo?.(null);
       if (el) closeStream(el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camera, hq]);
+  }, [camera, hq, attempt]);
 
   useEffect(() => {
     const v = video.current;

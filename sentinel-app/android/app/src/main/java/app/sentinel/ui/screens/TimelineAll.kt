@@ -75,6 +75,7 @@ fun TimelineScreen(state: AppState, padding: PaddingValues, openCamera: (String,
     LaunchedEffect(dayStart, cams.map { it.id }) {
         data = emptyMap()
         while (true) {
+            state.awaitVisible()
             data = coroutineScope {
                 cams.map { c ->
                     async {

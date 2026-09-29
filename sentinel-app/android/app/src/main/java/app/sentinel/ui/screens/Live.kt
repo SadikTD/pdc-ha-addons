@@ -1,15 +1,11 @@
 package app.sentinel.ui.screens
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -54,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -318,9 +315,13 @@ fun LiveTile(
     val live = cam.enabled && cam.state != "offline"
     val shape = RoundedCornerShape(if (compact) 14.dp else 18.dp)
 
-    val glowT = rememberInfiniteTransition(label = "glow")
-    val glowA by glowT.animateFloat(0.45f, 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "ga")
-    val borderColor by animateColorAsState(if (motion) C.Amber.copy(alpha = glowA) else C.GlassBorder, tween(300), label = "border")
+    // The glow only animates while there's motion; the colour is read at draw time, so it
+    // never recomposes the tile (8 tiles recomposing every frame made the grid stutter).
+    val glowA = remember { androidx.compose.animation.core.Animatable(1f) }
+    LaunchedEffect(motion) {
+        if (motion) glowA.animateTo(0.45f, infiniteRepeatable(tween(700), RepeatMode.Reverse))
+        else glowA.snapTo(1f)
+    }
 
     // Snapshot refresh: the poster before video starts, or the picture itself in data-saver mode.
     var bust by remember { mutableLongStateOf(System.currentTimeMillis() / 5000) }
@@ -341,6 +342,8 @@ fun LiveTile(
         onStopOrDispose { player.stop() }
     }
     LaunchedEffect(soundOn) { player.muted = !soundOn }
+    val reconnects by state.engine.reconnects.collectAsStateWithLifecycle()
+    LaunchedEffect(reconnects) { if (reconnects > 0) { delay(300); player.retryNow() } }
     val videoAlpha by animateFloatAsState(if (ui.firstFrame && !dataSaver) 1f else 0f, tween(400), label = "va")
 
     Box(
@@ -350,7 +353,13 @@ fun LiveTile(
             .scale(if (pressed) 0.97f else 1f)
             .clip(shape)
             .background(C.Ink900)
-            .border(if (motion) 2.dp else 1.dp, borderColor, shape)
+            .drawWithContent {
+                drawContent()
+                val w = (if (motion) 2.dp else 1.dp).toPx()
+                val color = if (motion) C.Amber.copy(alpha = glowA.value) else C.GlassBorder
+                val r = (if (compact) 14.dp else 18.dp).toPx()
+                drawRoundRect(color, topLeft = androidx.compose.ui.geometry.Offset(w / 2, w / 2), size = androidx.compose.ui.geometry.Size(size.width - w, size.height - w), cornerRadius = androidx.compose.ui.geometry.CornerRadius(r - w / 2), style = androidx.compose.ui.graphics.drawscope.Stroke(w))
+            }
             .combinedClickable(interaction, indication = null, onLongClick = onLongClick, onClick = onClick),
     ) {
         if (cam.enabled) {

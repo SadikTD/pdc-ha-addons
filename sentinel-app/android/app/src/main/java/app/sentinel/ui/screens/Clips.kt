@@ -104,6 +104,7 @@ fun ClipsScreen(state: AppState, padding: PaddingValues) {
     }
     LaunchedEffect(Unit) {
         while (true) {
+            state.awaitVisible()
             load()
             // Faster while a clip is being saved, to show its progress.
             delay(if (clips?.any { it.status == "saving" || it.status == "queued" } == true) 1500 else 15_000)

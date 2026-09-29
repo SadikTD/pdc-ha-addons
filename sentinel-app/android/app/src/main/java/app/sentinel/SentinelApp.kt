@@ -32,8 +32,15 @@ class SentinelApp : Application(), SingletonImageLoader.Factory {
         runCatching { Push.init(this, null) }
         // Poll Sentinel only while the app is visible.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) = state.startPolling()
-            override fun onStop(owner: LifecycleOwner) = state.stopPolling()
+            override fun onStart(owner: LifecycleOwner) {
+                engine.onForeground()
+                state.startPolling()
+            }
+
+            override fun onStop(owner: LifecycleOwner) {
+                state.stopPolling()
+                engine.onBackground()
+            }
         })
     }
 

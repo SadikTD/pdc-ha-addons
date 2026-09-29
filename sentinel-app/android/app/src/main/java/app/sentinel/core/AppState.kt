@@ -249,6 +249,11 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
         return cams.sortedBy { idx[it.id] ?: (1000 + cams.indexOf(it)) }.filter { includeHidden || it.id !in p.hidden }
     }
 
+    /** Waits while the app isn't on screen: screens' refresh loops pause in the background (no data use, and the connection can go idle). */
+    suspend fun awaitVisible() {
+        androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentStateFlow.first { it.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) }
+    }
+
     /** Sentinel's clock minus this phone's (recordings and events use Sentinel's time). */
     @Volatile var skew: Long = 0L
         private set

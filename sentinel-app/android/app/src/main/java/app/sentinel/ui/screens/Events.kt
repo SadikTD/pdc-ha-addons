@@ -101,6 +101,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openCamera: (String, L
     LaunchedEffect(range, camFilter) {
         events = null
         while (true) {
+            state.awaitVisible()
             load()
             delay(20_000)
         }

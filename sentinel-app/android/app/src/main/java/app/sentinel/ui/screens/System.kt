@@ -64,6 +64,7 @@ fun SystemScreen(state: AppState, onBack: () -> Unit, onOpenCamera: (String) -> 
     val scope = rememberCoroutineScope()
     if (admin) LaunchedEffect(Unit) {
         while (true) {
+            state.awaitVisible()
             runCatching { state.api.incidents(150) }.onSuccess { incidents = it.sortedByDescending { i -> i.t } }
             delay(15_000)
         }

@@ -236,6 +236,14 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
         }
         onStopOrDispose { if (!activity.inPip) { sub.stop(); main.stop() } }
     }
+    // Back on a network after a switch: restart the live video at once.
+    val reconnects by state.engine.reconnects.collectAsStateWithLifecycle()
+    LaunchedEffect(reconnects) {
+        if (reconnects > 0 && live) {
+            delay(300)
+            if (hd) main.retryNow() else sub.retryNow()
+        }
+    }
     // Once full quality plays, the substream isn't needed.
     LaunchedEffect(mainUi.firstFrame, hd) { if (hd && mainUi.firstFrame) sub.stop() }
     LaunchedEffect(muted, live) {
@@ -274,6 +282,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
     LaunchedEffect(cam.id) {
         while (true) {
             delay(30_000)
+            state.awaitVisible()
             loadRange(if (tl.scrubbing) tl.scrubTime else playTime, tl.span.toLong())
         }
     }
@@ -281,6 +290,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, on
     var todayEvents by remember { mutableStateOf<List<SentinelEvent>>(emptyList()) }
     LaunchedEffect(cam.id) {
         while (true) {
+            state.awaitVisible()
             runCatching { api.events(listOf(cam.id), state.serverNow() - DAY, null, 60) }.onSuccess { todayEvents = it.sortedByDescending { e -> e.start } }
             delay(60_000)
         }

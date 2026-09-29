@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, Suspense, lazy, type ComponentType } from "react";
 import { createRoot } from "react-dom/client";
 import { HashRouter, Route, Routes } from "react-router-dom";
 import "./index.css";
@@ -6,14 +6,25 @@ import { StatusProvider } from "./lib/status";
 import { ToastProvider } from "./lib/toast";
 import { Shell } from "./components/Shell";
 import { LivePage } from "./pages/Live";
-import { CameraPage } from "./pages/Camera";
-import { TimelinePage } from "./pages/TimelinePage";
-import { EventsPage } from "./pages/Events";
-import { ClipsPage } from "./pages/Clips";
-import { SystemPage } from "./pages/System";
-import { SettingsPage } from "./pages/Settings";
-import { PlaybackPage } from "./pages/Playback";
-import { EmbedPage } from "./pages/Embed";
+
+// Everything but the Live page loads when first opened, so the app starts quickly (the
+// players, settings and QR code are most of the code).
+const named = <K extends string>(load: () => Promise<Record<K, ComponentType>>, name: K) =>
+  lazy(() => load().then((m) => ({ default: m[name] })));
+const CameraPage = named(() => import("./pages/Camera"), "CameraPage");
+const TimelinePage = named(() => import("./pages/TimelinePage"), "TimelinePage");
+const EventsPage = named(() => import("./pages/Events"), "EventsPage");
+const ClipsPage = named(() => import("./pages/Clips"), "ClipsPage");
+const SystemPage = named(() => import("./pages/System"), "SystemPage");
+const SettingsPage = named(() => import("./pages/Settings"), "SettingsPage");
+const PlaybackPage = named(() => import("./pages/Playback"), "PlaybackPage");
+const EmbedPage = named(() => import("./pages/Embed"), "EmbedPage");
+
+const loading = (
+  <div className="flex min-h-[40vh] items-center justify-center">
+    <div className="size-6 animate-spin rounded-full border-2 border-white/15 border-t-violet-400" />
+  </div>
+);
 
 // Hash routing: ingress serves the app under a path prefix we don't control.
 createRoot(document.getElementById("root")!).render(
@@ -23,11 +34,19 @@ createRoot(document.getElementById("root")!).render(
         <ToastProvider>
           <Routes>
             {/* Home Assistant dashboard card: no navigation chrome. */}
-            <Route path="/embed" element={<EmbedPage />} />
+            <Route
+              path="/embed"
+              element={
+                <Suspense fallback={null}>
+                  <EmbedPage />
+                </Suspense>
+              }
+            />
             <Route
               path="*"
               element={
                 <Shell>
+                  <Suspense fallback={loading}>
                   <Routes>
                     <Route path="/" element={<LivePage />} />
                     <Route path="/camera/:id" element={<CameraPage />} />
@@ -38,6 +57,7 @@ createRoot(document.getElementById("root")!).render(
                     <Route path="/system" element={<SystemPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
                   </Routes>
+                  </Suspense>
                 </Shell>
               }
             />

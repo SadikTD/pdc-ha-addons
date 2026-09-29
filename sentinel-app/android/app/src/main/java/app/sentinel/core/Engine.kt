@@ -17,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,18 +52,28 @@ class Engine(context: Context) {
     private val _state = MutableStateFlow(TunnelState())
     val state: StateFlow<TunnelState> = _state.asStateFlow()
 
-    private var currentNetwork: Network? = null
+    /** The phone's current default network, and the last one we connected over. */
+    @Volatile private var currentNetwork: Network? = null
+    @Volatile private var lastNetwork: Network? = null
+
+    private val _reconnects = MutableStateFlow(0)
+    /** Bumps whenever the connection is dropped on purpose (network switch, "Try again"): players restart at once instead of waiting out their retry delay. */
+    val reconnects: StateFlow<Int> = _reconnects.asStateFlow()
 
     init {
         watchNetwork()
         scope.launch {
             while (isActive) {
+                // Only while something on screen shows it.
+                _state.subscriptionCount.first { it > 0 }
                 runCatching { json.decodeFromString<TunnelState>(tunnel.stateJSON()) }.onSuccess { _state.value = it }
                 delay(1000)
             }
         }
     }
 
+    // The engine's setters return at once (it never waits while holding its lock), so
+    // they're safe on the UI thread.
     fun setServer(id: String) = tunnel.setServer(id, "")
 
     fun setToken(token: String?) = tunnel.setToken(token ?: "")
@@ -72,7 +83,27 @@ class Engine(context: Context) {
         runCatching { tunnel.connect() }
     }
 
-    fun reconnect() = tunnel.reconnect()
+    fun reconnect() {
+        tunnel.reconnect()
+        _reconnects.value++
+    }
+
+    private var idleJob: kotlinx.coroutines.Job? = null
+
+    /** The app is on screen again: connect now, so the first screen doesn't wait. */
+    fun onForeground() {
+        idleJob?.cancel()
+        scope.launch { runCatching { tunnel.connect() } }
+    }
+
+    /** The app left the screen: let the connection go after a while (no keep-alives in the background). */
+    fun onBackground() {
+        idleJob?.cancel()
+        idleJob = scope.launch {
+            delay(20_000)
+            tunnel.reconnect()
+        }
+    }
 
     suspend fun discover(): List<Found> = withContext(Dispatchers.IO) {
         runCatching { json.decodeFromString<List<Found>>(Tunnel.discover(localIPv4().firstOrNull() ?: "", 1600)) }.getOrDefault(emptyList())
@@ -92,10 +123,13 @@ class Engine(context: Context) {
         val cm = app.getSystemService(ConnectivityManager::class.java)
         cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                val changed = currentNetwork != null && currentNetwork != network
                 currentNetwork = network
                 tunnel.setLocalIPs(localIPv4(cm.getLinkProperties(network)).joinToString(","))
                 tunnel.setNetwork(networkKey(cm, network))
+                // Compare with the last network, not the current one: switching off Wi-Fi
+                // often reports "lost" before mobile data is "available".
+                val changed = lastNetwork != null && lastNetwork != network
+                lastNetwork = network
                 if (changed) reconnect()
             }
 
@@ -106,7 +140,12 @@ class Engine(context: Context) {
             override fun onCapabilitiesChanged(network: Network, nc: NetworkCapabilities) {}
 
             override fun onLost(network: Network) {
-                if (network == currentNetwork) currentNetwork = null
+                if (network == currentNetwork) {
+                    currentNetwork = null
+                    // The connection went with the network: fail fast instead of letting
+                    // requests and video hang until it times out.
+                    reconnect()
+                }
             }
         })
     }

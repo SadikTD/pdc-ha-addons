@@ -62,6 +62,9 @@ func (g *Go2RTC) writeConfig() error {
 			sub = c.MainURL
 		}
 		fmt.Fprintf(&b, "  %s_sub:\n    - %s\n", c.ID, yamlQuote(sub))
+		// Pictures of the substream, for browsers that can't decode the camera's video
+		// (e.g. H.265 without HEVC support). ffmpeg only runs while someone watches.
+		fmt.Fprintf(&b, "  %s_pic:\n    - %s\n", c.ID, yamlQuote("ffmpeg:"+c.ID+"_sub#video=mjpeg"))
 	}
 	return writeFileAtomic(g.confPath, []byte(b.String()), 0o600)
 }

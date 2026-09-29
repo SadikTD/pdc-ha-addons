@@ -69,8 +69,12 @@ func (a *App) Routes(www string) http.Handler {
 	mux.HandleFunc("GET /api/cameras/{id}/latest.jpg", func(w http.ResponseWriter, r *http.Request) {
 		img := a.previews.Latest(r.PathValue("id"))
 		if img == nil {
-			writeErr(w, 404, "no frame yet")
-			return
+			// No motion detection on this camera, so no frames of our own: ask it for one.
+			var err error
+			if img, err = a.frame(r.Context(), r.PathValue("id")+"_sub", time.Minute); err != nil {
+				writeErr(w, 404, "no frame yet")
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("Cache-Control", "no-store")
@@ -240,7 +244,7 @@ func (a *App) Routes(www string) http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
-	return mux
+	return compress(mux)
 }
 
 type CameraStatus struct {
@@ -391,32 +395,64 @@ func (a *App) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("hq") == "1" {
 		src = id
 	}
-	key := src
-	if v, ok := snapCache.Load(key); ok {
-		e := v.(snapEntry)
-		if time.Since(e.at) < 10*time.Second {
-			w.Header().Set("Content-Type", "image/jpeg")
-			w.Header().Set("Cache-Control", "no-store")
-			w.Write(e.img)
-			return
-		}
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-	defer cancel()
-	img, err := a.go2rtc.Frame(ctx, src)
+	img, err := a.frame(r.Context(), src, 10*time.Second)
 	if err != nil {
-		if v, ok := snapCache.Load(key); ok { // stale is better than nothing
-			w.Header().Set("Content-Type", "image/jpeg")
-			w.Write(v.(snapEntry).img)
-			return
-		}
 		writeErr(w, 502, err.Error())
 		return
 	}
-	snapCache.Store(key, snapEntry{time.Now(), img})
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write(img)
+}
+
+var (
+	frameMu      sync.Mutex
+	frameFetches = map[string]chan struct{}{}
+)
+
+// frame returns a picture from the camera, reusing one up to maxAge old. Viewers asking
+// at the same time share one grab (each takes a second or two); if the camera can't
+// give one, the last picture is better than nothing.
+func (a *App) frame(ctx context.Context, src string, maxAge time.Duration) ([]byte, error) {
+	for {
+		if v, ok := snapCache.Load(src); ok && time.Since(v.(snapEntry).at) < maxAge {
+			return v.(snapEntry).img, nil
+		}
+		frameMu.Lock()
+		if ch, ok := frameFetches[src]; ok {
+			frameMu.Unlock()
+			select {
+			case <-ch:
+				maxAge = time.Minute // take what that grab got
+				if _, ok := snapCache.Load(src); !ok {
+					return nil, errors.New("no picture from the camera")
+				}
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		ch := make(chan struct{})
+		frameFetches[src] = ch
+		frameMu.Unlock()
+		fctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		img, err := a.go2rtc.Frame(fctx, src)
+		cancel()
+		if err == nil {
+			snapCache.Store(src, snapEntry{time.Now(), img})
+		}
+		frameMu.Lock()
+		delete(frameFetches, src)
+		close(ch)
+		frameMu.Unlock()
+		if err != nil {
+			if v, ok := snapCache.Load(src); ok {
+				return v.(snapEntry).img, nil
+			}
+			return nil, err
+		}
+		return img, nil
+	}
 }
 
 func (a *App) handleCoverage(w http.ResponseWriter, r *http.Request) {
