@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import { Cat, Dog, PersonStanding, Zap, type LucideIcon } from "lucide-react";
-import { eventPicture, type Label, type SentinelEvent } from "./api";
+import { eventPicture, thumbURL, type Label, type SentinelEvent } from "./api";
 
 // How each kind of thing seen looks everywhere (lists, timelines, summary).
 export const LABELS: Record<Label, { name: string; plural: string; icon: LucideIcon; color: string; chip: string }> = {
@@ -66,7 +66,21 @@ export function EventPicture({ e, className, boxes = true }: { e: SentinelEvent;
   const shown = e.snap && boxes ? (e.objects ?? []).filter((o) => o.t === e.objects?.[0]?.t) : [];
   return (
     <div className={clsx("relative overflow-hidden bg-ink-800", className)}>
-      {src ? <img src={src} loading="lazy" className="h-full w-full object-cover" /> : <Zap className="absolute inset-0 m-auto size-5 text-slate-600" />}
+      {src ? (
+        <img
+          src={src}
+          loading="lazy"
+          className="h-full w-full object-cover"
+          // A missing snapshot falls back to the moment motion started.
+          onError={(ev) => {
+            const img = ev.currentTarget;
+            if (e.thumb && !img.src.endsWith("thumb.jpg")) img.src = thumbURL(e);
+            else img.style.visibility = "hidden";
+          }}
+        />
+      ) : (
+        <Zap className="absolute inset-0 m-auto size-5 text-slate-600" />
+      )}
       {shown.map((o) => (
         <div
           key={o.label}

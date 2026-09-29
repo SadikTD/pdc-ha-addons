@@ -157,9 +157,8 @@ func (l *Labeler) label(ctx context.Context, e Event, live, busy bool) {
 	l.mu.Lock()
 	l.status.Scanning = e.ID
 	l.mu.Unlock()
-	if live {
-		a.events.SetScan(e.Cam, e.ID, "scanning", nil, nil, false)
-	}
+	// Marked while checked, so a Rescan meanwhile leaves it (and its picture) alone.
+	a.events.SetScan(e.Cam, e.ID, "scanning", nil, nil, false)
 	objs, rejected, snap, checked := l.scan(ctx, e, live, busy)
 	scan := "done"
 	if checked == 0 {
