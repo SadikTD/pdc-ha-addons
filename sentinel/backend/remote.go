@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
@@ -182,12 +183,21 @@ func (rm *Remote) lanAddrs() []string {
 // which breaks hole punching). The panel port must then stay private: only Home
 // Assistant's ingress proxy and the Supervisor network (172.30.32.0/23) and the host
 // itself may use it, never other devices on the LAN.
-var panelNet = netip.MustParsePrefix("172.30.32.0/23")
+var panelNets = []netip.Prefix{netip.MustParsePrefix("172.30.32.0/23"), netip.MustParsePrefix("fd0c:ac1e:2100::/48")}
+
+var lastReject atomic.Int64
 
 func panelOnly(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ap, err := netip.ParseAddrPort(r.RemoteAddr)
-		if err != nil || !(ap.Addr().IsLoopback() || panelNet.Contains(ap.Addr().Unmap())) {
+		ok := err == nil && ap.Addr().IsLoopback()
+		for _, p := range panelNets {
+			ok = ok || (err == nil && p.Contains(ap.Addr().Unmap()))
+		}
+		if !ok {
+			if now := time.Now().Unix(); lastReject.Swap(now) != now {
+				logf("panel: refused a request from %s (not Home Assistant)", r.RemoteAddr)
+			}
 			http.Error(w, "Open Sentinel from Home Assistant, or use the Sentinel app.", http.StatusForbidden)
 			return
 		}
