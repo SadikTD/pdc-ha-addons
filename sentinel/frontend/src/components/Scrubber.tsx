@@ -397,7 +397,7 @@ export function Scrubber(p: Props) {
         >
           <div className="aspect-video bg-ink-800">
             {hoverLabel && hoverEvent?.snap ? (
-              <img src={snapURL(hoverEvent)} className="h-full w-full object-cover" />
+              <img src={snapURL(hoverEvent, true)} className="h-full w-full object-cover" />
             ) : thumb?.url ? (
               <img src={thumb.url} className="h-full w-full object-cover" />
             ) : (

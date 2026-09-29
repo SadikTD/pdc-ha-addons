@@ -1,6 +1,8 @@
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { Cat, Dog, PersonStanding, Zap, type LucideIcon } from "lucide-react";
 import { eventPicture, thumbURL, type Label, type SentinelEvent } from "./api";
+import { whenNear } from "./lazy";
 
 // How each kind of thing seen looks everywhere (lists, timelines, summary).
 export const LABELS: Record<Label, { name: string; plural: string; icon: LucideIcon; color: string; chip: string }> = {
@@ -60,34 +62,53 @@ export function LabelChips({ e, size = "sm", showMotion = false, onWrong }: { e:
   );
 }
 
-// The event's picture; a snapshot of someone seen gets a frame around them.
+// The event's picture; a snapshot of someone seen gets a frame around them. Loaded (small)
+// only when near the screen, faded in, and cancelled if it leaves the page first, so a
+// long list never holds up the video opened from it.
 export function EventPicture({ e, className, boxes = true }: { e: SentinelEvent; className?: string; boxes?: boolean }) {
-  const src = eventPicture(e);
+  const src = eventPicture(e, true);
+  const holder = useRef<HTMLDivElement>(null);
+  const img = useRef<HTMLImageElement | null>(null);
+  const [near, setNear] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const shown = e.snap && boxes ? (e.objects ?? []).filter((o) => o.t === e.objects?.[0]?.t) : [];
+
+  useEffect(() => (near || !holder.current ? undefined : whenNear(holder.current, () => setNear(true))), [near]);
+  // Leaving the page stops a download still under way.
+  useEffect(() => () => img.current?.removeAttribute("src"), []);
+
   return (
-    <div className={clsx("relative overflow-hidden bg-ink-800", className)}>
+    <div ref={holder} className={clsx("relative overflow-hidden bg-ink-800", className)}>
       {src ? (
-        <img
-          src={src}
-          loading="lazy"
-          className="h-full w-full object-cover"
-          // A missing snapshot falls back to the moment motion started.
-          onError={(ev) => {
-            const img = ev.currentTarget;
-            if (e.thumb && !img.src.endsWith("thumb.jpg")) img.src = thumbURL(e);
-            else img.style.visibility = "hidden";
-          }}
-        />
+        near && (
+          <img
+            ref={(el) => {
+              if (el) img.current = el;
+            }}
+            src={src}
+            decoding="async"
+            alt=""
+            onLoad={() => setLoaded(true)}
+            className={clsx("h-full w-full object-cover transition-opacity duration-300", loaded ? "opacity-100" : "opacity-0")}
+            // A missing snapshot falls back to the moment motion started.
+            onError={(ev) => {
+              const el = ev.currentTarget;
+              if (e.thumb && !el.src.includes("thumb.jpg")) el.src = thumbURL(e, true);
+              else el.style.visibility = "hidden";
+            }}
+          />
+        )
       ) : (
         <Zap className="absolute inset-0 m-auto size-5 text-slate-600" />
       )}
-      {shown.map((o) => (
-        <div
-          key={o.label}
-          className="pointer-events-none absolute rounded-[3px] border-2"
-          style={{ left: `${o.box.x * 100}%`, top: `${o.box.y * 100}%`, width: `${o.box.w * 100}%`, height: `${o.box.h * 100}%`, borderColor: LABELS[o.label].color, boxShadow: `0 0 10px ${LABELS[o.label].color}80` }}
-        />
-      ))}
+      {loaded &&
+        shown.map((o) => (
+          <div
+            key={o.label}
+            className="pointer-events-none absolute rounded-[3px] border-2"
+            style={{ left: `${o.box.x * 100}%`, top: `${o.box.y * 100}%`, width: `${o.box.w * 100}%`, height: `${o.box.h * 100}%`, borderColor: LABELS[o.label].color, boxShadow: `0 0 10px ${LABELS[o.label].color}80` }}
+          />
+        ))}
     </div>
   );
 }

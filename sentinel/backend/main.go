@@ -76,6 +76,7 @@ func main() {
 	go app.drive.Run(ctx)
 	go installCard(env("SENTINEL_HA_CONFIG", "/homeassistant"))
 	go app.measureSizes()
+	go store.WarmIndex(ctx)
 
 	go clock.Run(ctx)
 	go app.go2rtc.Run(ctx)

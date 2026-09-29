@@ -99,7 +99,7 @@ export function EmbedPage() {
                 className="flex w-56 shrink-0 items-center gap-2.5 rounded-xl border border-white/[0.06] bg-ink-850 p-1.5 text-left transition hover:border-white/15 lg:w-full"
               >
                 <div className="relative aspect-video w-24 shrink-0 overflow-hidden rounded-lg bg-ink-800">
-                  {e.thumb ? <img src={thumbURL(e)} loading="lazy" className="h-full w-full object-cover" /> : <Zap className="absolute inset-0 m-auto size-4 text-slate-600" />}
+                  {e.thumb ? <img src={thumbURL(e, true)} loading="lazy" className="h-full w-full object-cover" /> : <Zap className="absolute inset-0 m-auto size-4 text-slate-600" />}
                   {!e.end && <span className="absolute right-1 top-1 rounded bg-amber-400 px-1 text-[9px] font-bold text-black">NOW</span>}
                 </div>
                 <div className="min-w-0">

@@ -603,8 +603,7 @@ func (a *App) handleSnap(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad id")
 		return
 	}
-	w.Header().Set("Cache-Control", "private, max-age=86400")
-	http.ServeFile(w, r, a.events.SnapPath(cam, id))
+	servePicture(w, r, a.events.SnapPath(cam, id))
 }
 
 func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -645,8 +644,7 @@ func (a *App) handleThumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad id")
 		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeFile(w, r, a.events.ThumbPath(cam, id))
+	servePicture(w, r, a.events.ThumbPath(cam, id))
 }
 
 // handleVOD builds an HLS playlist over the recordings in [from, to): every file becomes

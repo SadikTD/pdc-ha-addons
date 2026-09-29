@@ -8,15 +8,17 @@ import { useStatus } from "../lib/status";
 import { api, type Label, type SearchQuery, type SentinelEvent } from "../lib/api";
 import { DAY, HOUR, fmtDay, fmtDuration, fmtTimeSec, startOfDay } from "../lib/format";
 import { EventPicture, LABELS, LABEL_ORDER, LabelChips, SEARCH_EXAMPLES } from "../lib/labels";
+import { openEvent, readList } from "../lib/eventNav";
+import { whenNear } from "../lib/lazy";
 
 const RANGES = [
-  { label: "Today", from: () => startOfDay(Date.now()) },
-  { label: "24 hours", from: () => Date.now() - DAY },
-  { label: "7 days", from: () => Date.now() - 7 * DAY },
-  { label: "Custom", from: () => 0 },
+  { id: "today", label: "Today", from: () => startOfDay(Date.now()) },
+  { id: "24h", label: "24 hours", from: () => Date.now() - DAY },
+  { id: "7d", label: "7 days", from: () => Date.now() - 7 * DAY },
+  { id: "custom", label: "Custom", from: () => 0 },
 ];
 const CUSTOM = 3;
-const PAGE = 120; // events drawn at a time; "Show more" adds the next batch
+const PAGE = 60; // events drawn at a time; more are added while scrolling down
 
 type Kind = "all" | Label | "motion";
 
@@ -24,17 +26,45 @@ function toLocalInput(ms: number) {
   return new Date(ms - new Date(ms).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
+// The last lists fetched, so coming back from an event shows the list at once (and
+// refreshes it quietly) instead of starting over from a blank page.
+const cache = new Map<string, SentinelEvent[]>();
+function remember(key: string, list: SentinelEvent[]) {
+  cache.delete(key);
+  cache.set(key, list);
+  if (cache.size > 6) cache.delete(cache.keys().next().value!);
+}
+
 export function EventsPage() {
   const { status } = useStatus();
   const nav = useNavigate();
   const [params, setParams] = useSearchParams();
-  const [cams, setCams] = useState<string[]>([]);
-  const [range, setRange] = useState(1);
-  const [kind, setKind] = useState<Kind>((params.get("kind") as Kind) || "all");
-  const [minPeak, setMinPeak] = useState(0);
-  const [custom, setCustom] = useState(() => ({ from: toLocalInput(startOfDay(Date.now()) - DAY + 22 * HOUR), to: toLocalInput(startOfDay(Date.now()) + 6 * HOUR) }));
-  const [events, setEvents] = useState<SentinelEvent[] | null>(null);
-  const [shown, setShown] = useState(PAGE);
+
+  // Every filter lives in the address, so going back to the list (or reloading, or
+  // sharing the link) shows exactly the same list.
+  const set = (changes: Record<string, string | null>) => {
+    const p = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(changes)) {
+      if (v === null || v === "") p.delete(k);
+      else p.set(k, v);
+    }
+    setParams(p, { replace: true });
+  };
+  const cams = useMemo(() => (params.get("cams") ?? "").split(",").filter(Boolean), [params]);
+  const range = Math.max(0, RANGES.findIndex((r) => r.id === (params.get("range") ?? "24h")));
+  const kind = (params.get("kind") as Kind) || "all";
+  const minPeak = Number(params.get("min")) || 0;
+  const custom = {
+    from: params.get("from") ?? toLocalInput(startOfDay(Date.now()) - DAY + 22 * HOUR),
+    to: params.get("to") ?? toLocalInput(startOfDay(Date.now()) + 6 * HOUR),
+  };
+  const setKind = (k: Kind) => set({ kind: k === "all" ? null : k });
+  const setRange = (i: number) =>
+    set({ range: RANGES[i].id === "24h" ? null : RANGES[i].id, ...(i === CUSTOM ? { from: custom.from, to: custom.to } : { from: null, to: null }) });
+  const setCustom = (edge: "from" | "to", v: string) => set({ [edge]: v });
+  const setMinPeak = (v: number) => set({ min: v ? String(v) : null });
+  const toggleCam = (id: string) => set({ cams: (cams.includes(id) ? cams.filter((x) => x !== id) : [...cams, id]).join() || null });
+
   // Search: the text being typed, and the question asked (from the URL, so it can be shared).
   const asked = params.get("q") ?? "";
   const [text, setText] = useState(asked);
@@ -42,18 +72,43 @@ export function EventsPage() {
   const [searching, setSearching] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const names = Object.fromEntries((status?.cameras ?? []).map((c) => [c.id, c.name]));
-
   const ask = (q: string) => {
     setText(q);
-    const p = new URLSearchParams(params);
-    if (q.trim()) p.set("q", q.trim());
-    else p.delete("q");
-    setParams(p, { replace: true });
+    set({ q: q.trim() || null });
   };
 
+  // What is fetched (the kind and size filters only narrow it down here).
+  const dataKey = asked ? `q:${asked}` : `${cams.join()}|${range}|${range === CUSTOM ? `${custom.from}|${custom.to}` : ""}`;
+  // Which list this is, to come back to it from an event.
+  const listKey = `events?${params}`;
+  const back = useRef(readList());
+  if (back.current && back.current.key !== listKey) back.current = null;
+  const [events, setEvents] = useState<SentinelEvent[] | null>(() => cache.get(dataKey) ?? null);
+  const [shown, setShown] = useState(() => Math.max(PAGE, back.current?.shown ?? 0));
+  const [lastSeen, setLastSeen] = useState<string | null>(() => back.current?.current ?? null);
+  const animate = useRef(!events); // cards rise in on a fresh list, not when coming back
+  const more = useRef<HTMLDivElement>(null);
+
+  const loadedKey = useRef(dataKey);
   useEffect(() => {
     let alive = true;
-    setShown(PAGE);
+    // A new question or filter starts at the top of a fresh list.
+    if (loadedKey.current !== dataKey) {
+      loadedKey.current = dataKey;
+      setShown(PAGE);
+      setLastSeen(null);
+      setEvents(cache.get(dataKey) ?? null);
+    }
+    const got = (list: SentinelEvent[]) => {
+      if (!alive) return;
+      remember(dataKey, list);
+      setEvents(list);
+    };
+    // Refreshes skip a hidden tab: no point fetching lists nobody is looking at.
+    const every = (ms: number, f: () => void) => {
+      const t = window.setInterval(() => !document.hidden && f(), ms);
+      return () => window.clearInterval(t);
+    };
     if (asked) {
       setSearching(true);
       const load = () =>
@@ -61,35 +116,39 @@ export function EventsPage() {
           .search(asked, 1000)
           .then((r) => {
             if (!alive) return;
-            setEvents(r.events);
+            got(r.events);
             setParsed(r.query);
           })
-          .catch(() => alive && setEvents([]))
+          .catch(() => alive && setEvents((e) => e ?? []))
           .finally(() => alive && setSearching(false));
       load();
-      const t = window.setInterval(load, 20_000);
+      const stop = every(20_000, load);
       return () => {
         alive = false;
-        window.clearInterval(t);
+        stop();
       };
     }
     setParsed(null);
     const from = range === CUSTOM ? new Date(custom.from).getTime() : RANGES[range].from();
     const to = range === CUSTOM ? new Date(custom.to).getTime() : Date.now() + HOUR;
-    if (!(from < to)) return setEvents([]);
+    if (!(from < to)) {
+      setEvents([]);
+      return;
+    }
     const load = () =>
       api
         .events({ cameras: cams, from, to, limit: 3000 })
-        .then((e) => alive && setEvents(e))
+        .then(got)
         .catch(() => {});
     load();
     // Only a range that reaches the present can get new events.
-    const t = to > Date.now() - HOUR ? window.setInterval(load, 15_000) : 0;
+    const stop = to > Date.now() - HOUR ? every(15_000, load) : () => {};
     return () => {
       alive = false;
-      window.clearInterval(t);
+      stop();
     };
-  }, [asked, cams.join(), range, custom.from, custom.to]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataKey]);
 
   const sized = useMemo(() => (events ?? []).filter((e) => e.peak >= minPeak), [events, minPeak]);
   const counts = useMemo(() => {
@@ -119,7 +178,23 @@ export function EventsPage() {
     return out;
   }, [matching, shown]);
 
-  const toggleCam = (id: string) => setCams((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]));
+  // Coming back from an event: the list is where it was, on the event just watched.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current || !events || !lastSeen || !back.current) return;
+    const i = matching.findIndex((e) => e.id === lastSeen);
+    if (i >= shown) return setShown(i + PAGE);
+    restored.current = true;
+    if (i < 0) return;
+    requestAnimationFrame(() => document.querySelector(`[data-ev="${CSS.escape(lastSeen)}"]`)?.scrollIntoView({ block: "center" }));
+  }, [events, matching, lastSeen, shown]);
+
+  // Endless list: the next batch comes in as the end comes near.
+  useEffect(() => {
+    if (!more.current || shown >= matching.length) return;
+    return whenNear(more.current, () => setShown((n) => n + PAGE));
+  }, [shown, matching.length, events]);
+
   const total = matching.length;
   const pending = status?.detection?.backlog ?? 0;
   const kinds: { k: Kind; label: string; icon?: typeof Zap; color?: string }[] = [
@@ -127,7 +202,7 @@ export function EventsPage() {
     ...LABEL_ORDER.map((l) => ({ k: l as Kind, label: LABELS[l].plural, icon: LABELS[l].icon, color: LABELS[l].color })),
     { k: "motion", label: "Motion only", icon: Zap, color: "#fbbf24" },
   ];
-  const what = kind === "all" ? "event" : kind === "motion" ? "plain motion event" : `event${""} with ${LABELS[kind].plural.toLowerCase()}`;
+  const what = kind === "all" ? "event" : kind === "motion" ? "plain motion event" : `event with ${LABELS[kind].plural.toLowerCase()}`;
 
   return (
     <>
@@ -172,7 +247,7 @@ export function EventsPage() {
                   {c}
                 </span>
               ))}
-              <button onClick={() => ask("")} className="ml-1 text-xs text-slate-400 underline-offset-2 hover:text-white hover:underline">
+              <button type="button" onClick={() => ask("")} className="ml-1 text-xs text-slate-400 underline-offset-2 hover:text-white hover:underline">
                 Clear
               </button>
             </>
@@ -180,7 +255,12 @@ export function EventsPage() {
             <>
               <span className="text-xs text-slate-500">Try:</span>
               {SEARCH_EXAMPLES.map((q) => (
-                <button key={q} onClick={() => ask(q)} className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-0.5 text-xs text-slate-300 transition hover:border-white/20 hover:text-white">
+                <button
+                  type="button"
+                  key={q}
+                  onClick={() => ask(q)}
+                  className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-0.5 text-xs text-slate-300 transition hover:border-white/20 hover:text-white"
+                >
                   {q}
                 </button>
               ))}
@@ -194,13 +274,7 @@ export function EventsPage() {
         {kinds.map(({ k, label, icon: I, color }) => (
           <button
             key={k}
-            onClick={() => {
-              setKind(k);
-              const p = new URLSearchParams(params);
-              if (k === "all") p.delete("kind");
-              else p.set("kind", k);
-              setParams(p, { replace: true });
-            }}
+            onClick={() => setKind(k)}
             className={clsx(
               "flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition",
               kind === k ? "border-white/20 bg-white/10 text-white" : "border-white/5 bg-white/[0.02] text-slate-400 hover:text-white",
@@ -223,7 +297,7 @@ export function EventsPage() {
         <div className="mb-6 flex flex-wrap items-center gap-2">
           <div className="glass flex rounded-xl p-1">
             {RANGES.map((r, i) => (
-              <button key={r.label} onClick={() => setRange(i)} className={clsx("rounded-lg px-3 py-1.5 text-xs font-medium transition", range === i ? "bg-white/10 text-white" : "text-slate-400 hover:text-white")}>
+              <button key={r.id} onClick={() => setRange(i)} className={clsx("rounded-lg px-3 py-1.5 text-xs font-medium transition", range === i ? "bg-white/10 text-white" : "text-slate-400 hover:text-white")}>
                 {r.label}
               </button>
             ))}
@@ -240,11 +314,16 @@ export function EventsPage() {
               </button>
             );
           })}
+          {cams.length > 0 && (
+            <button onClick={() => set({ cams: null })} className="text-xs text-slate-400 underline-offset-2 hover:text-white hover:underline">
+              All cameras
+            </button>
+          )}
           {range === CUSTOM && (
             <div className="glass flex flex-wrap items-center gap-2 rounded-xl px-2 py-1">
-              <input type="datetime-local" value={custom.from} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))} className="h-8 rounded-lg border border-white/10 bg-ink-950 px-2 text-xs text-white [color-scheme:dark]" />
+              <input type="datetime-local" value={custom.from} onChange={(e) => setCustom("from", e.target.value)} className="h-8 rounded-lg border border-white/10 bg-ink-950 px-2 text-xs text-white [color-scheme:dark]" />
               <span className="text-xs text-slate-500">to</span>
-              <input type="datetime-local" value={custom.to} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))} className="h-8 rounded-lg border border-white/10 bg-ink-950 px-2 text-xs text-white [color-scheme:dark]" />
+              <input type="datetime-local" value={custom.to} onChange={(e) => setCustom("to", e.target.value)} className="h-8 rounded-lg border border-white/10 bg-ink-950 px-2 text-xs text-white [color-scheme:dark]" />
             </div>
           )}
           <label className="ml-auto flex items-center gap-2 text-xs text-slate-400">
@@ -278,12 +357,16 @@ export function EventsPage() {
               {g.items.map((e, i) => (
                 <motion.button
                   key={e.id}
-                  initial={{ opacity: 0, y: 8 }}
+                  data-ev={e.id}
+                  initial={animate.current ? { opacity: 0, y: 8 } : false}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(i, 15) * 0.02 }}
                   whileHover={{ y: -3 }}
-                  onClick={() => nav(`/camera/${e.camera}?t=${(e.objects?.[0]?.t ?? e.start) - 3000}`)}
-                  className="group overflow-hidden rounded-xl border border-white/[0.07] bg-ink-850 text-left shadow-lg shadow-black/30"
+                  onClick={() => openEvent(nav, e, matching, "Events", listKey, shown)}
+                  className={clsx(
+                    "group overflow-hidden rounded-xl border bg-ink-850 text-left shadow-lg shadow-black/30",
+                    e.id === lastSeen ? "border-violet-400/70 ring-2 ring-violet-400/40" : "border-white/[0.07]",
+                  )}
                 >
                   <div className="relative aspect-video">
                     <EventPicture e={e} className="h-full w-full transition duration-500 group-hover:scale-105" />
@@ -293,7 +376,11 @@ export function EventsPage() {
                       </span>
                     </div>
                     <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur">{names[e.camera] ?? e.camera}</span>
-                    {!e.end && <span className="absolute right-2 top-2 rounded-md bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-black">LIVE</span>}
+                    {!e.end ? (
+                      <span className="absolute right-2 top-2 rounded-md bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-black">LIVE</span>
+                    ) : (
+                      e.id === lastSeen && <span className="absolute right-2 top-2 rounded-md bg-violet-500 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow">Last watched</span>
+                    )}
                     <span className="absolute bottom-2 left-2">
                       <LabelChips
                         e={e}
@@ -308,7 +395,10 @@ export function EventsPage() {
                     </span>
                   </div>
                   <div className="flex items-center justify-between px-3 py-2">
-                    <span className="text-sm font-medium text-white">{asked ? `${fmtDay(e.start)} ` : ""}{fmtTimeSec(e.start)}</span>
+                    <span className="text-sm font-medium text-white">
+                      {asked ? `${fmtDay(e.start)} ` : ""}
+                      {fmtTimeSec(e.start)}
+                    </span>
                     <span className="text-xs text-slate-500">{e.end ? fmtDuration(e.end - e.start) : "now"}</span>
                   </div>
                 </motion.button>
@@ -318,7 +408,7 @@ export function EventsPage() {
         ))
       )}
       {events && total > shown && (
-        <div className="flex justify-center pb-4">
+        <div ref={more} className="flex justify-center pb-4">
           <Button onClick={() => setShown((n) => n + PAGE)}>
             Show more <span className="text-slate-500">· {total - shown} left</span>
           </Button>

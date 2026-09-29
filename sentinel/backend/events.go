@@ -131,7 +131,7 @@ func (es *EventStore) RemoveLabel(cam, id, label string) (Object, bool) {
 		e.Rejected = append(e.Rejected, Object{Label: "not " + label, Score: o.Score, Box: o.Box, T: o.T})
 		if len(e.Objects) == 0 {
 			e.Snap = false
-			_ = os.Remove(es.SnapPath(cam, id))
+			removePicture(es.SnapPath(cam, id))
 		}
 		es.persistDay(cam, dayKey(e.Start))
 		return o, true
@@ -153,7 +153,7 @@ func (es *EventStore) Rescan(cams []string, from, to int64) int {
 		for _, e := range list {
 			if e.Start >= from && e.Start <= to && e.End != 0 && e.Scan != "scanning" {
 				e.Scan, e.Labels, e.Objects, e.Rejected, e.Snap = "", nil, nil, nil, false
-				_ = os.Remove(es.SnapPath(cam, e.ID))
+				removePicture(es.SnapPath(cam, e.ID))
 				days[dayKey(e.Start)] = true
 				n++
 			}
@@ -354,8 +354,8 @@ func (es *EventStore) Cleanup(days func(cam string, e *Event) int) {
 			oldest = max(oldest, d)
 			cutoff := now.Add(-time.Duration(d) * 24 * time.Hour).UnixMilli()
 			if e.End != 0 && e.End < cutoff {
-				_ = os.Remove(es.ThumbPath(cam, e.ID))
-				_ = os.Remove(es.SnapPath(cam, e.ID))
+				removePicture(es.ThumbPath(cam, e.ID))
+				removePicture(es.SnapPath(cam, e.ID))
 				touched[dayKey(e.Start)] = true
 				continue
 			}

@@ -2,7 +2,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import clsx from "clsx";
 import { LayoutGrid, GanttChart, Zap, Film, HeartPulse, Settings2, Columns2, ArrowLeft, Sparkles } from "lucide-react";
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { useStatus } from "../lib/status";
 
 // mobile: false = left out of the phone tab bar (too many tabs; still reachable by link).
@@ -53,7 +53,15 @@ const inCard = window.name === "sentinel-card";
 
 export function Shell({ children }: { children: ReactNode }) {
   const loc = useLocation();
-  const section = "/" + (loc.pathname.split("/")[1] ?? "");
+  // A camera opened from a list (Events, Summary) still counts as being in that list.
+  const from = { Events: "/events", Summary: "/summary" }[(loc.state as { from?: string } | null)?.from ?? ""];
+  const section = (loc.pathname.startsWith("/camera/") && from) || "/" + (loc.pathname.split("/")[1] ?? "");
+  // One scroll area serves every page: a new page starts at its top (the Events list puts
+  // itself back where it was left on its own).
+  const main = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    main.current?.scrollTo({ top: 0 });
+  }, [loc.pathname]);
   return (
     <div className="flex h-full">
       {/* Desktop sidebar */}
@@ -101,7 +109,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <Health />
           </div>
         </header>
-        <main className="min-h-0 flex-1 overflow-y-auto">
+        <main ref={main} className="min-h-0 flex-1 overflow-y-auto">
           {/* Pages only fade in. (Waiting for the old page to animate out could get stuck
               when the new page's code was still loading: the page stayed invisible until
               a second click.) */}

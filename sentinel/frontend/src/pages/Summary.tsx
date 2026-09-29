@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2, ShieldCheck, Sparkles, Zap } from "lucide-react";
 import { Card, IconButton, PageHeader } from "../components/ui";
 import { api, type DaySummary } from "../lib/api";
+import { openEvent } from "../lib/eventNav";
 import { DAY, fmtDay, fmtDuration, fmtTime } from "../lib/format";
 import { EventPicture, LABELS, LABEL_ORDER, LabelChips, MOTION_COLOR } from "../lib/labels";
 
@@ -161,7 +162,7 @@ export function SummaryPage() {
                 {sum.highlights.map((h) => (
                   <button
                     key={h.id}
-                    onClick={() => nav(`/camera/${h.camera}?t=${(h.objects?.[0]?.t ?? h.start) - 3000}`)}
+                    onClick={() => openEvent(nav, h, sum.highlights, "Summary", `summary:${sum.date}`)}
                     className="group overflow-hidden rounded-xl border border-white/[0.07] bg-ink-850 text-left"
                   >
                     <div className="relative aspect-video">

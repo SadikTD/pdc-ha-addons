@@ -106,19 +106,86 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     },
   }));
 
-  // Load a window of recordings around time t and start playing at t.
+  // Load a window of recordings around time t and start playing at t. The window is
+  // small enough for Sentinel to answer at once, and moving past its end loads the next.
   const load = async (t: number) => {
     const v = video.current;
     if (!v) return;
     const seq = ++loadSeq.current;
     pending.current?.abort();
-    const ac = new AbortController();
-    pending.current = ac;
+    pending.current = null;
     setLoading(true);
     const now = Date.now();
-    const from = t - 2 * 60_000;
-    const to = Math.min(now + 60_000, t + 60 * 60_000);
+    const from = t - 60_000;
+    const to = Math.min(now + 60_000, t + 30 * 60_000);
     const url = vodURL(camera, from, to);
+    const stale = () => seq !== loadSeq.current;
+    // Where t is in the playlist, or nothing recorded there (then move on).
+    const place = (frags: Frag[]) => {
+      const pos = frags.length ? timeToPos(frags, t) : null;
+      if (pos === null) {
+        setLoading(false);
+        cb.current.onNoFootage(t);
+        return null;
+      }
+      win.current = { from, to, frags };
+      return pos;
+    };
+
+    if (Hls.isSupported()) {
+      // hls.js fetches the playlist itself (once); its fragments carry the wall-clock
+      // times, so there is no separate request for them.
+      hls.current?.destroy();
+      hls.current = null;
+      const h = new Hls({
+        autoStartLoad: false,
+        startFragPrefetch: true,
+        testBandwidth: false,
+        maxBufferLength: 20,
+        backBufferLength: 30,
+        enableWorker: true,
+      });
+      hls.current = h;
+      h.once(Hls.Events.LEVEL_LOADED, (_e, data) => {
+        if (stale()) return;
+        const frags = data.details.fragments.map((f) => ({ pos: f.start, dur: f.duration, pdt: f.programDateTime ?? 0 }));
+        const pos = place(frags);
+        if (pos === null) {
+          h.destroy();
+          if (hls.current === h) hls.current = null;
+          return;
+        }
+        v.playbackRate = rate;
+        h.startLoad(pos);
+        play();
+      });
+      h.on(Hls.Events.ERROR, (_e, data) => {
+        if (stale()) return;
+        // An empty playlist: nothing recorded in this window.
+        if (data.details === Hls.ErrorDetails.LEVEL_EMPTY_ERROR) {
+          h.destroy();
+          if (hls.current === h) hls.current = null;
+          place([]);
+          return;
+        }
+        if (!data.fatal) return;
+        if (!win.current || win.current.from !== from) {
+          // The playlist itself didn't arrive (connection trouble): try again shortly.
+          h.destroy();
+          if (hls.current === h) hls.current = null;
+          window.setTimeout(() => !stale() && load(t), 2000);
+        } else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad();
+        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
+      });
+      win.current = null;
+      h.attachMedia(v);
+      h.loadSource(url);
+      return;
+    }
+
+    // Safari: native HLS, and the playlist read here for the wall-clock times.
+    const ac = new AbortController();
+    pending.current = ac;
     let frags: Frag[];
     try {
       frags = parsePlaylist(await (await fetch(url, { cache: "no-store", signal: ac.signal })).text());
@@ -126,45 +193,26 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
       frags = [];
     }
     // A newer load, or the player was closed while this one was on its way.
-    if (seq !== loadSeq.current || ac.signal.aborted) return;
-    const pos = timeToPos(frags, t);
-    if (!frags.length || pos === null) {
-      setLoading(false);
-      cb.current.onNoFootage(t);
-      return;
-    }
-    win.current = { from, to, frags };
-    const start = () => {
-      v.currentTime = pos;
-      v.playbackRate = rate;
-      play();
-    };
-    if (Hls.isSupported()) {
-      hls.current?.destroy();
-      const h = new Hls({ maxBufferLength: 20, backBufferLength: 30, startPosition: pos, enableWorker: true });
-      hls.current = h;
-      h.on(Hls.Events.MANIFEST_PARSED, () => {
+    if (stale() || ac.signal.aborted) return;
+    const pos = place(frags);
+    if (pos === null || !v.canPlayType("application/vnd.apple.mpegurl")) return;
+    v.src = url;
+    v.addEventListener(
+      "loadedmetadata",
+      () => {
+        v.currentTime = pos;
         v.playbackRate = rate;
         play();
-      });
-      h.on(Hls.Events.ERROR, (_e, data) => {
-        if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
-      });
-      h.loadSource(url);
-      h.attachMedia(v);
-    } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
-      v.src = url;
-      v.addEventListener("loadedmetadata", start, { once: true });
-    }
+      },
+      { once: true },
+    );
   };
 
   // Seek requests: stay in the loaded window when possible.
   useEffect(() => {
     const w = win.current;
     const v = video.current;
-    if (w && v && seek.t >= w.from + 60_000 && seek.t < w.to - 60_000) {
+    if (w && v && seek.t >= w.from + 20_000 && seek.t < w.to - 60_000) {
       const pos = timeToPos(w.frags, seek.t);
       if (pos !== null && pos < (w.frags.at(-1)!.pos + w.frags.at(-1)!.dur)) {
         v.currentTime = pos;

@@ -295,10 +295,11 @@ export const api = {
 
 export const snapshotURL = (cam: string, hq = false, bust = 0) => `api/cameras/${cam}/snapshot.jpg?${hq ? "hq=1&" : ""}t=${bust}`;
 export const latestFrameURL = (cam: string) => `api/cameras/${cam}/latest.jpg`;
-export const thumbURL = (e: SentinelEvent) => `api/events/${e.camera}/${e.id}/thumb.jpg`;
-export const snapURL = (e: SentinelEvent) => `api/events/${e.camera}/${e.id}/snap.jpg`;
+// small: a 480 px copy for lists and grids (a fifth of the bytes; matters over remote access).
+export const thumbURL = (e: SentinelEvent, small = false) => `api/events/${e.camera}/${e.id}/thumb.jpg${small ? "?small=1" : ""}`;
+export const snapURL = (e: SentinelEvent, small = false) => `api/events/${e.camera}/${e.id}/snap.jpg${small ? "?small=1" : ""}`;
 // The best picture of an event: who was seen if anyone, else the moment motion started.
-export const eventPicture = (e: SentinelEvent) => (e.snap ? snapURL(e) : e.thumb ? thumbURL(e) : null);
+export const eventPicture = (e: SentinelEvent, small = false) => (e.snap ? snapURL(e, small) : e.thumb ? thumbURL(e, small) : null);
 export const vodURL = (cam: string, from: number, to: number) => `api/vod.m3u8?camera=${cam}&from=${Math.round(from)}&to=${Math.round(to)}`;
 export const clipVideoURL = (id: string, download = false) => `api/clips/${id}/video${download ? "?download=1" : ""}`;
 export const clipThumbURL = (c: Clip) => `api/clips/${c.id}/thumb.jpg?v=${c.status}`;

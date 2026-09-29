@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
 import {
   ArrowLeft, Camera as CamIcon, Save, Expand, PlayCircle, Loader2, Pause, Play, Radio, RotateCcw, RotateCw, Scissors, SkipBack, SkipForward,
-  Volume2, VolumeX, X, ZoomIn, ZoomOut, Zap, ImageOff, Columns2,
+  Volume2, VolumeX, X, ZoomIn, ZoomOut, Zap, ImageOff, Columns2, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { JumpTo } from "../components/JumpTo";
 import { LiveStream } from "../components/LiveStream";
@@ -19,6 +19,7 @@ import { EventPicture, LABELS, LabelChips } from "../lib/labels";
 import { useSound } from "../lib/sound";
 import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
 import { api, type SentinelEvent, type Span } from "../lib/api";
+import { eventPath, readList, setCurrent } from "../lib/eventNav";
 import { DAY, HOUR, fmtBitrate, fmtBytes, fmtDay, fmtDuration, fmtTimeSec } from "../lib/format";
 
 const RATES = [1, 2, 4, 8, 16];
@@ -32,24 +33,39 @@ function findPlayable(spans: Span[], t: number): number | null {
   return null;
 }
 
-// Remount per camera / deep link so playback state never leaks between cameras.
+// Remount per camera so playback state never leaks between cameras. Another moment of the
+// same camera (e.g. the next event) keeps the player and just seeks: often instant.
 export function CameraPage() {
   const { id = "" } = useParams();
   const [params] = useSearchParams();
-  return <CameraView key={id + ":" + (params.get("t") ?? "")} id={id} initialT={Number(params.get("t")) || 0} />;
+  return <CameraView key={id} id={id} initialT={Number(params.get("t")) || 0} eventId={params.get("ev")} />;
 }
 
-function CameraView({ id, initialT }: { id: string; initialT: number }) {
+function CameraView({ id, initialT, eventId }: { id: string; initialT: number; eventId: string | null }) {
   const { status } = useStatus();
   const toast = useToast();
+  const nav = useNavigate();
+  const loc = useLocation();
   const cam = status?.cameras.find((c) => c.id === id);
+  // Opened from a list: back returns to it, and previous / next step through it.
+  const from = (loc.state as { from?: string } | null)?.from;
+  const list = useMemo(() => (from && eventId ? readList() : null), [from, eventId]);
+  const at = list ? list.items.findIndex((x) => x.id === eventId) : -1;
+  const goBack = () => (loc.key !== "default" ? nav(-1) : nav("/"));
+  const step = (d: -1 | 1) => {
+    const it = list?.items[at + d];
+    if (!it) return;
+    setCurrent(it.id);
+    nav(eventPath(it), { replace: true, state: loc.state });
+  };
 
   const [now, setNow] = useState(Date.now());
   const [mode, setMode] = useState<"live" | "playback">(initialT ? "playback" : "live");
   const [seek, setSeek] = useState({ t: initialT, n: 0 });
   const [curT, setCurT] = useState<number | null>(initialT || null);
   const [scrubT, setScrubT] = useState<number | null>(null);
-  const [pendingT, setPendingT] = useState<number | null>(null);
+  // Until the video plays, the moment's preview picture stands in (it arrives first).
+  const [pendingT, setPendingT] = useState<number | null>(initialT || null);
   const [playing, setPlaying] = useState(true);
   const [rate, setRate] = useState(1);
   // Live sound is shared with the grid (off unless turned on there or here); recordings
@@ -86,10 +102,24 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
     return () => window.clearInterval(t);
   }, []);
 
+  // Warm the scrubbing pictures once the video is on its way, not before: on a slow
+  // connection they would hold it up.
+  const warmed = useRef(false);
+  const warmPreviews = (t: number) => {
+    if (warmed.current) return;
+    warmed.current = true;
+    prefetchPreviews(id, t, range);
+  };
   useEffect(() => {
-    prefetchPreviews(id, initialT || Date.now() - 2 * 60_000, range);
+    if (initialT) {
+      window.clearTimeout(pendingTimer.current);
+      pendingTimer.current = window.setTimeout(() => setPendingT(null), 8000);
+      return;
+    }
+    const t = window.setTimeout(() => warmPreviews(Date.now() - 2 * 60_000), 1500);
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, []);
 
   const dayBucket = Math.floor((center - range) / DAY);
   useEffect(() => {
@@ -127,6 +157,15 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
     },
     [spans, goLive, toast, playAt],
   );
+
+  // Another moment of this camera was opened (e.g. the next event): seek there.
+  const firstT = useRef(initialT);
+  useEffect(() => {
+    if (initialT === firstT.current) return;
+    firstT.current = initialT;
+    if (initialT) playAt(initialT);
+    else goLive();
+  }, [initialT, playAt, goLive]);
 
   // Jump to any moment, even far outside the loaded timeline.
   const jumpTo = async (t: number) => {
@@ -227,6 +266,9 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
       else if (e.key === "f" || e.key === "F") fullscreen();
       else if (e.key === "g" || e.key === "G") (e.preventDefault(), setJumpOpen(true));
       else if (e.key === "m" || e.key === "M") toggleSound();
+      else if (e.key === "n" || e.key === "N") step(1);
+      else if (e.key === "p" || e.key === "P") step(-1);
+      else if (e.key === "Backspace") goBack();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -237,10 +279,22 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
   const listEvents = events.filter((e) => ofKind(e) && e.start >= center - Math.max(range, 6 * HOUR) && e.start <= center + Math.max(range, 6 * HOUR));
   const jumpName = kind === "all" ? "motion" : kind === "person" ? "person" : "animal";
 
+  // The list follows playback: the event being watched is kept in view (the list scrolls,
+  // not the page).
+  const listBox = useRef<HTMLDivElement>(null);
+  const activeId = listEvents.find((e) => center >= e.start - 3000 && center <= (e.end || now))?.id;
+  useEffect(() => {
+    const box = listBox.current;
+    const el = activeId && box?.querySelector<HTMLElement>(`[data-ev="${CSS.escape(activeId)}"]`);
+    if (!box || !el) return;
+    const top = el.offsetTop - box.offsetTop;
+    if (top < box.scrollTop || top + el.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTo({ top: top - box.clientHeight / 2 + el.offsetHeight / 2, behavior: "smooth" });
+  }, [activeId]);
+
   if (status && !cam) {
     return (
       <div className="py-20 text-center text-slate-400">
-        Camera not found. <Link to="/" className="text-violet-300 underline">Back to live view</Link>
+        Camera not found. <button onClick={goBack} className="text-violet-300 underline">Go back</button>
       </div>
     );
   }
@@ -251,9 +305,14 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Link to="/" className="flex size-9 items-center justify-center rounded-xl bg-white/5 text-slate-300 transition hover:bg-white/10 hover:text-white">
+          <button
+            onClick={goBack}
+            title={from ? `Back to ${from}` : "Back"}
+            className="flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-xl bg-white/5 px-2.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+          >
             <ArrowLeft className="size-4" />
-          </Link>
+            {from && <span className="hidden sm:inline">{from}</span>}
+          </button>
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-white md:text-2xl">{cam?.name ?? "…"}</h1>
             <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-slate-500">
@@ -269,6 +328,19 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {list && at >= 0 && list.items.length > 1 && (
+            <div className="flex h-9 items-center rounded-xl border border-white/10 bg-white/5 text-sm text-slate-300">
+              <button onClick={() => step(-1)} disabled={at <= 0} title="Previous event in the list (P)" className="flex h-full items-center rounded-l-xl px-2 transition hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronLeft className="size-4" />
+              </button>
+              <span className="px-1 text-xs tabular-nums text-slate-400">
+                {at + 1} / {list.items.length}
+              </span>
+              <button onClick={() => step(1)} disabled={at >= list.items.length - 1} title="Next event in the list (N)" className="flex h-full items-center rounded-r-xl px-2 transition hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronRight className="size-4" />
+              </button>
+            </div>
+          )}
           <Link
             to={`/playback?t=${Math.round(mode === "live" ? Date.now() - 60_000 : center)}`}
             title="Play all cameras side by side from this moment"
@@ -306,7 +378,10 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
                   }}
                   onPlaying={(p) => {
                     setPlaying(p);
-                    if (p) setPendingT(null);
+                    if (p) {
+                      setPendingT(null);
+                      warmPreviews(curT ?? Date.now());
+                    }
                   }}
                   onCaughtUp={() => {
                     toast("Caught up — back to live", "info");
@@ -497,7 +572,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
               ))}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          <div ref={listBox} className="relative min-h-0 flex-1 overflow-y-auto p-2">
             {listEvents.length === 0 ? (
               <div className="px-4 py-10 text-center text-sm text-slate-500">No {jumpName === "motion" ? "motion" : jumpName === "person" ? "people" : "animals"} around this time</div>
             ) : (
@@ -506,6 +581,7 @@ function CameraView({ id, initialT }: { id: string; initialT: number }) {
                 return (
                   <button
                     key={e.id}
+                    data-ev={e.id}
                     onClick={() => seekTo((e.objects?.[0]?.t ?? e.start) - 3000, true)}
                     className={clsx("flex w-full items-center gap-3 rounded-xl p-2 text-left transition hover:bg-white/5", active && "bg-violet-500/10 ring-1 ring-violet-400/30")}
                   >

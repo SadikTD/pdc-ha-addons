@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -336,13 +337,49 @@ func (st *Store) Index(s *Segment) (*MP4Index, error) {
 	}
 	if !s.Active {
 		st.mu.Lock()
-		if len(st.mp4cache) > 5000 {
-			st.mp4cache = map[string]*MP4Index{}
+		// Entries go when their file goes (remove), so this holds one small index per
+		// recording kept (~1 KB each). It used to be emptied at 5000, i.e. every few hours
+		// with 8 cameras, and then the next video opened had to wait for every file in
+		// its window to be read again.
+		if _, still := st.byID[key]; still {
+			st.mp4cache[key] = idx
 		}
-		st.mp4cache[key] = idx
 		st.mu.Unlock()
 	}
 	return idx, nil
+}
+
+// WarmIndex maps every finished recording, newest first, in the background after
+// startup, so opening a video never waits for its files to be read (1-2 s per hour of
+// footage when cold). Gentle: recording and live viewers come first.
+func (st *Store) WarmIndex(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(20 * time.Second):
+	}
+	st.mu.RLock()
+	var todo []Segment
+	for _, list := range st.segs {
+		for _, s := range list {
+			if _, ok := st.mp4cache[s.Cam+"/"+s.ID]; !ok && !s.Active {
+				todo = append(todo, *s)
+			}
+		}
+	}
+	st.mu.RUnlock()
+	sort.Slice(todo, func(i, j int) bool { return todo[i].Start().After(todo[j].Start()) })
+	began := time.Now()
+	for i := range todo {
+		if ctx.Err() != nil {
+			return
+		}
+		_, _ = st.Index(&todo[i])
+		time.Sleep(3 * time.Millisecond)
+	}
+	if len(todo) > 0 {
+		logf("mapped %d recordings for playback in %s", len(todo), time.Since(began).Round(time.Second))
+	}
 }
 
 // Range returns copies of segments overlapping [from, to).

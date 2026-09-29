@@ -327,7 +327,7 @@ export function Timeline({ lanes, start, end, now, cursor, onView, onSeek, selec
         >
           <div className="aspect-video bg-ink-800">
             {hoverObj?.snap ? (
-              <img src={snapURL(hoverObj)} className="h-full w-full object-cover" />
+              <img src={snapURL(hoverObj, true)} className="h-full w-full object-cover" />
             ) : thumb?.url ? (
               <img src={thumb.url} className="h-full w-full object-cover" />
             ) : (

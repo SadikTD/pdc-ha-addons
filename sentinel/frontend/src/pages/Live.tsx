@@ -11,6 +11,7 @@ import { useSound } from "../lib/sound";
 import { fmtAgo, fmtBitrate, fmtBytes, fmtTime, startOfDay } from "../lib/format";
 import { api, latestFrameURL, type CameraStatus, type SentinelEvent } from "../lib/api";
 import { EventPicture, LabelChips } from "../lib/labels";
+import { openEvent } from "../lib/eventNav";
 
 const LAYOUTS = [
   { cols: 0, icon: Scan, label: "Fit all cameras on screen" },
@@ -219,7 +220,7 @@ function RecentMotion({ events }: { events: SentinelEvent[] }) {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.03 }}
             whileHover={{ y: -3 }}
-            onClick={() => nav(`/camera/${e.camera}?t=${(e.objects?.[0]?.t ?? e.start) - 3000}`)}
+            onClick={() => openEvent(nav, e, events.slice(0, 12), "Live", "live")}
             className="w-48 shrink-0 overflow-hidden rounded-xl border border-white/[0.07] bg-ink-850 text-left"
           >
             <div className="relative aspect-video">

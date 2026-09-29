@@ -47,7 +47,7 @@ through router restarts, power cuts and flaky cameras.
   fullscreen. Scroll on the video to zoom into the picture (up to 8×), drag to pan,
   double-click to zoom in or reset. Keys: space play/pause, ←/→ 10 s (Shift =
   1 min), [ / ] previous/next motion, + / − / 0 video zoom, I / O clip start/end,
-  M sound, L live, F fullscreen.
+  M sound, L live, F fullscreen, Backspace back.
 - **Saving a clip:** press the scissors button, then drag the cyan handles on the
   timeline (or scrub and press I / O, or type exact times with ±1 s buttons),
   preview it, name it and save. Clips are cut from the recordings without
@@ -71,6 +71,11 @@ through router restarts, power cuts and flaky cameras.
   yesterday after 10pm", "dog ground floor this morning", "people 2 days ago between 1
   and 4am". The search shows how it understood the question. Hover a label and click ✕
   if it's wrong ("not a person"): the label goes and the camera learns that spot.
+  Filters are part of the page address, and the list keeps loading as you scroll.
+  Opening an event plays it on its camera with **‹ 12 / 340 ›** to step through the
+  list (keys P / N) without going back; **Back** (or Backspace) returns to the list
+  where you left it, with the last event watched highlighted. The same works from
+  Summary highlights and Live's recent motion.
 - **Summary:** one day at a glance: people, cats, dogs and motion per camera, when it
   was busiest (by hour), the clearest sightings, first and last person per camera, and
   whether every camera recorded the whole day. Pick any day.
