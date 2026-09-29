@@ -100,16 +100,15 @@ low priority, so recording and live view always come first.
 A label needs two independent yeses: a fast model (YOLOX-s) must see it, and a bigger
 one (YOLOX-m), looking again at a zoomed-in crop of that spot, must agree. On top of that:
 
-- It must be where the picture changed since just before the motion: shoes, a bag or a
-  poster the fast model takes for someone don't count. When the whole picture shows
-  nobody, Sentinel looks again zoomed in on where it changed, which finds small, distant
-  cats.
+- When the whole picture shows nobody, Sentinel looks again zoomed in on where it
+  changed since just before the motion, which finds small, distant cats.
 - Each camera learns spots where lookalikes fooled detection (laundry flapping on a
   line): a sighting there, or of something that was already there before the motion (a
   coat, someone sitting still), needs the bigger model to be clearly sure. Removing a
   wrong label teaches it at once.
-- A different kind than the fast model saw (a person bending over can look like a cat
-  up close) must be clear, and so must things cut off by the picture's edge.
+- The fast model often takes a small cat for a person; the bigger model's closer look
+  decides (calling something a person needs it to be clearly sure). Things cut off by
+  the picture's edge need a surer answer too.
 - **Animals that live here** (Settings): with only cats (or only dogs), every animal
   seen is called that; cameras looking down often make a cat look like a dog to the
   detector. With both, cat or dog is voted over several frames.

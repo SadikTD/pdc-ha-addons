@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,16 +18,15 @@ import (
 //
 // A label needs two independent yeses:
 //  1. the fast model sees it, in two frames (or very clearly in one), big enough to
-//     judge, outside the camera's ignored areas, and where the picture changed since
-//     before the motion (shoes don't move); when the whole picture shows nobody, it looks
-//     again zoomed in on where the picture changed (small, distant cats);
+//     judge and outside the camera's ignored areas; when the whole picture shows nobody,
+//     it looks again zoomed in on where the picture changed (small, distant cats);
 //  2. the big model, looking again at a zoomed-in crop of that spot in full quality,
 //     agrees on what it is. It must be surer for things cut off by the picture's edge,
 //     and surer again in a spot where lookalikes fooled detection before (laundry, see
 //     hotspots.go) or for something that was already there before the motion and hasn't
-//     moved (a coat, a statue, someone sitting still). A different kind than the fast
-//     model saw (a person that looks like a cat up close) must be clear. If it sees
-//     nothing, there's no label and the spot is remembered.
+//     moved (a coat, a statue, someone sitting still). The fast model often takes a small
+//     cat for a person: the big model's answer wins (a person needs it to be clearly
+//     sure). If it sees nothing, there's no label and the spot is remembered.
 // Events it can't check (no footage) say so instead of guessing.
 
 var watchLabels = []string{"person", "cat", "dog"}
@@ -275,7 +273,6 @@ func (o scanOpts) log(format string, args ...any) {
 
 // Why a sighting was not counted (kept with the event, for review).
 const (
-	whyStill       = "nothing moved there"
 	whyIgnoredArea = "in an ignored area"
 	whyDisagree    = "the closer look disagreed"
 	whyUnsure      = "not sure enough for a lookalike spot"
@@ -437,15 +434,6 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			tried[g] = append(tried[g], best.t)
 			triedBest[g] = max(triedBest[g], best.d.Score)
 			asked = true
-			// Something that caused the motion changed the picture where it is (shoes, a
-			// bag or a poster the fast model took for someone didn't).
-			if f := gray(best.t); f != nil {
-				if moved := changedIn(f, bgGray, best.d.Box); moved < minChanged {
-					o.log("nothing moved at %s %.2f %s (%.0f%% changed)", best.d.Label, best.d.Score, fmtBox(best.d.Box), moved*100)
-					reject(best.d.Label, *best, whyStill, 0)
-					continue
-				}
-			}
 			suspicious := best.suspicious()
 			v := l.verifyScores(ctx, cam, best.t, best.d.Box)
 			o.log("  big model in %s: %s", fmtBox(verifyRect(best.d.Box, a.frameAspect(cam.ID))), fmtDets(v.raw))
@@ -456,13 +444,13 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 				best.d.Label, best.d.Score, fmtBox(best.d.Box), when(edge, "at the edge ", ""), when(best.hot, "in a lookalike spot ", ""),
 				when(best.pre, "was already there", ""), person, need("person"), v.score["cat"], v.score["dog"], need("cat"))
 			switch {
-			case person >= need("person") && person >= animal && (g == "person" || person >= crossKind):
+			case person >= need("person") && person >= animal && (g == "person" || person >= 0.7):
 				// A person (the big model is surer than the fast one's animal guess).
 				if !done["person"] {
 					done["person"] = true
 					confirm(v.object("person", best.t), best.t)
 				}
-			case animal >= need("cat") && !done["animal"] && len(kinds) > 0 && (g == "animal" || animal >= crossKind && person < 0.3):
+			case animal >= need("cat") && !done["animal"] && len(kinds) > 0:
 				animalChecks++
 				for _, lb := range kinds {
 					ob := v.animal(lb, kinds, best.t)
@@ -594,34 +582,6 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 type zoomLook struct {
 	changed Rect
 	before  []Detection
-}
-
-// crossKind: how sure the big model must be to call something a different kind than
-// the fast model did (a person bending over or carrying a bucket can look like an animal
-// up close, and a cat like a small person).
-const crossKind = 0.8
-
-// minChanged: share of the thing's box that must differ from the scene before the motion.
-const minChanged = 0.05
-
-// changedIn is the share of cells of box (in w×h greyscale frames) that differ clearly
-// between f and bg.
-func changedIn(f, bg []byte, box Rect) float64 {
-	x0, y0 := int(box.X*shotW), int(box.Y*shotH)
-	x1, y1 := int(math.Ceil((box.X+box.W)*shotW)), int(math.Ceil((box.Y+box.H)*shotH))
-	n, on := 0, 0
-	for y := max(y0, 0); y < min(y1, shotH); y++ {
-		for x := max(x0, 0); x < min(x1, shotW); x++ {
-			n++
-			if d := int(f[y*shotW+x]) - int(bg[y*shotW+x]); d > 25 || d < -25 {
-				on++
-			}
-		}
-	}
-	if n == 0 {
-		return 0
-	}
-	return float64(on) / float64(n)
 }
 
 // maxZooms: zoomed-in second looks per event (each costs one more detection).
