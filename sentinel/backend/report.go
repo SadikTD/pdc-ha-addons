@@ -33,6 +33,10 @@ type nightReport struct {
 
 func (a *App) nightReport(now time.Time) nightReport {
 	n := a.settings.Get().NightAlerts
+	return a.reportFor(now, n)
+}
+
+func (a *App) reportFor(now time.Time, n NightAlerts) nightReport {
 	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	from := day.Add(time.Duration(hhmm(n.From)) * time.Minute)
 	to := day.Add(time.Duration(hhmm(n.To)) * time.Minute)
@@ -42,6 +46,10 @@ func (a *App) nightReport(now time.Time) nightReport {
 	if to.After(now) { // report sent before the window ends (odd settings): the last full night
 		from, to = from.AddDate(0, 0, -1), to.AddDate(0, 0, -1)
 	}
+	return a.reportBetween(from, to)
+}
+
+func (a *App) reportBetween(from, to time.Time) nightReport {
 	r := nightReport{From: from, To: to}
 	for _, e := range a.events.Filter(nil, from.UnixMilli(), to.UnixMilli(), 0, func(e *Event) bool { return len(e.Labels) > 0 && e.Start >= from.UnixMilli() }) {
 		if e.Has("person") {
@@ -125,7 +133,7 @@ func (r nightReport) picture(a *App, s Settings) ([]byte, error) {
 		img := image.NewRGBA(image.Rect(0, 0, 1280, 480))
 		draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{11, 15, 23, 255}}, image.Point{}, draw.Src)
 		text(img, faces.big, 80, 200, "Quiet night", color.RGBA{226, 232, 240, 255})
-		text(img, faces.small, 80, 270, "No people or animals seen, "+strings.ToLower(r.To.Format("Mon 2 Jan")), color.RGBA{148, 163, 184, 255})
+		text(img, faces.small, 80, 270, "No people or animals seen · "+hourShort(r.From)+" – "+hourShort(r.To)+" · "+r.To.Format("Mon 2 Jan"), color.RGBA{148, 163, 184, 255})
 		return encodeJPEG(img)
 	}
 	cols := 2
@@ -229,10 +237,29 @@ func (a *App) morningReport(now time.Time) error {
 		return nil
 	}
 	r := a.nightReport(now)
+	// Every event of the night must have been checked for people first (normally done
+	// within seconds of each; after an update or a restart it may take a while).
+	for wait := 0; wait < 30 && ctxAlive(a); wait++ {
+		if !a.unscannedBetween(r.From, r.To) {
+			break
+		}
+		a.labeler.Poke()
+		sleepCtx(a.ctx, time.Minute)
+	}
+	r = a.nightReport(now)
 	img, err := r.picture(a, s)
 	if err != nil {
 		return err
 	}
 	key := "sentinel:report:" + r.To.Format("20060102")
 	return a.alerts.wa.SendImage(s.WhatsApp.To, img, r.caption(s), key)
+}
+
+func ctxAlive(a *App) bool { return a.ctx.Err() == nil }
+
+// unscannedBetween: are there events in [from, to] not checked for people yet?
+func (a *App) unscannedBetween(from, to time.Time) bool {
+	return len(a.events.Filter(nil, from.UnixMilli(), to.UnixMilli(), 1, func(e *Event) bool {
+		return (e.Scan == "" || e.Scan == "scanning") && e.Start >= from.UnixMilli()
+	})) > 0
 }

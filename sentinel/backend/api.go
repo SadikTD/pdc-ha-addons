@@ -92,6 +92,9 @@ func (a *App) Routes(www string) http.Handler {
 	mux.HandleFunc("GET /api/whatsapp/morning-report", func(w http.ResponseWriter, r *http.Request) {
 		s := a.settings.Get()
 		rep := a.nightReport(time.Now())
+		if r.URL.Query().Get("from") != "" { // any span, for trying it out
+			rep = a.reportBetween(msParam(r, "from", time.Now()), msParam(r, "to", time.Now()))
+		}
 		if r.URL.Query().Get("format") == "jpg" {
 			img, err := rep.picture(a, s)
 			if err != nil {
