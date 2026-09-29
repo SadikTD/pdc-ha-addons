@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,7 +19,27 @@ type Event struct {
 	End   int64   `json:"end"`   // 0 while ongoing
 	Peak  float64 `json:"peak"`  // highest % of frame changing
 	Thumb bool    `json:"thumb"`
+	// Who was seen (object detection, see labels.go): "person", "cat", "dog", best
+	// first. Empty with Scan "done" means plain motion.
+	Labels  []string `json:"labels,omitempty"`
+	Objects []Object `json:"objects,omitempty"`
+	// "" not checked yet, "done", or "none" (couldn't be checked, e.g. no footage).
+	Scan string `json:"scan,omitempty"`
+	Snap bool   `json:"snap,omitempty"` // a picture of what was seen (snap.jpg)
+	// What the fast model thought it saw but the big model didn't confirm (for checking
+	// how well detection does; not shown as a label).
+	Rejected []Object `json:"rejected,omitempty"`
 }
+
+// Object is one kind of thing seen in an event, at its clearest moment.
+type Object struct {
+	Label string  `json:"label"`
+	Score float64 `json:"score"` // the verifying model's confidence
+	Box   Rect    `json:"box"`   // normalised to the frame
+	T     int64   `json:"t"`     // unix ms of that frame
+}
+
+func (e *Event) Has(label string) bool { return slices.Contains(e.Labels, label) }
 
 func dayKey(ms int64) string { return time.UnixMilli(ms).UTC().Format("20060102") }
 
@@ -51,6 +72,9 @@ func newEventStore(root string) *EventStore {
 				if e.End == 0 { // cut short by a restart or power cut
 					e.End = e.Start + 10_000
 				}
+				if e.Scan == "scanning" { // interrupted: check it again
+					e.Scan = ""
+				}
 			}
 			es.events[c.Name()] = append(es.events[c.Name()], list...)
 		}
@@ -61,6 +85,79 @@ func newEventStore(root string) *EventStore {
 
 func (es *EventStore) ThumbPath(cam, id string) string {
 	return filepath.Join(es.root, cam, "thumbs", id+".jpg")
+}
+
+func (es *EventStore) SnapPath(cam, id string) string {
+	return filepath.Join(es.root, cam, "snaps", id+".jpg")
+}
+
+// SetScan stores what object detection found in an event.
+func (es *EventStore) SetScan(cam, id, scan string, objs, rejected []Object, snap bool) (Event, bool) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	list := es.events[cam]
+	for i := len(list) - 1; i >= 0; i-- {
+		if e := list[i]; e.ID == id {
+			e.Scan, e.Objects, e.Rejected, e.Snap = scan, objs, rejected, e.Snap || snap
+			e.Labels = nil
+			for _, o := range objs {
+				if !slices.Contains(e.Labels, o.Label) {
+					e.Labels = append(e.Labels, o.Label)
+				}
+			}
+			es.persistDay(cam, dayKey(e.Start))
+			return *e, true
+		}
+	}
+	return Event{}, false
+}
+
+// Rescan forgets detection results of events that started in [from, to] (on these
+// cameras, all when empty), so they're checked again. It returns how many.
+func (es *EventStore) Rescan(cams []string, from, to int64) int {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	n := 0
+	for cam, list := range es.events {
+		if len(cams) > 0 && !contains(cams, cam) {
+			continue
+		}
+		days := map[string]bool{}
+		for _, e := range list {
+			if e.Start >= from && e.Start <= to && e.End != 0 && e.Scan != "scanning" {
+				e.Scan, e.Labels, e.Objects, e.Rejected, e.Snap = "", nil, nil, nil, false
+				_ = os.Remove(es.SnapPath(cam, e.ID))
+				days[dayKey(e.Start)] = true
+				n++
+			}
+		}
+		for d := range days {
+			es.persistDay(cam, d)
+		}
+	}
+	return n
+}
+
+// Unscanned returns finished events object detection hasn't looked at yet, newest first.
+func (es *EventStore) Unscanned(since int64, limit int) []Event {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	var out []Event
+	for cam, list := range es.events {
+		if es.open[cam] != nil {
+			list = list[:len(list)-1]
+		}
+		for _, e := range list {
+			if e.Scan == "" && e.End != 0 && e.Start >= since {
+				out = append(out, *e)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Start > out[j].Start })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 func (es *EventStore) Start(cam string, at time.Time, score float64) *Event {
@@ -121,6 +218,12 @@ func (es *EventStore) persistDay(cam, day string) {
 }
 
 func (es *EventStore) List(cams []string, from, to int64, limit int) []Event {
+	return es.Filter(cams, from, to, limit, nil)
+}
+
+// Filter lists events on these cameras (all when empty) overlapping [from, to] that
+// match keep (all when nil), newest first.
+func (es *EventStore) Filter(cams []string, from, to int64, limit int, keep func(*Event) bool) []Event {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	var out []Event
@@ -133,7 +236,7 @@ func (es *EventStore) List(cams []string, from, to int64, limit int) []Event {
 			if end == 0 {
 				end = time.Now().UnixMilli()
 			}
-			if end >= from && e.Start <= to {
+			if end >= from && e.Start <= to && (keep == nil || keep(e)) {
 				out = append(out, *e)
 			}
 		}
@@ -180,8 +283,9 @@ func contains(list []string, s string) bool {
 }
 
 // Spans returns each camera's motion as merged [start-pad, end+pad] spans, for keeping
-// the recordings that contain motion longer than the rest.
-func (es *EventStore) Spans(pad time.Duration) map[string][]Span {
+// the recordings that contain motion longer than the rest. With keep, only the events
+// it accepts count.
+func (es *EventStore) Spans(pad time.Duration, keep func(*Event) bool) map[string][]Span {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	out := map[string][]Span{}
@@ -190,6 +294,9 @@ func (es *EventStore) Spans(pad time.Duration) map[string][]Span {
 	for cam, list := range es.events {
 		var spans []Span
 		for _, e := range list {
+			if keep != nil && !keep(e) {
+				continue
+			}
 			end := e.End
 			if end == 0 {
 				end = now
@@ -206,30 +313,40 @@ func (es *EventStore) Spans(pad time.Duration) map[string][]Span {
 	return out
 }
 
-func (es *EventStore) Cleanup(retain map[string]int, defaultDays int) {
+// Cleanup removes events older than days(event) days (with their pictures).
+func (es *EventStore) Cleanup(days func(cam string, e *Event) int) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
+	now := time.Now()
 	for cam, list := range es.events {
-		days, ok := retain[cam]
-		if !ok {
-			days = defaultDays
-		}
-		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+		oldest := 0
+		touched := map[string]bool{}
 		keep := list[:0]
 		for _, e := range list {
+			d := days(cam, e)
+			oldest = max(oldest, d)
+			cutoff := now.Add(-time.Duration(d) * 24 * time.Hour).UnixMilli()
 			if e.End != 0 && e.End < cutoff {
 				_ = os.Remove(es.ThumbPath(cam, e.ID))
+				_ = os.Remove(es.SnapPath(cam, e.ID))
+				touched[dayKey(e.Start)] = true
 				continue
 			}
 			keep = append(keep, e)
 		}
+		clear(list[len(keep):])
 		es.events[cam] = keep
-		// Drop day files entirely outside retention.
-		cutDay := dayKey(cutoff)
+		// Drop day files entirely outside retention; rewrite the rest when events went.
+		cutDay := dayKey(now.Add(-time.Duration(oldest) * 24 * time.Hour).UnixMilli())
 		files, _ := filepath.Glob(filepath.Join(es.root, cam, "*.json"))
 		for _, f := range files {
 			if strings.TrimSuffix(filepath.Base(f), ".json") < cutDay {
 				_ = os.Remove(f)
+			}
+		}
+		for day := range touched {
+			if day >= cutDay {
+				es.persistDay(cam, day)
 			}
 		}
 	}

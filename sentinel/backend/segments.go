@@ -463,15 +463,19 @@ func diskUsage(path string) DiskUsage {
 // Retention is how long a camera's footage is kept: everything for Days, and the files
 // that contain motion for MotionDays (when longer).
 type Retention struct {
-	Days       int
-	MotionDays int
+	Days       int // all footage
+	MotionDays int // footage with motion (0 = Days)
+	PersonDays int // footage with a person seen (0 = MotionDays)
 }
 
-func (r Retention) Longest() int { return max(r.Days, r.MotionDays) }
+func (r Retention) motion() int  { return max(r.Days, r.MotionDays) }
+func (r Retention) person() int  { return max(r.motion(), r.PersonDays) }
+func (r Retention) Longest() int { return r.person() }
 
 // Cleanup enforces retention and the free-space floor. It never touches files being written.
-// motion holds each camera's motion spans (merged, sorted, already padded).
-func (st *Store) Cleanup(pol map[string]Retention, def Retention, minFreeGB float64, motion map[string][]Span) {
+// motion and people hold each camera's spans of motion and of motion with a person seen
+// (merged, sorted, already padded).
+func (st *Store) Cleanup(pol map[string]Retention, def Retention, minFreeGB float64, motion, people map[string][]Span) {
 	now := time.Now()
 	boot := st.clock.BootTag()
 	var expired []*Segment
@@ -482,7 +486,8 @@ func (st *Store) Cleanup(pol map[string]Retention, def Retention, minFreeGB floa
 			r = def
 		}
 		cutoff := now.Add(-time.Duration(r.Days) * 24 * time.Hour)
-		motionCutoff := now.Add(-time.Duration(r.Longest()) * 24 * time.Hour)
+		motionCutoff := now.Add(-time.Duration(r.motion()) * 24 * time.Hour)
+		personCutoff := now.Add(-time.Duration(r.person()) * 24 * time.Hour)
 		for _, s := range list {
 			if !s.End().Before(cutoff) {
 				break
@@ -492,7 +497,9 @@ func (st *Store) Cleanup(pol map[string]Retention, def Retention, minFreeGB floa
 			if s.Active || (s.Unverified && strings.HasPrefix(s.Session, boot)) {
 				continue
 			}
-			if s.End().After(motionCutoff) && overlaps(motion[cam], s.Start().UnixMilli(), s.End().UnixMilli()) {
+			from, to := s.Start().UnixMilli(), s.End().UnixMilli()
+			if s.End().After(motionCutoff) && overlaps(motion[cam], from, to) ||
+				s.End().After(personCutoff) && overlaps(people[cam], from, to) {
 				continue
 			}
 			expired = append(expired, s)

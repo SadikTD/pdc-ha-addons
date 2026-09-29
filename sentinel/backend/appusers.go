@@ -463,3 +463,15 @@ func (s *UserStore) Flush() {
 		s.saveLocked()
 	}
 }
+
+// User returns an account by id.
+func (s *UserStore) User(id string) (AppUser, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, u := range s.data.Users {
+		if u.ID == id {
+			return u, true
+		}
+	}
+	return AppUser{}, false
+}

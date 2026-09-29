@@ -24,6 +24,8 @@ type App struct {
 	secrets   *SecretStore
 	alerts    *Alerter
 	detector  *Detector
+	labeler   *Labeler
+	objects   *objectSensors
 	drive     *Drive
 	breakdown atomic.Value // map[string]int64: bytes per data type
 	incidents *IncidentLog
@@ -41,6 +43,8 @@ type App struct {
 	outage    map[string]time.Time // camera -> when it stopped recording
 	alerted   map[string]bool
 	lastRec   map[string]bool
+	// Day (YYYY-MM-DD) the daily summary was last sent.
+	summarySent string
 }
 
 func (a *App) Init() {
@@ -142,6 +146,7 @@ func (a *App) MotionStart(cam string, score float64) {
 	a.mqtt.Motion(cam, true)
 	go a.captureThumb(cam, e.ID)
 	a.alerts.MotionStart(cam, *e)
+	a.labeler.Start(*e)
 	a.drive.MotionStart(cam, e.Start)
 	a.push.Motion(cam, cameraName(a.settings.Get(), cam), time.UnixMilli(e.Start))
 }
@@ -151,6 +156,7 @@ func (a *App) MotionUpdate(cam string, score float64) { a.events.Update(cam, sco
 func (a *App) MotionEnd(cam string) {
 	if e := a.events.End(cam, a.clock.Now()); e != nil {
 		a.drive.MotionEnd(cam, e.End)
+		a.objectsMotionEnd(cam, e.ID)
 	}
 	a.mqtt.Motion(cam, false)
 }
@@ -196,6 +202,7 @@ func (a *App) Background() {
 			a.heartbeat.Store(now.UnixMilli())
 			a.superviseWorkers()
 			a.checkOutages()
+			a.summaryDue(now)
 			if now.Sub(lastFlush) > time.Minute {
 				a.activity.Flush()
 				lastFlush = now
@@ -346,10 +353,11 @@ func (a *App) retention() (map[string]Retention, Retention) {
 	pol := map[string]Retention{}
 	def := Retention{Days: 2}
 	for _, c := range s.Cameras {
-		r := Retention{Days: c.RetainDays, MotionDays: c.MotionRetainDays}
+		r := Retention{Days: c.RetainDays, MotionDays: c.MotionRetainDays, PersonDays: c.PersonRetainDays}
 		pol[c.ID] = r
 		def.Days = max(def.Days, r.Days)
 		def.MotionDays = max(def.MotionDays, r.MotionDays)
+		def.PersonDays = max(def.PersonDays, r.PersonDays)
 	}
 	return pol, def
 }
@@ -360,14 +368,26 @@ const motionPad = 15 * time.Second
 func (a *App) cleanup() {
 	pol, def := a.retention()
 	s := a.settings.Get()
-	a.store.Cleanup(pol, def, s.MinFreeGB, a.events.Spans(motionPad))
-	// Events and the heatmap are kept as long as any footage is; timeline previews only as
-	// long as the 24/7 footage (older moments are previewed from the recording itself).
+	// Events not checked for people yet count as having one until they are.
+	people := a.events.Spans(motionPad, func(e *Event) bool { return e.Scan == "" || e.Has("person") })
+	a.store.Cleanup(pol, def, s.MinFreeGB, a.events.Spans(motionPad, nil), people)
+	// Events are kept as long as their footage; the heatmap as long as any footage is;
+	// timeline previews only as long as the 24/7 footage (older moments are previewed from
+	// the recording itself).
 	longest, days := map[string]int{}, map[string]int{}
 	for cam, r := range pol {
 		longest[cam], days[cam] = r.Longest(), r.Days
 	}
-	a.events.Cleanup(longest, def.Longest())
+	a.events.Cleanup(func(cam string, e *Event) int {
+		r, ok := pol[cam]
+		if !ok {
+			r = def
+		}
+		if e.Scan == "" || e.Has("person") {
+			return r.person()
+		}
+		return r.motion()
+	})
 	a.activity.Cleanup(longest, def.Longest())
 	a.previews.Cleanup(days, def.Days)
 	a.clips.Cleanup(s.ClipRetentionDays)
@@ -394,6 +414,7 @@ func (a *App) publishAll() {
 	}
 	a.mu.Unlock()
 	a.publishStorage()
+	a.publishObjects()
 }
 
 // Healthy is what the Supervisor watchdog checks: if the main loop or a recorder loop

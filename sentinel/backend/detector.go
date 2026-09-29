@@ -15,10 +15,11 @@ import (
 	"time"
 )
 
-// Detector finds people and animals in single frames with a small YOLOX model, run by a
-// Python worker (detect/detect.py). It only ever sees the few frames a night alert looks
-// at, so it costs a fraction of a second per alert. The worker is a separate process:
-// if it crashes or hangs it is killed and restarted, and recording never notices.
+// Detector finds people and animals in single frames with YOLOX models, run by a Python
+// worker (detect/detect.py): a fast "scan" model and a bigger "verify" model for a second
+// opinion. It only ever sees the few frames of motion events that Sentinel asks about.
+// The worker is a separate, low-priority process: if it crashes or hangs it is killed
+// and restarted, and recording never notices.
 
 type Detection struct {
 	Label string
@@ -33,13 +34,14 @@ type Detector struct {
 	in            io.WriteCloser
 	lines         chan string
 	size          int
-	retryAt       time.Time // after a failed start, don't try again before this
+	models        map[string]int // model name -> input size
+	retryAt       time.Time      // after a failed start, don't try again before this
 }
 
 func newDetector() *Detector {
 	return &Detector{
 		script: env("SENTINEL_DETECT_SCRIPT", "/app/detect/detect.py"),
-		model:  env("SENTINEL_DETECT_MODEL", "/app/detect/yolox_tiny.onnx"),
+		model:  env("SENTINEL_DETECT_MODEL", "/app/detect/yolox_s.onnx"),
 	}
 }
 
@@ -57,7 +59,8 @@ func (d *Detector) startLocked() error {
 	if time.Now().Before(d.retryAt) {
 		return errors.New("object detection is unavailable (it failed to start recently)")
 	}
-	cmd := exec.Command("python3", d.script)
+	// Low priority: recording and live view always come first.
+	cmd := exec.Command("nice", "-n", "10", "python3", d.script)
 	cmd.Env = append(os.Environ(), "SENTINEL_DETECT_MODEL="+d.model)
 	cmd.Stderr = os.Stderr
 	in, err := cmd.StdinPipe()
@@ -84,8 +87,9 @@ func (d *Detector) startLocked() error {
 	}()
 	d.cmd, d.in, d.lines = cmd, in, lines
 	var ready struct {
-		Ready bool `json:"ready"`
-		Size  int  `json:"size"`
+		Ready  bool           `json:"ready"`
+		Size   int            `json:"size"`
+		Models map[string]int `json:"models"`
 	}
 	line, err := d.readLocked(context.Background(), 60*time.Second) // loading the model
 	if err == nil {
@@ -96,8 +100,11 @@ func (d *Detector) startLocked() error {
 		d.retryAt = time.Now().Add(5 * time.Minute)
 		return fmt.Errorf("object detection did not start: %v", err)
 	}
-	d.size = ready.Size
-	logf("object detection ready (model input %d px)", d.size)
+	d.size, d.models = ready.Size, ready.Models
+	if d.models == nil {
+		d.models = map[string]int{modelScan: d.size}
+	}
+	logf("object detection ready (models %v)", d.models)
 	return nil
 }
 
@@ -127,8 +134,14 @@ func (d *Detector) readLocked(ctx context.Context, timeout time.Duration) (strin
 	}
 }
 
-// Size is the largest picture side the model takes (starting the worker if needed).
-func (d *Detector) Size() (int, error) {
+const (
+	modelScan   = "scan"   // fast, looks at every frame
+	modelVerify = "verify" // bigger and more accurate, confirms what scan found
+)
+
+// Size is the largest picture side a model takes (starting the worker if needed). A
+// missing verify model falls back to the scan model.
+func (d *Detector) Size(model string) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.cmd == nil {
@@ -136,11 +149,14 @@ func (d *Detector) Size() (int, error) {
 			return 0, err
 		}
 	}
+	if n, ok := d.models[model]; ok {
+		return n, nil
+	}
 	return d.size, nil
 }
 
-// Detect runs the model on one RGB picture (w×h, each side at most Size()).
-func (d *Detector) Detect(ctx context.Context, rgb []byte, w, h int) ([]Detection, error) {
+// Detect runs a model on one RGB picture (w×h, each side at most Size(model)).
+func (d *Detector) Detect(ctx context.Context, model string, rgb []byte, w, h int) ([]Detection, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.cmd == nil {
@@ -148,10 +164,14 @@ func (d *Detector) Detect(ctx context.Context, rgb []byte, w, h int) ([]Detectio
 			return nil, err
 		}
 	}
-	if w > d.size || h > d.size || len(rgb) != w*h*3 {
+	size, ok := d.models[model]
+	if !ok {
+		model, size = modelScan, d.size
+	}
+	if w > size || h > size || len(rgb) != w*h*3 {
 		return nil, fmt.Errorf("picture %dx%d does not fit the model", w, h)
 	}
-	if _, err := fmt.Fprintf(d.in, "%d %d\n", w, h); err == nil {
+	if _, err := fmt.Fprintf(d.in, "%d %d %s\n", w, h, model); err == nil {
 		_, err = d.in.Write(rgb)
 	}
 	line, err := d.readLocked(ctx, 20*time.Second)
@@ -181,32 +201,54 @@ func (d *Detector) Detect(ctx context.Context, rgb []byte, w, h int) ([]Detectio
 
 var fullFrame = Rect{W: 1, H: 1}
 
-// detectAt decodes the part r (normalised) of the frame at t, scaled to fit the model,
-// and runs detection on it. Boxes are returned relative to the whole frame. Looking at
-// a part makes small things (a cat far down a corridor) big enough to recognise.
-func (a *App) detectAt(ctx context.Context, cam string, t time.Time, r Rect) ([]Detection, error) {
-	size, err := a.detector.Size()
-	if err != nil {
-		return nil, err
-	}
+// frameRGB is a decoded picture: a part of a camera frame, scaled down.
+type frameRGB struct {
+	rgb  []byte
+	w, h int
+	r    Rect // the part of the frame it shows (normalised)
+}
+
+// decodeRGB decodes the part r (normalised) of the frame at t, scaled to fit size×size.
+func (a *App) decodeRGB(ctx context.Context, cam string, t time.Time, r Rect, size int) (frameRGB, error) {
 	vf := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease:flags=area,format=rgb24", size, size)
 	if r != fullFrame {
 		vf = fmt.Sprintf("crop=trunc(iw*%.4f/2)*2:trunc(ih*%.4f/2)*2:trunc(iw*%.4f):trunc(ih*%.4f),", r.W, r.H, r.X, r.Y) + vf
 	}
 	b, err := a.runDecode(ctx, cam, t, true, []string{"-vf", vf, "-f", "image2", "-c:v", "ppm", "pipe:1"})
 	if err != nil {
-		return nil, err
+		return frameRGB{}, err
 	}
 	rgb, w, h, err := parsePPM(b)
 	if err != nil {
-		return nil, err
+		return frameRGB{}, err
 	}
-	ds, err := a.detector.Detect(ctx, rgb, w, h)
+	return frameRGB{rgb, w, h, r}, nil
+}
+
+// detectIn runs a model on a decoded picture. Boxes come back relative to the whole
+// frame.
+func (a *App) detectIn(ctx context.Context, model string, f frameRGB) ([]Detection, error) {
+	ds, err := a.detector.Detect(ctx, model, f.rgb, f.w, f.h)
 	for i := range ds {
 		b := &ds[i].Box
-		*b = Rect{X: r.X + b.X*r.W, Y: r.Y + b.Y*r.H, W: b.W * r.W, H: b.H * r.H}
+		*b = Rect{X: f.r.X + b.X*f.r.W, Y: f.r.Y + b.Y*f.r.H, W: b.W * f.r.W, H: b.H * f.r.H}
 	}
 	return ds, err
+}
+
+// detectAt decodes the part r (normalised) of the frame at t and runs a model on it.
+// Boxes are returned relative to the whole frame. Looking at a part makes small things
+// (a cat far down a corridor) big enough to recognise.
+func (a *App) detectAt(ctx context.Context, cam string, t time.Time, r Rect, model string) ([]Detection, error) {
+	size, err := a.detector.Size(model)
+	if err != nil {
+		return nil, err
+	}
+	f, err := a.decodeRGB(ctx, cam, t, r, size)
+	if err != nil {
+		return nil, err
+	}
+	return a.detectIn(ctx, model, f)
 }
 
 // parsePPM reads a binary PPM (P6, 8-bit) as written by ffmpeg.

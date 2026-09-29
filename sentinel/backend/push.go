@@ -357,7 +357,11 @@ type PushPrefs struct {
 	Alerts bool     `json:"alerts"` // night alerts (people/animals)
 	Status bool     `json:"status"` // camera stopped / started recording
 	Motion []string `json:"motion"` // any motion on these cameras
+	// The daily summary (nil = on, for phones set up before it existed).
+	Summary *bool `json:"summary,omitempty"`
 }
+
+func (p PushPrefs) WantsSummary() bool { return p.Summary == nil || *p.Summary }
 
 func defaultPushPrefs() PushPrefs { return PushPrefs{Alerts: true, Status: true} }
 
@@ -404,6 +408,33 @@ func (p *Push) Alert(cam, name string, at time.Time, what, event string) {
 	}
 	go p.send(cam, map[string]string{"type": "alert", "camera": cam, "name": name, "t": ms(at), "what": what, "event": event},
 		func(pr PushPrefs, _ *AppSession) bool { return pr.Alerts })
+}
+
+// Summary: yesterday's summary, worded for each phone's user (only their cameras).
+func (p *Push) Summary(date string, textFor func(allowed func(string) bool) string) {
+	if !p.Enabled() || p.app.remote == nil {
+		return
+	}
+	go func() {
+		texts := map[string]string{}
+		for _, t := range p.app.remote.users.PushSessions("") {
+			if !t.prefs.WantsSummary() {
+				continue
+			}
+			u, ok := p.app.remote.users.User(t.session.UserID)
+			if !ok {
+				continue
+			}
+			text, ok := texts[u.ID]
+			if !ok {
+				text = textFor(u.CanSee)
+				texts[u.ID] = text
+			}
+			sid := t.session.ID
+			p.send("", map[string]string{"type": "summary", "date": date, "text": text, "t": ms(time.Now())},
+				func(_ PushPrefs, s *AppSession) bool { return s.ID == sid })
+		}
+	}()
 }
 
 // CameraState: a camera stopped or resumed recording.

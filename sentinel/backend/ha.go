@@ -204,6 +204,15 @@ func (m *MQTT) announce() {
 	pub("sensor", "storage_free", map[string]any{"name": "Storage free", "state_topic": "sentinel/storage/free_gb", "unit_of_measurement": "GB", "device_class": "data_size", "icon": "mdi:harddisk", "device": hub})
 	pub("sensor", "storage_used", map[string]any{"name": "Recordings size", "state_topic": "sentinel/storage/used_gb", "unit_of_measurement": "GB", "device_class": "data_size", "icon": "mdi:filmstrip-box-multiple", "device": hub})
 	pub("binary_sensor", "clock_problem", map[string]any{"name": "Clock problem", "state_topic": "sentinel/clock/problem", "device_class": "problem", "device": hub})
+	detecting := false
+	for _, c := range cams {
+		detecting = detecting || c.Enabled && c.Motion
+	}
+	if detecting {
+		for _, label := range watchLabels {
+			pub("binary_sensor", label, map[string]any{"name": objectNames[label] + " (any camera)", "state_topic": "sentinel/" + label, "device_class": "occupancy", "icon": objectIcons[label], "device": hub})
+		}
+	}
 	for _, c := range cams {
 		if !c.Enabled {
 			continue
@@ -212,6 +221,12 @@ func (m *MQTT) announce() {
 		pub("binary_sensor", c.ID+"_motion", map[string]any{"name": "Motion", "state_topic": "sentinel/" + c.ID + "/motion", "device_class": "motion", "device": dev})
 		pub("binary_sensor", c.ID+"_recording", map[string]any{"name": "Recording", "state_topic": "sentinel/" + c.ID + "/recording", "device_class": "running", "device": dev})
 		pub("camera", c.ID, map[string]any{"name": "Last motion", "topic": "sentinel/" + c.ID + "/snapshot", "device": dev})
+		if c.Motion { // people and animals are found in motion events
+			for _, label := range watchLabels {
+				pub("binary_sensor", c.ID+"_"+label, map[string]any{"name": objectNames[label], "state_topic": "sentinel/" + c.ID + "/" + label, "device_class": "occupancy", "icon": objectIcons[label], "device": dev})
+			}
+			pub("camera", c.ID+"_detection", map[string]any{"name": "Last person or animal", "topic": "sentinel/" + c.ID + "/detection", "device": dev})
+		}
 	}
 	m.mu.Lock()
 	var stale []string
@@ -244,3 +259,16 @@ func (m *MQTT) Storage(freeGB, usedGB float64) {
 	m.publish("sentinel/storage/used_gb", true, fmt.Sprintf("%.1f", usedGB))
 }
 func (m *MQTT) ClockProblem(p bool) { m.publish("sentinel/clock/problem", true, onOff(p)) }
+
+var (
+	objectNames = map[string]string{"person": "Person", "cat": "Cat", "dog": "Dog"}
+	objectIcons = map[string]string{"person": "mdi:account", "cat": "mdi:cat", "dog": "mdi:dog"}
+)
+
+func (m *MQTT) Object(cam, label string, on bool) {
+	m.publish("sentinel/"+cam+"/"+label, true, onOff(on))
+}
+func (m *MQTT) AnyObject(label string, on bool) { m.publish("sentinel/"+label, true, onOff(on)) }
+func (m *MQTT) ObjectSnapshot(cam string, jpeg []byte) {
+	m.publish("sentinel/"+cam+"/detection", true, jpeg)
+}

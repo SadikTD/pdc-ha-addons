@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -395,17 +396,21 @@ func (al *Alerter) shotObjects(cam Camera, bg, hint time.Time, times []time.Time
 
 // scanObjects looks for people and animals in part r of the frames. Those already in the
 // scene before the motion (a sleeping cat, a coat that looks like a person) and those in
-// ignore zones don't count.
+// ignore zones don't count, and the big model must agree on a closer look (see
+// labels.go), so a cat never becomes "Person".
 func (al *Alerter) scanObjects(cam Camera, bg time.Time, times []time.Time, r Rect) (shotResult, error) {
 	ctx := al.app.ctx
-	before, _ := al.app.detectAt(ctx, cam.ID, bg, r)
+	before, _ := al.app.detectAt(ctx, cam.ID, bg, r, modelScan)
 	mask := maskGrid(cam, shotW, shotH)
-	best := shotResult{detected: true}
-	top := 0.0
+	type cand struct {
+		t      time.Time
+		moving []Detection
+	}
+	var cands []cand
 	checked := 0
 	var lastErr error
 	for _, t := range times {
-		dets, err := al.app.detectAt(ctx, cam.ID, t, r)
+		dets, err := al.app.detectAt(ctx, cam.ID, t, r, modelScan)
 		if err != nil {
 			lastErr = err
 			continue
@@ -428,21 +433,34 @@ func (al *Alerter) scanObjects(cam Camera, bg time.Time, times []time.Time, r Re
 				moving = append(moving, d)
 			}
 		}
-		// Detections come best first.
-		if len(moving) == 0 || moving[0].Score <= top {
-			continue
+		if len(moving) > 0 {
+			cands = append(cands, cand{t, moving})
 		}
-		top = moving[0].Score
-		box := moving[0].Box
-		for _, d := range moving[1:] {
-			box = unionRect(box, d.Box)
-		}
-		best = shotResult{t: t, box: box, detected: true, what: describeDetections(moving)}
 	}
 	if checked == 0 && lastErr != nil {
 		return shotResult{}, lastErr
 	}
-	return best, nil
+	// Clearest first (detections come best first); the big model checks the two best.
+	sort.SliceStable(cands, func(i, j int) bool { return cands[i].moving[0].Score > cands[j].moving[0].Score })
+	for i, c := range cands {
+		if i == 2 {
+			break
+		}
+		v, ok := al.app.labeler.verify(ctx, cam, c.t, c.moving[0].Box)
+		if !ok {
+			continue
+		}
+		box := v.Box
+		kept := []Detection{{Label: v.Label, Score: v.Score, Box: v.Box}}
+		for _, d := range c.moving[1:] {
+			if d.Label == v.Label && d.Score >= verifyMin[d.Label] {
+				box = unionRect(box, d.Box)
+				kept = append(kept, d)
+			}
+		}
+		return shotResult{t: c.t, box: box, detected: true, what: describeDetections(kept)}, nil
+	}
+	return shotResult{detected: true}, nil
 }
 
 // describeDetections names who was seen, for the caption.

@@ -291,7 +291,7 @@ func (rm *Remote) allowed(u *AppUser, r *http.Request) bool {
 		return ""
 	}
 	switch {
-	case get && (p == "/api/status" || p == "/api/events" || p == "/api/clips"):
+	case get && (p == "/api/status" || p == "/api/events" || p == "/api/clips" || p == "/api/search" || p == "/api/summary"):
 		return true // filtered per camera by the handlers
 	case get && n == 4 && at(1) == "cameras" && (at(3) == "snapshot.jpg" || at(3) == "latest.jpg"):
 		return u.CanSee(at(2))
@@ -299,7 +299,7 @@ func (rm *Remote) allowed(u *AppUser, r *http.Request) bool {
 		return u.CanSee(at(2))
 	case get && n == 4 && (at(1) == "preview" || at(1) == "seg"):
 		return u.CanSee(at(2))
-	case get && n == 5 && at(1) == "events" && at(4) == "thumb.jpg":
+	case get && n == 5 && at(1) == "events" && (at(4) == "thumb.jpg" || at(4) == "snap.jpg"):
 		return u.CanSee(at(2))
 	case get && p == "/api/vod.m3u8":
 		return u.CanSee(r.URL.Query().Get("camera"))

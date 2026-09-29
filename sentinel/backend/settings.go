@@ -32,7 +32,9 @@ type Camera struct {
 	RetainDays int    `json:"retain_days"`
 	// Footage with motion is kept this long (0 = same as RetainDays); the rest of the
 	// 24/7 recording is removed after RetainDays.
-	MotionRetainDays  int `json:"motion_retain_days"`
+	MotionRetainDays int `json:"motion_retain_days"`
+	// Footage in which a person was seen is kept this long (0 = same as motion).
+	PersonRetainDays  int `json:"person_retain_days"`
 	MotionSensitivity int `json:"motion_sensitivity"` // 1..100, higher = more sensitive
 	// Switched on only now and then (e.g. a shop camera): no "not recording" alerts, and
 	// being offline isn't shown as a problem.
@@ -71,6 +73,13 @@ type Settings struct {
 	NightAlerts       NightAlerts `json:"night_alerts"`
 	WhatsApp          WhatsApp    `json:"whatsapp"`
 	Drive             DriveBackup `json:"drive"`
+	// Once a day, yesterday's summary goes to the phones with the app.
+	DailySummary DailySummary `json:"daily_summary"`
+}
+
+type DailySummary struct {
+	Enabled bool   `json:"enabled"`
+	Time    string `json:"time"` // "08:00" local time
 }
 
 // NightAlerts sends a WhatsApp snapshot when motion starts inside a daily time window.
@@ -133,12 +142,14 @@ func defaultSettings() Settings {
 			From: "23:00", To: "06:00", Cameras: []string{}, CooldownSeconds: 30, FollowupSeconds: 60, MaxPerHour: 30,
 			MinSeconds: 2, SaveClip: true,
 		},
-		Drive: DriveBackup{Alerts: true, MotionCameras: []string{}, QuotaGB: 10, RetentionDays: 90},
+		Drive:        DriveBackup{Alerts: true, MotionCameras: []string{}, QuotaGB: 10, RetentionDays: 90},
+		DailySummary: DailySummary{Enabled: true, Time: "08:00"},
 	}
 }
 
 var (
 	idRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,31}$`)
+	timeRe   = regexp.MustCompile(`^([01]?\d|2[0-3]):[0-5]\d$`)
 	windowRe = regexp.MustCompile(`^([01]?\d|2[0-3]):[0-5]\d-([01]?\d|2[0-3]):[0-5]\d$`)
 	waChatRe = regexp.MustCompile(`^(\+[1-9]\d{7,14}|[\d-]{5,40}@g\.us)$`)
 )
@@ -196,6 +207,9 @@ func (s *Settings) normalize() error {
 		s.NotifyAfterMinutes = 1
 	}
 	s.NotifyService = strings.TrimSpace(s.NotifyService)
+	if !timeRe.MatchString(s.DailySummary.Time) {
+		s.DailySummary.Time = "08:00"
+	}
 	seen := map[string]bool{}
 	for i := range s.Cameras {
 		c := &s.Cameras[i]
@@ -234,6 +248,10 @@ func (s *Settings) normalize() error {
 			c.MotionRetainDays = 0
 		}
 		c.MotionRetainDays = min(max(c.MotionRetainDays, 0), 365)
+		if c.PersonRetainDays != 0 && c.PersonRetainDays <= max(c.RetainDays, c.MotionRetainDays) {
+			c.PersonRetainDays = 0
+		}
+		c.PersonRetainDays = min(max(c.PersonRetainDays, 0), 365)
 		if c.MotionSensitivity < 1 || c.MotionSensitivity > 100 {
 			c.MotionSensitivity = 50
 		}

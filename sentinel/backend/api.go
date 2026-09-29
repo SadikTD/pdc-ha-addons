@@ -65,6 +65,21 @@ func (a *App) Routes(www string) http.Handler {
 	mux.HandleFunc("GET /api/activity/{id}", a.handleActivity)
 	mux.HandleFunc("GET /api/events", a.handleEvents)
 	mux.HandleFunc("GET /api/events/{cam}/{id}/thumb.jpg", a.handleThumb)
+	mux.HandleFunc("GET /api/events/{cam}/{id}/snap.jpg", a.handleSnap)
+	mux.HandleFunc("GET /api/search", a.handleSearch)
+	// Check events again (e.g. after changing detection): from/to in unix ms.
+	mux.HandleFunc("POST /api/detection/rescan", func(w http.ResponseWriter, r *http.Request) {
+		now := time.Now()
+		from, to := msParam(r, "from", now.Add(-24*time.Hour)), msParam(r, "to", now)
+		var cams []string
+		if c := r.URL.Query().Get("cameras"); c != "" {
+			cams = strings.Split(c, ",")
+		}
+		n := a.events.Rescan(cams, from.UnixMilli(), to.UnixMilli())
+		a.labeler.Poke()
+		writeJSON(w, 200, map[string]int{"events": n})
+	})
+	mux.HandleFunc("GET /api/summary", a.handleSummary)
 	mux.HandleFunc("GET /api/preview/{cam}/{ts}", a.handlePreview)
 	mux.HandleFunc("GET /api/cameras/{id}/latest.jpg", func(w http.ResponseWriter, r *http.Request) {
 		img := a.previews.Latest(r.PathValue("id"))
@@ -309,12 +324,13 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"disk": du, "used": used, "rate_bph": rate, "capacity_days": capacityDays,
 			"min_free_gb": s.MinFreeGB, "orphans": orphans, "breakdown": a.breakdown.Load(), "clips": a.clips.Bytes(),
 		},
-		"alerts": map[string]any{"enabled": s.NightAlerts.Enabled && s.WhatsApp.To != "", "active": a.alerts.Active() && s.WhatsApp.To != ""},
-		"drive":  map[string]any{"connected": a.drive.Connected(), "mode": s.Drive.Mode},
-		"clock":  a.clock.Status(),
-		"live":   a.go2rtc.running.Load(),
-		"mqtt":   map[string]any{"connected": a.mqtt.Connected(), "error": a.mqtt.Error()},
-		"health": a.Healthy(),
+		"alerts":    map[string]any{"enabled": s.NightAlerts.Enabled && s.WhatsApp.To != "", "active": a.alerts.Active() && s.WhatsApp.To != ""},
+		"drive":     map[string]any{"connected": a.drive.Connected(), "mode": s.Drive.Mode},
+		"clock":     a.clock.Status(),
+		"live":      a.go2rtc.running.Load(),
+		"detection": a.labeler.Status(),
+		"mqtt":      map[string]any{"connected": a.mqtt.Connected(), "error": a.mqtt.Error()},
+		"health":    a.Healthy(),
 	})
 }
 
@@ -482,19 +498,79 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 500
 	}
-	if u := appUser(r); u != nil {
-		if len(cams) == 0 {
-			for _, c := range a.settings.Get().Cameras {
-				cams = append(cams, c.ID)
-			}
-		}
-		cams = slices.DeleteFunc(cams, func(c string) bool { return !u.CanSee(c) })
-		if len(cams) == 0 {
-			writeJSON(w, 200, []Event{})
-			return
+	cams, ok := a.visibleCams(r, cams)
+	if !ok {
+		writeJSON(w, 200, []Event{})
+		return
+	}
+	// labels=person,cat: events with any of these; motion=1: plain motion only.
+	var keep func(*Event) bool
+	if l := r.URL.Query().Get("labels"); l != "" {
+		q := SearchQuery{Labels: strings.Split(l, ","), DayFrom: -1}
+		keep = q.Match
+	} else if r.URL.Query().Get("motion") == "1" {
+		q := SearchQuery{Motion: true, DayFrom: -1}
+		keep = q.Match
+	}
+	writeJSON(w, 200, a.events.Filter(cams, from.UnixMilli(), to.UnixMilli(), limit, keep))
+}
+
+// visibleCams narrows a camera list to what the request may see (app users can be
+// limited to some cameras). ok is false when nothing is left.
+func (a *App) visibleCams(r *http.Request, cams []string) ([]string, bool) {
+	u := appUser(r)
+	if u == nil {
+		return cams, true
+	}
+	if len(cams) == 0 {
+		for _, c := range a.settings.Get().Cameras {
+			cams = append(cams, c.ID)
 		}
 	}
-	writeJSON(w, 200, a.events.List(cams, from.UnixMilli(), to.UnixMilli(), limit))
+	cams = slices.DeleteFunc(slices.Clone(cams), func(c string) bool { return !u.CanSee(c) })
+	return cams, len(cams) > 0
+}
+
+func (a *App) handleSnap(w http.ResponseWriter, r *http.Request) {
+	cam, id := r.PathValue("cam"), r.PathValue("id")
+	if strings.ContainsAny(cam+id, "/\\") || strings.Contains(cam+id, "..") || !camAllowed(r, cam) {
+		writeErr(w, 400, "bad id")
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	http.ServeFile(w, r, a.events.SnapPath(cam, id))
+}
+
+func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
+	s := a.settings.Get()
+	q := ParseSearch(r.URL.Query().Get("q"), time.Now(), s.Cameras)
+	cams, ok := a.visibleCams(r, q.Cameras)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 1000 {
+		limit = 300
+	}
+	events := []Event{}
+	if ok {
+		events = a.events.Filter(cams, q.From, q.To, limit, q.Match)
+	}
+	writeJSON(w, 200, map[string]any{"query": q, "events": events})
+}
+
+func (a *App) handleSummary(w http.ResponseWriter, r *http.Request) {
+	d := time.Now()
+	if v := r.URL.Query().Get("date"); v != "" {
+		t, err := time.ParseInLocation("2006-01-02", v, time.Local)
+		if err != nil {
+			writeErr(w, 400, "date must be YYYY-MM-DD")
+			return
+		}
+		d = t
+	}
+	var allowed func(string) bool
+	if u := appUser(r); u != nil {
+		allowed = u.CanSee
+	}
+	writeJSON(w, 200, a.Summary(d, allowed))
 }
 
 func (a *App) handleThumb(w http.ResponseWriter, r *http.Request) {
