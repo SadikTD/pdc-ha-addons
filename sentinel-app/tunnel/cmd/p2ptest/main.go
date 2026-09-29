@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -25,7 +26,10 @@ func main() {
 	key := fs.String("key", "p2ptest.key", "server key file")
 	port := fs.Int("port", 18555, "server UDP port")
 	id := fs.String("id", "", "server ID to dial")
-	path := fs.String("path", "/big", "path to fetch")
+	path := fs.String("path", "/big", "paths to fetch, comma separated")
+	user := fs.String("user", "", "app username (dial)")
+	pass := fs.String("pass", "", "app password (dial)")
+	dur := fs.Duration("dur", 8*time.Second, "longest time to read one response")
 	fs.Parse(os.Args[2:])
 	switch mode {
 	case "serve":
@@ -71,6 +75,7 @@ func main() {
 		log.Printf("serving %s on %d", p2p.FormatID(ident.ID), *port)
 		host.Run(context.Background())
 	case "dial":
+		p2p.Debug = log.Printf
 		dir, _ := os.MkdirTemp("", "tun")
 		t := tunnel.New(dir)
 		t.SetServer(*id, "")
@@ -80,15 +85,32 @@ func main() {
 			log.Fatalf("connect: %v (%s)", err, t.StateJSON())
 		}
 		log.Printf("connected in %v: %s", time.Since(start).Round(time.Millisecond), t.StateJSON())
-		for _, p := range strings.Split(*path, ",") {
-			start = time.Now()
-			resp, err := http.Get(base + p)
+		if *user != "" {
+			resp, err := http.Post(base+"/app/login", "application/json", strings.NewReader(`{"username":"`+*user+`","password":"`+*pass+`","device":"p2ptest"}`))
 			if err != nil {
 				log.Fatal(err)
 			}
+			var lr struct{ Token, Error string }
+			json.NewDecoder(resp.Body).Decode(&lr)
+			if lr.Token == "" {
+				log.Fatalf("login: %s", lr.Error)
+			}
+			t.SetToken(lr.Token)
+			log.Printf("logged in")
+		}
+		for _, p := range strings.Split(*path, ",") {
+			start = time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), *dur)
+			req, _ := http.NewRequestWithContext(ctx, "GET", base+p, nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Fatal(err)
+			}
+			ttfb := time.Since(start)
 			n, _ := io.Copy(io.Discard, resp.Body)
+			cancel()
 			d := time.Since(start)
-			log.Printf("GET %s: %d, %d bytes in %v = %.1f Mbit/s", p, resp.StatusCode, n, d.Round(time.Millisecond), float64(n)*8/d.Seconds()/1e6)
+			log.Printf("GET %s: %d, first byte %v, %d bytes in %v = %.1f Mbit/s", p, resp.StatusCode, ttfb.Round(time.Millisecond), n, d.Round(time.Millisecond), float64(n)*8/d.Seconds()/1e6)
 		}
 	case "discover":
 		fmt.Println(tunnel.Discover("", 1500))

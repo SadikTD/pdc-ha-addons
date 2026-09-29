@@ -20,6 +20,15 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+// Debug, when set, logs each step of connecting (for troubleshooting).
+var Debug func(format string, args ...any)
+
+func debugf(format string, args ...any) {
+	if Debug != nil {
+		Debug(format, args...)
+	}
+}
+
 // ErrOffline: the introducer has no connection from this Sentinel.
 var ErrOffline = errors.New("Sentinel is offline (it isn't connected to the internet)")
 
@@ -72,8 +81,10 @@ func Dial(ctx context.Context, cfg DialConfig) (*DialResult, error) {
 			return
 		}
 		outstanding++
+		debugf("dialing %s", addr)
 		go func() {
 			c, err := ep.Transport.Dial(ctx, ua, ClientTLS(id), QUICConfig())
+			debugf("dial %s: %v", addr, err)
 			results <- attempt{c, addr, err}
 		}()
 	}
@@ -185,7 +196,10 @@ func introduce(ctx context.Context, cfg DialConfig, id string) ([]string, error)
 	}
 	if pub, err := ep.PublicAddr(ctx); err == nil {
 		cands = append([]string{pub.String()}, cands...)
+	} else {
+		debugf("STUN: %v", err)
 	}
+	debugf("my candidates: %v", cands)
 	sid := make([]byte, 8)
 	rand.Read(sid)
 	body, _ := json.Marshal(map[string]any{"sid": hex.EncodeToString(sid), "cands": cands})
@@ -210,6 +224,7 @@ func introduce(ctx context.Context, cfg DialConfig, id string) ([]string, error)
 		}
 		return nil, fmt.Errorf("introducer: %s", out.Error)
 	}
+	debugf("server candidates: %v", out.Cands)
 	// While the server punches towards us, punch towards it too (the QUIC dials do
 	// this as well, but a few extra packets make restrictive NATs open sooner).
 	go ep.Punch(ctx, out.Cands, 3*time.Second)

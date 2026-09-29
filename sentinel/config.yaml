@@ -1,5 +1,5 @@
 name: Sentinel
-version: "1.8.0"
+version: "1.8.1"
 slug: sentinel
 description: Reliable 24/7 camera recorder (NVR) with motion detection and a modern UI
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/sentinel
@@ -13,11 +13,10 @@ ingress: true
 ingress_port: 8099
 panel_icon: mdi:cctv
 panel_title: Sentinel
-# The Sentinel app (Android): QUIC, end-to-end encrypted, only app users can log in.
-ports:
-  8555/udp: 8555
-ports_description:
-  8555/udp: Sentinel app
+# Host network: the Sentinel app connects over UDP 8555 (QUIC, end-to-end encrypted,
+# only app users can log in); Docker's NAT in between would break NAT hole punching.
+# The panel port 8099 only answers Home Assistant (see panelOnly).
+host_network: true
 # Motion/recording sensors and snapshot cameras via the Mosquitto add-on (optional).
 services:
   - mqtt:want

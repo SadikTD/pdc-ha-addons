@@ -87,7 +87,7 @@ func main() {
 	app.remote = app.newRemote(configDir)
 	routes := app.Routes(www)
 	app.remote.Start(routes)
-	srv := &http.Server{Addr: listen, Handler: routes, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: listen, Handler: panelOnly(routes), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http: %v", err)

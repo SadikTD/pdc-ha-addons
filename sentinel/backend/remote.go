@@ -178,6 +178,23 @@ func (rm *Remote) lanAddrs() []string {
 	return out
 }
 
+// Sentinel runs on the host network (so the app's UDP port isn't behind Docker's NAT,
+// which breaks hole punching). The panel port must then stay private: only Home
+// Assistant's ingress proxy and the Supervisor network (172.30.32.0/23) and the host
+// itself may use it, never other devices on the LAN.
+var panelNet = netip.MustParsePrefix("172.30.32.0/23")
+
+func panelOnly(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ap, err := netip.ParseAddrPort(r.RemoteAddr)
+		if err != nil || !(ap.Addr().IsLoopback() || panelNet.Contains(ap.Addr().Unmap())) {
+			http.Error(w, "Open Sentinel from Home Assistant, or use the Sentinel app.", http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 func bearer(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if t, ok := strings.CutPrefix(h, "Bearer "); ok {
