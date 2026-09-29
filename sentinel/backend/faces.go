@@ -533,14 +533,26 @@ func faceMoments(e Event) []int64 {
 
 // process looks for faces (and clothes) of the people in an event, then says who it was.
 func (f *Faces) process(ctx context.Context, e Event) error {
+	_, err := f.look(ctx, e, false, nil)
+	return err
+}
+
+// look does the work of process; dry: only report (trace gets every step), nothing kept.
+func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, ...any)) ([]*Seen, error) {
+	log := func(format string, args ...any) {
+		if trace != nil {
+			trace(format, args...)
+		}
+	}
 	a := f.app
 	ctx = lowPriority(ctx)
 	size, err := a.detector.Size(modelScan)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var found []*Seen
 	for _, ms := range faceMoments(e) {
+		began := time.Now()
 		t := time.UnixMilli(ms)
 		small, err := a.decodeRGB(ctx, e.Cam, t, fullFrame, size)
 		if err != nil {
@@ -548,7 +560,7 @@ func (f *Faces) process(ctx context.Context, e Event) error {
 		}
 		dets, err := a.detectIn(ctx, modelScan, small)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		var people []Detection
 		for _, d := range dets {
@@ -556,6 +568,7 @@ func (f *Faces) process(ctx context.Context, e Event) error {
 				people = append(people, d)
 			}
 		}
+		log("+%.1fs: %d people %s", float64(ms-e.Start)/1000, len(people), fmtDets(people))
 		if len(people) == 0 {
 			continue
 		}
@@ -570,14 +583,18 @@ func (f *Faces) process(ctx context.Context, e Event) error {
 		for _, p := range people {
 			s := &Seen{ID: newID(), Cam: e.Cam, Event: e.ID, T: ms, Box: p.Box}
 			s.look, s.Night = clothes(full, p.Box)
-			if face, q, emb, thumb := f.face(ctx, full, p.Box); emb != nil {
+			if face, q, emb, thumb := f.face(ctx, full, p.Box, log); emb != nil {
 				s.Face, s.Q, s.emb = &face, q, emb
-				if thumb != nil {
+				if thumb != nil && !dry {
 					_ = writeFileAtomic(f.imgPath(s.ID), thumb, 0o644)
 				}
 			}
 			found = append(found, s)
 		}
+		log("  (%s, frame %dx%d)", time.Since(began).Round(10*time.Millisecond), full.w, full.h)
+	}
+	if dry {
+		return found, nil
 	}
 	// Keep the best faces (a person standing still gives many of the same), and one
 	// clothes-only sighting per frame and person is plenty.
@@ -599,12 +616,12 @@ func (f *Faces) process(ctx context.Context, e Event) error {
 	f.saveLocked()
 	f.mu.Unlock()
 	a.events.SetFacesDone(e.Cam, e.ID)
-	return nil
+	return found, nil
 }
 
 // face finds the face of the person in box (in the top part of their crop), if it's
 // clear enough to recognise: its place in the frame, quality, fingerprint and picture.
-func (f *Faces) face(ctx context.Context, full frameRGB, box Rect) (Rect, float64, []float32, []byte) {
+func (f *Faces) face(ctx context.Context, full frameRGB, box Rect, log func(string, ...any)) (Rect, float64, []float32, []byte) {
 	// Head and shoulders, with some room either side.
 	r := Rect{X: box.X - box.W*0.15, Y: box.Y - box.H*0.08, W: box.W * 1.3, H: box.H * 0.62}
 	r = clampRect(r)
@@ -621,8 +638,10 @@ func (f *Faces) face(ctx context.Context, full frameRGB, box Rect) (Rect, float6
 	rgb := resizeRGB(full.rgb, full.w, full.h, x0, y0, x1, y1, dw, dh)
 	rows, err := f.app.detector.Raw(ctx, modelFaces, rgb, dw, dh)
 	if err != nil {
+		log("  faces: %v", err)
 		return Rect{}, 0, nil, nil
 	}
+	log("  person %s: crop %dx%d -> %dx%d, %d face(s)", fmtBox(box), cw, ch, dw, dh, len(rows))
 	var best []float64
 	for _, row := range rows {
 		if len(row) < 17+128 {
@@ -633,6 +652,7 @@ func (f *Faces) face(ctx context.Context, full frameRGB, box Rect) (Rect, float6
 		fx := r.X + (row[1]+row[3]/2)*r.W
 		fy := r.Y + (row[2]+row[4]/2)*r.H
 		if fx < box.X-box.W*0.1 || fx > box.X+box.W*1.1 || fy > box.Y+box.H*0.45 || fy < box.Y-box.H*0.1 {
+			log("    face %.2f outside the head area", score)
 			continue
 		}
 		if best == nil || score > best[0] {
@@ -646,7 +666,9 @@ func (f *Faces) face(ctx context.Context, full frameRGB, box Rect) (Rect, float6
 	px := best[4] * float64(ch) // face height in the recording's pixels
 	// Not clear enough to say who it is: too small, blurred, side on, or (very sharp and
 	// flat) a texture like wood grain.
+	log("    face score %.2f, %.0f px, sharpness %.0f, frontal %.2f", score, px, sharp, frontal)
 	if score < 0.72 || px < 28 || sharp < 10 || sharp > 1500 || frontal < 0.2 {
+		log("    not clear enough")
 		return Rect{}, 0, nil, nil
 	}
 	q := 0.4*unit(score, 0.72, 0.95) + 0.35*unit(px, 28, 90) + 0.25*unit(frontal, 0.2, 0.9)

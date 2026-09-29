@@ -188,6 +188,27 @@ func (a *App) Routes(www string) http.Handler {
 		}
 		writeJSON(w, 200, a.faces.PersonFaces(r.PathValue("id"), limit))
 	})
+	// Why an event did or didn't give faces: looks again step by step, keeping nothing.
+	mux.HandleFunc("GET /api/faces/explain/{cam}/{id}", func(w http.ResponseWriter, r *http.Request) {
+		e, ok := a.events.Get(r.PathValue("cam"), r.PathValue("id"))
+		if !ok {
+			writeErr(w, 404, "no such event")
+			return
+		}
+		var steps []string
+		found, err := a.faces.look(r.Context(), e, true, func(format string, args ...any) { steps = append(steps, fmt.Sprintf(format, args...)) })
+		faces := 0
+		for _, s := range found {
+			if s.emb != nil {
+				faces++
+			}
+		}
+		errText := ""
+		if err != nil {
+			errText = err.Error()
+		}
+		writeJSON(w, 200, map[string]any{"people": len(found), "faces": faces, "steps": steps, "error": errText})
+	})
 	mux.HandleFunc("GET /api/faces/unknown", func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 {
