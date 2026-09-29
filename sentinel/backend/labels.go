@@ -64,11 +64,12 @@ type Labeler struct {
 	wake chan struct{}
 	hot  *Hotspots
 
-	mu     sync.Mutex
-	live   []Event // events that just started, first come first served
-	status LabelerStatus
-	total  time.Duration
-	warned time.Time
+	mu       sync.Mutex
+	live     []Event // events that just started, first come first served
+	inFlight int     // live events being checked
+	status   LabelerStatus
+	total    time.Duration
+	warned   time.Time
 }
 
 func newLabeler(app *App) *Labeler {
@@ -110,40 +111,90 @@ func (l *Labeler) Status() LabelerStatus {
 // backfillWindow: older events without labels are checked when there's nothing new.
 const backfillWindow = 8 * 24 * time.Hour
 
+// Run checks events as they happen, several at once (checking one mostly means waiting
+// for its footage to reach the disk, so a long event on one camera must not hold up
+// another's), and catches up on older events, one at a time, when nothing is happening.
 func (l *Labeler) Run(ctx context.Context) {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	backfilling := false
 	for ctx.Err() == nil {
 		if !l.app.detector.Available() {
 			sleepCtx(ctx, time.Minute)
 			continue
 		}
 		l.mu.Lock()
-		var e Event
-		live := len(l.live) > 0
-		if live {
-			e = l.live[0]
-			l.live = l.live[1:]
+		if len(l.live) > 0 && l.inFlight < maxLive {
+			l.mu.Unlock()
+			l.startLive(ctx, &wg)
+			continue
 		}
-		busy := len(l.live) > 2
+		idle := len(l.live) == 0 && l.inFlight == 0 && !backfilling
 		l.mu.Unlock()
-		if !live {
+		if idle {
 			// Nothing happening: catch up on older events, newest first.
-			old := l.app.events.Unscanned(time.Now().Add(-backfillWindow).UnixMilli(), 1)
-			if len(old) == 0 {
-				select {
-				case <-l.wake:
-				case <-ctx.Done():
-				case <-time.After(time.Minute):
+			if old := l.app.events.Unscanned(time.Now().Add(-backfillWindow).UnixMilli(), 1); len(old) > 0 {
+				e := old[0]
+				l.app.events.SetScan(e.Cam, e.ID, "scanning", nil, nil, false) // not picked twice
+				backfilling = true
+				done := make(chan struct{})
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer close(done)
+					l.label(ctx, e, false, false)
+				}()
+				// Wait for it, but start live events that come in meanwhile.
+				for waiting := true; waiting; {
+					select {
+					case <-done:
+						waiting = false
+					case <-l.wake:
+						l.startLive(ctx, &wg)
+					case <-ctx.Done():
+						waiting = false
+					}
 				}
+				backfilling = false
+				sleepCtx(ctx, 200*time.Millisecond) // background work: leave room
 				continue
 			}
-			e = old[0]
 		}
-		l.label(ctx, e, live, busy)
-		if !live {
-			sleepCtx(ctx, 200*time.Millisecond) // background work: leave room
+		select {
+		case <-l.wake:
+		case <-ctx.Done():
+		case <-time.After(time.Minute):
 		}
 	}
 }
+
+// startLive starts checking waiting live events (up to maxLive at once).
+func (l *Labeler) startLive(ctx context.Context, wg *sync.WaitGroup) {
+	for {
+		l.mu.Lock()
+		if len(l.live) == 0 || l.inFlight >= maxLive {
+			l.mu.Unlock()
+			return
+		}
+		e := l.live[0]
+		l.live = l.live[1:]
+		l.inFlight++
+		busy := l.inFlight+len(l.live) > 3
+		l.mu.Unlock()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l.label(ctx, e, true, busy)
+			l.mu.Lock()
+			l.inFlight--
+			l.mu.Unlock()
+			l.Poke()
+		}()
+	}
+}
+
+// maxLive: events checked at the same time while they happen.
+const maxLive = 4
 
 // sighting is one detection by the fast model, in one frame.
 type sighting struct {
