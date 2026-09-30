@@ -300,7 +300,7 @@ func (rm *Remote) allowed(u *AppUser, r *http.Request) bool {
 	case get && n == 5 && at(1) == "faces" && at(2) == "event":
 		return u.CanSee(at(3))
 	case u.Admin && (get && (p == "/api/faces/unknown" || n == 4 && at(1) == "people" && at(3) == "faces") ||
-		r.Method == http.MethodPost && (p == "/api/faces/name" || p == "/api/faces/not" || p == "/api/faces/junk") ||
+		r.Method == http.MethodPost && (p == "/api/faces/name" || p == "/api/faces/not" || p == "/api/faces/junk" || p == "/api/faces/restore") ||
 		n == 3 && at(1) == "people" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete)):
 		return true // naming people: admins
 	case get && n == 4 && at(1) == "cameras" && (at(3) == "snapshot.jpg" || at(3) == "latest.jpg"):

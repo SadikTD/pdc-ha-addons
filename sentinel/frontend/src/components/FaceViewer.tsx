@@ -43,8 +43,8 @@ export function FaceViewer({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return onClose();
       if ((e.target as HTMLElement)?.closest("input")) return;
-      if (e.key === "Escape") onClose();
       else if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1);
       else if (e.key === "ArrowRight" && index < faces.length - 1) onIndex(index + 1);
       else if (e.key === "z" || e.key === "Z") setWhole((w) => !w);
@@ -127,7 +127,7 @@ export function FaceViewer({
         {onName && people && (
           <div className="mt-4">
             <div className="mb-1.5 text-xs font-medium text-slate-400">{f.name ? "Someone else? Pick or type the right name" : "Who is this?"}</div>
-            <NamePicker key={f.id} people={people} onPick={(p) => onName(f, p)} autoFocus={!f.name} dropUp={false} />
+            <NamePicker key={f.id} people={people} onPick={(p) => onName(f, p)} />
           </div>
         )}
         <div className="mt-4 flex flex-col gap-2">

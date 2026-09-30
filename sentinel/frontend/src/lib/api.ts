@@ -282,6 +282,7 @@ export const api = {
   nameFaces: (faces: string[], who: { person?: string; name?: string }) => request<Person>("POST", "api/faces/name", { faces, ...who }),
   notPerson: (faces: string[], person: string) => request<{ ok: boolean }>("POST", "api/faces/not", { faces, person }),
   notFaces: (faces: string[]) => request<{ ok: boolean }>("POST", "api/faces/junk", { faces }),
+  restoreFaces: (faces: string[]) => request<{ ok: boolean }>("POST", "api/faces/restore", { faces }),
   wrongLabel: (e: SentinelEvent, label: Label) => request<SentinelEvent>("POST", `api/events/${e.camera}/${e.id}/wrong`, { label }),
   search: (q: string, limit = 500) => request<{ query: SearchQuery; events: SentinelEvent[] }>("GET", `api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   summary: (date?: string) => request<DaySummary>("GET", `api/summary${date ? `?date=${date}` : ""}`),

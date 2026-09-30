@@ -1045,6 +1045,19 @@ func (f *Faces) Junk(ids []string) {
 	f.relearnLocked()
 }
 
+// Restore undoes "not a face" and naming for these faces: they are unknown again.
+func (f *Faces) Restore(ids []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, fid := range ids {
+		if s, ok := f.seen[fid]; ok {
+			s.Junk, s.Person, s.By, s.Sim = false, "", "", 0
+			f.touchLocked(s)
+		}
+	}
+	f.relearnLocked()
+}
+
 func (f *Faces) Rename(id, name string) (Person, error) {
 	name = strings.TrimSpace(name)
 	f.mu.Lock()

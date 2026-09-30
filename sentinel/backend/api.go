@@ -246,6 +246,18 @@ func (a *App) Routes(www string) http.Handler {
 		a.faces.NotPerson(req.Faces, req.Person)
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
+	// Undo: the faces are unknown again (after "not a face" or a name given by mistake).
+	mux.HandleFunc("POST /api/faces/restore", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Faces []string `json:"faces"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Faces) == 0 {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		a.faces.Restore(req.Faces)
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
 	mux.HandleFunc("POST /api/faces/junk", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Faces []string `json:"faces"`

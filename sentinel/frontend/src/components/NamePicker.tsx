@@ -63,8 +63,8 @@ export function NamePicker({
             if (e.key === "ArrowDown") (e.preventDefault(), setHi((h) => Math.min(h + 1, options.length - 1)));
             else if (e.key === "ArrowUp") (e.preventDefault(), setHi((h) => Math.max(h - 1, 0)));
             else if (e.key === "Enter" && options[hi]) (e.preventDefault(), pick(options[hi]));
-            else if (e.key === "Escape") setOpen(false);
-            e.stopPropagation();
+            else if (e.key === "Escape" && open && options.length > 0) (e.stopPropagation(), setOpen(false));
+            if (e.key !== "Escape") e.stopPropagation();
           }}
           placeholder={placeholder}
           className="min-w-0 flex-1 bg-transparent text-sm text-white placeholder:text-slate-500 focus:outline-none"

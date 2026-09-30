@@ -40,10 +40,21 @@ function usePeopleData() {
 // Name faces, with a message; returns whether it worked.
 function useFaceActions(reload: () => void) {
   const toast = useToast();
-  const run = async (fn: () => Promise<unknown>, msg: string) => {
+  const run = async (fn: () => Promise<unknown>, msg: string, undo?: string[]) => {
     try {
       await fn();
-      toast(msg, "success");
+      toast(
+        msg,
+        "success",
+        undo && {
+          label: "Undo",
+          onClick: () =>
+            api
+              .restoreFaces(undo)
+              .then(() => (toast("Undone", "info"), reload()))
+              .catch((e) => toast((e as Error).message, "error")),
+        },
+      );
       reload();
       return true;
     } catch (e) {
@@ -53,8 +64,8 @@ function useFaceActions(reload: () => void) {
   };
   const plural = (n: number) => `${n} face${n === 1 ? "" : "s"}`;
   return {
-    name: (ids: string[], p: Pick) => run(() => api.nameFaces(ids, p.person ? { person: p.person } : { name: p.name }), `${plural(ids.length)} named ${p.label}. Sentinel will recognise them from now on.`),
-    junk: (ids: string[]) => run(() => api.notFaces(ids), `${plural(ids.length)} ignored. Similar ones won't show up again.`),
+    name: (ids: string[], p: Pick) => run(() => api.nameFaces(ids, p.person ? { person: p.person } : { name: p.name }), `${plural(ids.length)} named ${p.label}. Sentinel will recognise them from now on.`, ids),
+    junk: (ids: string[]) => run(() => api.notFaces(ids), `${plural(ids.length)} ignored. Similar ones won't show up again.`, ids),
     not: (ids: string[], person: PersonInfo | { id: string; name: string }) => run(() => api.notPerson(ids, person.id), `Taken out of ${person.name}. Sentinel learns from it.`),
   };
 }
@@ -126,7 +137,8 @@ function PeopleList() {
 
 function ToName({ data, reload }: { data: Data; reload: () => void }) {
   const acts = useFaceActions(reload);
-  const groups = data.groups.filter((g) => g.size > 1 || g.suggest);
+  const groups = data.groups.filter((g) => g.size > 1);
+  const maybe = data.groups.filter((g) => g.size === 1 && g.suggest);
   const once = data.groups.filter((g) => g.size === 1 && !g.suggest).flatMap((g) => g.faces);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [viewer, setViewer] = useState<{ faces: FaceInfo[]; index: number; group?: FaceGroup } | null>(null);
@@ -147,6 +159,16 @@ function ToName({ data, reload }: { data: Data; reload: () => void }) {
 
   const toggle = (id: string) => setPicked((s) => (s.has(id) ? new Set([...s].filter((x) => x !== id)) : new Set(s).add(id)));
   const viewerActions = (g?: FaceGroup): ViewerAction[] => [
+    ...(() => {
+      const f = viewer?.faces[viewer.index];
+      const m = f && data.groups.find((x) => x.size === 1 && x.suggest && x.ids[0] === f.id);
+      if (!m) return [];
+      const s = m.suggest!;
+      return [
+        { label: `Yes, this is ${s.name}`, icon: <Check className="size-4" />, onClick: (x: FaceInfo) => acts.name([x.id], { person: s.person, label: s.name }).then((ok) => ok && next()) },
+        { label: `No, not ${s.name}`, icon: <UserX className="size-4" />, onClick: (x: FaceInfo) => acts.not([x.id], { id: s.person, name: s.name }).then((ok) => ok && next()) },
+      ] as ViewerAction[];
+    })(),
     ...(g && g.size > 1
       ? [{ label: out.has(viewer?.faces[viewer.index]?.id ?? "") ? "Put back in this group" : "Not the same person as the others", icon: <UserX className="size-4" />, onClick: (f: FaceInfo) => setOut((s) => (s.has(f.id) ? new Set([...s].filter((x) => x !== f.id)) : new Set(s).add(f.id))) }]
       : []),
@@ -159,6 +181,38 @@ function ToName({ data, reload }: { data: Data; reload: () => void }) {
       {groups.map((g) => (
         <GroupCard key={g.ids[0]} g={g} people={data.people} out={out} setOut={setOut} acts={acts} onView={(i) => setViewer({ faces: g.faces, index: i, group: g })} />
       ))}
+      {maybe.length > 0 && (
+        <section className="glass rounded-2xl p-4 md:p-5">
+          <h2 className="text-base font-semibold text-white">Might be someone you know · {maybe.length}</h2>
+          <p className="mb-3 text-xs text-slate-400">Each looks like someone you named, but not enough to be sure. Confirm or say no; open a face to see it large.</p>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-3">
+            {maybe.map((g) => (
+              <div key={g.ids[0]} className="overflow-hidden rounded-2xl border border-white/[0.07] bg-ink-850">
+                <FaceTile f={g.faces[0]} onOpen={() => setViewer({ faces: maybe.map((m) => m.faces[0]), index: maybe.indexOf(g) })} />
+                <div className="p-2">
+                  <div className="truncate text-center text-sm font-medium text-white">{g.suggest!.name}?</div>
+                  <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                    <button
+                      onClick={() => acts.name(g.ids, { person: g.suggest!.person, label: g.suggest!.name })}
+                      title={`Yes, this is ${g.suggest!.name}`}
+                      className="flex h-8 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-300 transition hover:bg-emerald-500/25"
+                    >
+                      <Check className="size-4" />
+                    </button>
+                    <button
+                      onClick={() => acts.not(g.ids, { id: g.suggest!.person, name: g.suggest!.name })}
+                      title={`No, not ${g.suggest!.name}`}
+                      className="flex h-8 items-center justify-center rounded-lg bg-white/5 text-slate-300 transition hover:bg-rose-500/15 hover:text-rose-200"
+                    >
+                      <X className="size-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       {once.length > 0 && (
         <section className="glass rounded-2xl p-4 md:p-5">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
@@ -210,7 +264,7 @@ function ToName({ data, reload }: { data: Data; reload: () => void }) {
             onIndex={(i) => setViewer((v) => v && { ...v, index: i })}
             onClose={() => setViewer(null)}
             people={data.people}
-            title={viewer.group ? `Group of ${viewer.group.size}` : "Seen once"}
+            title={viewer.group ? `Likely the same person · ${viewer.group.size} faces` : undefined}
             onName={(f, p) => acts.name([f.id], p).then((ok) => ok && next())}
             actions={viewerActions(viewer.group)}
           />
