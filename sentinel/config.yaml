@@ -1,8 +1,12 @@
 name: Sentinel
-version: "1.19.1"
+version: "1.19.2"
 slug: sentinel
 description: Reliable 24/7 camera recorder (NVR) with motion detection and a modern UI
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/sentinel
+# Built on GitHub (.github/workflows/sentinel-image.yml) and downloaded by the
+# Supervisor: updating no longer compiles on the Pi next to recording and Home
+# Assistant. Push, wait for the "Sentinel image" run to finish, then update.
+image: "ghcr.io/sadiktd/{arch}-sentinel"
 arch:
   - aarch64
   - amd64
