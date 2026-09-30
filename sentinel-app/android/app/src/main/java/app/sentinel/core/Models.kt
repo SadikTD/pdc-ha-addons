@@ -306,6 +306,8 @@ data class PersonInfo(
     val sightings: Int = 0,
     val last: LastSeen? = null,
     val cover: String? = null,
+    /** Someone the user doesn't know ("Unknown person 2"), recognised when they come back. */
+    val unnamed: Boolean = false,
 )
 
 @Serializable

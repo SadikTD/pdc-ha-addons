@@ -1,5 +1,8 @@
 package app.sentinel.ui.screens
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
@@ -216,8 +219,12 @@ fun PeopleScreen(state: AppState, onBack: () -> Unit, openCamera: (String, Long)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("${picked.size} selected", color = C.Text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                            Text("Not faces", color = C.RoseLight, fontSize = 13.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { acts.junk(picked.toList()) { picked = emptySet() } }.padding(8.dp))
                             Icon(Icons.Rounded.Close, "Clear", tint = C.TextDim, modifier = Modifier.size(36.dp).clip(CircleShape).clickable { picked = emptySet() }.padding(8.dp))
+                        }
+                        Row(Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SmallAction("Don't know them", Icons.Rounded.HelpOutline, C.Text) { acts.stranger(picked.toList()) { picked = emptySet() } }
+                            SmallAction("Don't name", Icons.Rounded.VisibilityOff, C.Text) { acts.hide(picked.toList()) { picked = emptySet() } }
+                            SmallAction("Not faces", Icons.Rounded.Close, C.RoseLight) { acts.junk(picked.toList()) { picked = emptySet() } }
                         }
                         NamePicker(people.orEmpty(), "Name them…", state = state) { p -> acts.name(picked.toList(), p) { picked = emptySet() } }
                     }
@@ -239,6 +246,8 @@ fun PeopleScreen(state: AppState, onBack: () -> Unit, openCamera: (String, Long)
                         add(FaceAction("Not ${m.name}", Icons.Rounded.PersonOff) { acts.not(listOf(it.id), m.person, m.name) { viewing = null } })
                     }
                     if (v.group != null) add(FaceAction(if (f.id in out) "Put back in the group" else "Not the same person", Icons.Rounded.PersonOff) { out = if (it.id in out) out - it.id else out + it.id })
+                    add(FaceAction("Someone I don't know", Icons.Rounded.HelpOutline) { acts.stranger(listOf(it.id)) { viewing = null } })
+                    add(FaceAction("Don't name", Icons.Rounded.VisibilityOff) { acts.hide(listOf(it.id)) { viewing = null } })
                     add(FaceAction("Not a face", Icons.Rounded.Close, danger = true) { acts.junk(listOf(it.id)) { viewing = null } })
                 }
             },
@@ -266,6 +275,8 @@ private class FaceActs(val state: AppState, val reload: () -> Unit) {
         run({ state.api.nameFaces(ids, person = p.person, name = p.name) }, "${n(ids)} named ${p.label}.", after, ids)
     fun not(ids: List<String>, person: String, name: String, after: () -> Unit = {}) = run({ state.api.notPerson(ids, person) }, "Not $name: Sentinel learns from it.", after)
     fun junk(ids: List<String>, after: () -> Unit = {}) = run({ state.api.notFaces(ids) }, "${n(ids)} ignored.", after, ids)
+    fun hide(ids: List<String>, after: () -> Unit = {}) = run({ state.api.hideFaces(ids) }, "Hidden, with faces like them.", after, ids)
+    fun stranger(ids: List<String>, after: () -> Unit = {}) = run({ state.api.strangerFaces(ids) }, "Kept as an unknown person.", after, ids)
 }
 
 @Composable
@@ -303,13 +314,19 @@ private fun GroupCard(state: AppState, g: FaceGroup, people: List<PersonInfo>, o
                 color = C.TextFaint, fontSize = 12.sp,
             )
             androidx.compose.foundation.layout.Spacer(Modifier.height(10.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), maxItemsInEachRow = 4) {
-                shown.forEachIndexed { i, f ->
-                    Box(Modifier.weight(1f)) {
-                        FaceTile(state, f, picked = f.id !in out, dim = f.id in out, ring = false, onToggle = { toggle(f.id) }) { open(i) }
+            // Four to a row, always the same size (a flowing row wrapped early and stretched
+            // the last face across the card).
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                shown.chunked(4).forEachIndexed { r, row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        row.forEachIndexed { c, f ->
+                            Box(Modifier.weight(1f)) {
+                                FaceTile(state, f, picked = f.id !in out, dim = f.id in out, ring = false, onToggle = { toggle(f.id) }) { open(r * 4 + c) }
+                            }
+                        }
+                        repeat(4 - row.size) { Box(Modifier.weight(1f)) }
                     }
                 }
-                repeat((4 - shown.size % 4) % 4) { Box(Modifier.weight(1f)) }
             }
             if (g.faces.size > shown.size) Text(
                 "Show all ${g.faces.size}", color = C.VioletLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
@@ -322,7 +339,11 @@ private fun GroupCard(state: AppState, g: FaceGroup, people: List<PersonInfo>, o
             }
             NamePicker(people, if (g.suggest != null) "Or someone else…" else "Who is this? (${ids.size} faces)", state = state) { p -> acts.name(ids, p) }
             androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
-            SubtleButton("Not faces", Modifier.fillMaxWidth(), icon = Icons.Rounded.Close, tint = C.TextDim) { acts.junk(ids) }
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallAction("Someone I don't know", Icons.Rounded.HelpOutline, C.Text) { acts.stranger(ids) }
+                SmallAction("Don't name", Icons.Rounded.VisibilityOff, C.Text) { acts.hide(ids) }
+                SmallAction("Not faces", Icons.Rounded.Close, C.RoseLight) { acts.junk(ids) }
+            }
         }
     }
 }
@@ -342,12 +363,13 @@ private fun KnownGrid(state: AppState, people: List<PersonInfo>?, openPerson: (S
             people.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
                 EmptyState(Icons.Rounded.Person, "Nobody named yet", if (state.isAdmin) "Name a face under “To name” and Sentinel starts recognising that person." else "An admin can name people in the app or on the Sentinel page.")
             }
-            else -> items(people, key = { it.id }) { p ->
+            else -> items(people.sortedBy { it.unnamed }, key = { it.id }) { p ->
                 Column(Modifier.clip(RoundedCornerShape(22.dp)).background(C.Ink850).border(1.dp, C.GlassBorder, RoundedCornerShape(22.dp)).clickable { openPerson(p.id) }) {
                     Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
                         if (p.cover != null) AsyncImage(state.api.faceUrl(p.cover), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                         else Icon(Icons.Rounded.Person, null, tint = C.TextFaint, modifier = Modifier.fillMaxSize().padding(36.dp))
                         Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xDD000000)))).padding(10.dp)) {
+                            if (p.unnamed) Text("NOT NAMED", color = C.Amber, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                             Text(p.name, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text("${p.sightings} events this week", color = Color.White.copy(alpha = 0.75f), fontSize = 11.sp)
                         }
@@ -536,5 +558,16 @@ fun EventPeopleStrip(state: AppState, cam: String, eventId: String?, openCamera:
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun SmallAction(text: String, icon: ImageVector, tint: Color, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(CircleShape).border(1.dp, C.GlassBorder, CircleShape).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(15.dp))
+        Text("  $text", color = tint, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }

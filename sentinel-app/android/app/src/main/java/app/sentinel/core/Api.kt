@@ -97,6 +97,8 @@ class Api(private val engine: Engine) {
     suspend fun nameFaces(ids: List<String>, person: String? = null, name: String? = null): PersonInfo = send("POST", "api/faces/name", NameFaces(ids, person, name))
     suspend fun notPerson(ids: List<String>, person: String) = call("POST", "api/faces/not", Engine.json.encodeToString(NotPerson(ids, person)))
     suspend fun notFaces(ids: List<String>) = call("POST", "api/faces/junk", Engine.json.encodeToString(FaceIds(ids)))
+    suspend fun hideFaces(ids: List<String>) = call("POST", "api/faces/hide", Engine.json.encodeToString(FaceIds(ids)))
+    suspend fun strangerFaces(ids: List<String>) = call("POST", "api/faces/stranger", Engine.json.encodeToString(FaceIds(ids)))
     suspend fun restoreFaces(ids: List<String>) = call("POST", "api/faces/restore", Engine.json.encodeToString(FaceIds(ids)))
     suspend fun renamePerson(id: String, name: String): PersonInfo = send("PATCH", "api/people/$id", mapOf("name" to name))
     suspend fun forgetPerson(id: String) = call("DELETE", "api/people/$id")
