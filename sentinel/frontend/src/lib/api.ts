@@ -45,6 +45,7 @@ export type Settings = {
   whatsapp: { to: string; to_name: string; animals_to: string; animals_to_name: string; morning_report: boolean; bridge_url: string };
   daily_summary: { enabled: boolean; time: string };
   face_recognition?: boolean;
+  presence?: PresenceSettings;
   animals?: ("cat" | "dog")[];
   drive: {
     backup_alerts: boolean;
@@ -56,6 +57,24 @@ export type Settings = {
     retention_days: number;
   };
 };
+
+// Comings and goings: when the people named came home and went out.
+export type PresenceSettings = {
+  enabled: boolean;
+  entrances: string[];
+  away_minutes: number;
+  arrive_on: "any" | "entrance";
+  people: string[];
+  clothing: boolean;
+  notify: boolean;
+  notify_arrive: boolean;
+  notify_leave: boolean;
+  notify_people: string[];
+  quiet: string;
+  home_assistant: boolean;
+};
+export type PresenceEntry = { person: string; name: string; kind: "arrived" | "left"; t: number; cam: string; event: string; by: string; for?: number; known?: number };
+export type PresenceNow = { person: string; name: string; state: "home" | "away" | "unknown"; since?: number; last_seen?: number; last_cam?: string };
 
 export type WhatsAppInfo = {
   token_set: boolean;
@@ -274,6 +293,8 @@ export const api = {
     return request<SentinelEvent[]>("GET", `api/events?${q}`);
   },
   people: () => request<{ people: PersonInfo[]; status: FaceStatus }>("GET", "api/people"),
+  presence: (from: number, to: number) =>
+    request<{ enabled: boolean; entries: PresenceEntry[]; now: PresenceNow[] }>("GET", `api/presence?from=${Math.round(from)}&to=${Math.round(to)}`),
   renamePerson: (id: string, name: string) => request<Person>("PATCH", `api/people/${id}`, { name }),
   forgetPerson: (id: string) => request<{ ok: boolean }>("DELETE", `api/people/${id}`),
   personFaces: (id: string, limit = 60) => request<FaceInfo[]>("GET", `api/people/${id}/faces?limit=${limit}`),

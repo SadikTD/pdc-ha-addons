@@ -77,6 +77,7 @@ func main() {
 	go app.clips.Run(ctx)
 	go app.labeler.Run(ctx)
 	go app.faces.Run(ctx)
+	go app.presenceLoop(ctx)
 	go app.drive.Run(ctx)
 	go installCard(env("SENTINEL_HA_CONFIG", "/homeassistant"))
 	go app.measureSizes()

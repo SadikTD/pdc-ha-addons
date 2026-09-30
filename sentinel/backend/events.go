@@ -136,6 +136,38 @@ func (es *EventStore) SetWho(cam, id string, who []Who) {
 	}
 }
 
+// EventKey names one event.
+type EventKey struct{ Cam, ID string }
+
+// SetWhoMany stores who was in many events at once: one pass over the events, and each
+// changed day written once, after the lock is let go (naming someone can change the
+// people in hundreds of events; writing a day's file per event stalled the disk, and
+// everything waiting on this lock, for minutes).
+func (es *EventStore) SetWhoMany(who map[EventKey][]Who) {
+	if len(who) == 0 {
+		return
+	}
+	type dayKey2 struct{ cam, day string }
+	changed := map[dayKey2]bool{}
+	es.mu.Lock()
+	for cam, list := range es.events {
+		for _, e := range list {
+			if w, ok := who[EventKey{cam, e.ID}]; ok && !slices.Equal(e.Who, w) {
+				e.Who = w
+				changed[dayKey2{cam, dayKey(e.Start)}] = true
+			}
+		}
+	}
+	files := map[string][]byte{}
+	for d := range changed {
+		files[filepath.Join(es.root, d.cam, d.day+".json")] = es.dayJSONLocked(d.cam, d.day)
+	}
+	es.mu.Unlock()
+	for p, b := range files {
+		_ = writeFileAtomic(p, b, 0o644)
+	}
+}
+
 // SetFacesDone: the event's faces have been looked at.
 func (es *EventStore) SetFacesDone(cam, id string) {
 	es.mu.Lock()
@@ -304,6 +336,10 @@ func (es *EventStore) SetThumb(cam, id string) {
 
 // persistDay rewrites one day file; caller holds the lock.
 func (es *EventStore) persistDay(cam, day string) {
+	_ = writeFileAtomic(filepath.Join(es.root, cam, day+".json"), es.dayJSONLocked(cam, day), 0o644)
+}
+
+func (es *EventStore) dayJSONLocked(cam, day string) []byte {
 	var list []*Event
 	for _, e := range es.events[cam] {
 		if dayKey(e.Start) == day {
@@ -311,7 +347,7 @@ func (es *EventStore) persistDay(cam, day string) {
 		}
 	}
 	data, _ := json.Marshal(list)
-	_ = writeFileAtomic(filepath.Join(es.root, cam, day+".json"), data, 0o644)
+	return data
 }
 
 func (es *EventStore) List(cams []string, from, to int64, limit int) []Event {

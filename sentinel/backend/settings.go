@@ -81,6 +81,34 @@ type Settings struct {
 	Animals []string `json:"animals"`
 	// Recognise the people you name by their faces (and, the same day, clothes).
 	FaceRecognition bool `json:"face_recognition"`
+	// When the people you named come home and go out.
+	Presence Presence `json:"presence"`
+}
+
+// Presence: a log of when the people you named come home and go out, worked out from
+// where Sentinel recognises them.
+type Presence struct {
+	Enabled bool `json:"enabled"`
+	// Cameras at the way in and out. Going out = last seen on one of these, then not
+	// seen anywhere for AwayMinutes (someone asleep in a room without a camera was last
+	// seen inside, so isn't logged as gone).
+	Entrances   []string `json:"entrances"`
+	AwayMinutes int      `json:"away_minutes"`
+	// Coming home counts from the first sighting "any"where, or only on an "entrance".
+	ArriveOn string `json:"arrive_on"`
+	// Who is logged; empty = everyone named (not "Unknown person N").
+	People []string `json:"people"`
+	// Also count sightings recognised by clothing (the same day), not only by face.
+	Clothing bool `json:"clothing"`
+	// Notifications on the phones with the app.
+	Notify       bool     `json:"notify"`
+	NotifyArrive bool     `json:"notify_arrive"`
+	NotifyLeave  bool     `json:"notify_leave"`
+	NotifyPeople []string `json:"notify_people"` // empty = everyone logged
+	// "HH:MM-HH:MM": no notifications then ("" = always); the log still records.
+	Quiet string `json:"quiet"`
+	// A home/away tracker per person in Home Assistant.
+	HomeAssistant bool `json:"home_assistant"`
 }
 
 type DailySummary struct {
@@ -158,7 +186,9 @@ func defaultSettings() Settings {
 		},
 		Drive:        DriveBackup{Alerts: true, MotionCameras: []string{}, QuotaGB: 10, RetentionDays: 90},
 		DailySummary: DailySummary{Enabled: true, Time: "08:00"},
-		WhatsApp:     WhatsApp{MorningReport: true},
+		Presence: Presence{Entrances: []string{}, AwayMinutes: 45, ArriveOn: "any", People: []string{}, Clothing: true,
+			Notify: true, NotifyArrive: true, NotifyLeave: true, NotifyPeople: []string{}, HomeAssistant: true},
+		WhatsApp: WhatsApp{MorningReport: true},
 		// On: nothing is recognised until the user names someone.
 		FaceRecognition: true,
 	}
@@ -226,6 +256,23 @@ func (s *Settings) normalize() error {
 	s.NotifyService = strings.TrimSpace(s.NotifyService)
 	if !timeRe.MatchString(s.DailySummary.Time) {
 		s.DailySummary.Time = "08:00"
+	}
+	pr := &s.Presence
+	pr.AwayMinutes = min(max(pr.AwayMinutes, 5), 24*60)
+	if pr.ArriveOn != "entrance" {
+		pr.ArriveOn = "any"
+	}
+	for _, l := range []*[]string{&pr.Entrances, &pr.People, &pr.NotifyPeople} {
+		if *l == nil {
+			*l = []string{}
+		}
+	}
+	pr.Quiet = strings.ReplaceAll(pr.Quiet, " ", "")
+	if pr.Quiet != "" && !windowRe.MatchString(pr.Quiet) {
+		return fmt.Errorf("quiet hours for comings and goings must look like 23:00-06:00")
+	}
+	if pr.Enabled && len(pr.Entrances) == 0 {
+		return fmt.Errorf("choose at least one entrance camera for comings and goings")
 	}
 	seen := map[string]bool{}
 	for i := range s.Cameras {

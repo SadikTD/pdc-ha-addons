@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Eye, EyeOff, Expand, HelpCircle, Loader2, Pencil, ScanFace, Sparkles, Trash2, UserRound, UserX, Users, X } from "lucide-react";
+import { ArrowLeft, Check, DoorOpen, CheckCheck, ChevronDown, Eye, EyeOff, Expand, HelpCircle, Loader2, Pencil, ScanFace, Sparkles, Trash2, UserRound, UserX, Users, X } from "lucide-react";
 import { Button, Empty, PageHeader } from "../components/ui";
 import { FaceViewer, type ViewerAction } from "../components/FaceViewer";
 import { NamePicker, type Pick } from "../components/NamePicker";
+import { ComingsAndGoings } from "../components/Presence";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { api, faceURL, type FaceGroup, type FaceInfo, type FaceStatus, type PersonInfo, type SentinelEvent } from "../lib/api";
@@ -97,6 +98,7 @@ function PeopleList() {
             [
               ["name", "To name", toName, ScanFace],
               ["known", "Known people", data?.people.length ?? 0, Users],
+              ["presence", "Comings & goings", null, DoorOpen],
             ] as const
           ).map(([k, label, n, Icon]) => (
             <button
@@ -105,7 +107,7 @@ function PeopleList() {
               className={clsx("flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition", tab === k ? "bg-white/10 text-white" : "text-slate-400 hover:text-white")}
             >
               <Icon className="size-4" /> {label}
-              <span className={clsx("rounded-full px-1.5 text-xs tabular-nums", tab === k ? "bg-violet-500 text-white" : "bg-white/10 text-slate-400")}>{data ? n : "…"}</span>
+              {n !== null && <span className={clsx("rounded-full px-1.5 text-xs tabular-nums", tab === k ? "bg-violet-500 text-white" : "bg-white/10 text-slate-400")}>{data ? n : "…"}</span>}
             </button>
           ))}
         </div>
@@ -126,6 +128,8 @@ function PeopleList() {
             <div key={i} className="skeleton aspect-square rounded-2xl" />
           ))}
         </div>
+      ) : tab === "presence" ? (
+        <ComingsAndGoings people={data.people} />
       ) : tab === "known" ? (
         <Known people={data.people} onName={() => setParams({}, { replace: true })} />
       ) : (

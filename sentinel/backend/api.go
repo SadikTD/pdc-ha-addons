@@ -334,6 +334,24 @@ func (a *App) Routes(www string) http.Handler {
 		w.Header().Set("Cache-Control", "private, max-age=86400")
 		http.ServeFile(w, r, a.faces.imgPath(id))
 	})
+	// Comings and goings of the people named (from, to: unix ms; default the last 3 days).
+	mux.HandleFunc("GET /api/presence", func(w http.ResponseWriter, r *http.Request) {
+		now := time.Now()
+		to := msParam(r, "to", now)
+		from := msParam(r, "from", to.Add(-3*24*time.Hour))
+		if to.Sub(from) > 31*24*time.Hour {
+			from = to.Add(-31 * 24 * time.Hour)
+		}
+		pr := a.settings.Get().Presence
+		entries, status := a.presence(pr, from.UnixMilli(), to.UnixMilli())
+		entries = slices.DeleteFunc(entries, func(e PresenceEntry) bool { return !camAllowed(r, e.Cam) })
+		for i := range status {
+			if status[i].LastCam != "" && !camAllowed(r, status[i].LastCam) {
+				status[i].LastCam = ""
+			}
+		}
+		writeJSON(w, 200, map[string]any{"enabled": pr.Enabled, "entries": entries, "now": status})
+	})
 	mux.HandleFunc("GET /api/summary", a.handleSummary)
 	mux.HandleFunc("GET /api/preview/{cam}/{ts}", a.handlePreview)
 	mux.HandleFunc("GET /api/cameras/{id}/latest.jpg", func(w http.ResponseWriter, r *http.Request) {

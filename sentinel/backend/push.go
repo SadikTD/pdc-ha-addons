@@ -359,9 +359,12 @@ type PushPrefs struct {
 	Motion []string `json:"motion"` // any motion on these cameras
 	// The daily summary (nil = on, for phones set up before it existed).
 	Summary *bool `json:"summary,omitempty"`
+	// Comings and goings of the people named (nil = on).
+	Presence *bool `json:"presence,omitempty"`
 }
 
-func (p PushPrefs) WantsSummary() bool { return p.Summary == nil || *p.Summary }
+func (p PushPrefs) WantsSummary() bool  { return p.Summary == nil || *p.Summary }
+func (p PushPrefs) WantsPresence() bool { return p.Presence == nil || *p.Presence }
 
 func defaultPushPrefs() PushPrefs { return PushPrefs{Alerts: true, Status: true} }
 
@@ -435,6 +438,14 @@ func (p *Push) Summary(date string, textFor func(allowed func(string) bool) stri
 				func(_ PushPrefs, s *AppSession) bool { return s.ID == sid })
 		}
 	}()
+}
+
+// Presence: someone named came home or went out.
+func (p *Push) Presence(e PresenceEntry, camName string) {
+	title, body := presenceText(e, camName)
+	go p.send(e.Cam, map[string]string{"type": "presence", "kind": e.Kind, "person": e.Person, "name": e.Name, "camera": e.Cam,
+		"camera_name": camName, "event": e.Event, "t": fmt.Sprint(e.T), "title": title, "text": body},
+		func(pr PushPrefs, _ *AppSession) bool { return pr.WantsPresence() })
 }
 
 // CameraState: a camera stopped or resumed recording.

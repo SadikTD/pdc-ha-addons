@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -108,10 +109,12 @@ type Faces struct {
 	root string
 	wake chan struct{}
 
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	people []Person
-	seen   map[string]*Seen // id -> sighting
-	dirty  map[string]bool  // days to save
+	seen   map[string]*Seen   // id -> sighting
+	dirty  map[string]bool    // days to save
+	whoQ   map[EventKey][]Who // who was in events, to store on them
+	flushC chan struct{}
 	status FaceStatus
 }
 
@@ -124,7 +127,7 @@ type FaceStatus struct {
 }
 
 func newFaces(app *App) *Faces {
-	f := &Faces{app: app, root: filepath.Join(app.media, "faces"), wake: make(chan struct{}, 1), seen: map[string]*Seen{}, dirty: map[string]bool{}}
+	f := &Faces{app: app, root: filepath.Join(app.media, "faces"), wake: make(chan struct{}, 1), seen: map[string]*Seen{}, dirty: map[string]bool{}, whoQ: map[EventKey][]Who{}, flushC: make(chan struct{}, 1)}
 	_ = os.MkdirAll(filepath.Join(f.root, "img"), 0o755)
 	_ = os.MkdirAll(filepath.Join(f.root, "seen"), 0o755)
 	if b, err := os.ReadFile(filepath.Join(f.root, "people.json")); err == nil {
@@ -140,6 +143,7 @@ func newFaces(app *App) *Faces {
 			}
 		}
 	}
+	go f.writer()
 	return f
 }
 
@@ -161,29 +165,59 @@ func (f *Faces) savePeopleLocked() {
 	_ = writeFileAtomic(filepath.Join(f.root, "people.json"), b, 0o644)
 }
 
-// saveLocked writes the days that changed.
+// saveLocked asks for what changed (sightings, who was in events) to be written. The
+// writing happens outside the lock: with it held, every page and picture of People
+// waited on the disk, and naming a few people in a row stalled everything.
 func (f *Faces) saveLocked() {
-	if len(f.dirty) == 0 {
-		return
+	select {
+	case f.flushC <- struct{}{}:
+	default:
 	}
-	byDay := map[string][]*Seen{}
-	for _, s := range f.seen {
-		if d := dayOf(s.T); f.dirty[d] {
-			byDay[d] = append(byDay[d], s)
+}
+
+// writer writes changes shortly after they happen; a burst of them (naming several
+// people in a row) is written once.
+func (f *Faces) writer() {
+	for range f.flushC {
+		time.Sleep(400 * time.Millisecond)
+		f.flush()
+	}
+}
+
+// flush writes the changed days' sightings and stores who was in the events that changed.
+func (f *Faces) flush() {
+	f.mu.Lock()
+	who := f.whoQ
+	f.whoQ = map[EventKey][]Who{}
+	files := map[string][]byte{} // path -> contents (nil: remove)
+	if len(f.dirty) > 0 {
+		byDay := map[string][]*Seen{}
+		for _, s := range f.seen {
+			if d := dayOf(s.T); f.dirty[d] {
+				byDay[d] = append(byDay[d], s)
+			}
 		}
+		for d := range f.dirty {
+			p := filepath.Join(f.root, "seen", d+".json")
+			list := byDay[d]
+			if len(list) == 0 {
+				files[p] = nil
+				continue
+			}
+			sort.Slice(list, func(i, j int) bool { return list[i].T < list[j].T })
+			files[p], _ = json.Marshal(list)
+		}
+		f.dirty = map[string]bool{}
 	}
-	for d := range f.dirty {
-		p := filepath.Join(f.root, "seen", d+".json")
-		list := byDay[d]
-		if len(list) == 0 {
+	f.mu.Unlock()
+	f.app.events.SetWhoMany(who)
+	for p, b := range files {
+		if b == nil {
 			_ = os.Remove(p)
-			continue
+		} else {
+			_ = writeFileAtomic(p, b, 0o644)
 		}
-		sort.Slice(list, func(i, j int) bool { return list[i].T < list[j].T })
-		b, _ := json.Marshal(list)
-		_ = writeFileAtomic(p, b, 0o644)
 	}
-	f.dirty = map[string]bool{}
 }
 
 func (f *Faces) touchLocked(s *Seen) { f.dirty[dayOf(s.T)] = true }
@@ -368,7 +402,6 @@ func (f *Faces) whoLocked(days map[string]bool) {
 			byDay[d] = append(byDay[d], s)
 		}
 	}
-	type key struct{ cam, event string }
 	for _, list := range byDay {
 		named := []*Seen{}
 		for _, s := range list {
@@ -376,9 +409,10 @@ func (f *Faces) whoLocked(days map[string]bool) {
 				named = append(named, s)
 			}
 		}
-		events := map[key][]*Seen{}
+		events := map[EventKey][]*Seen{}
 		for _, s := range list {
-			events[key{s.Cam, s.Event}] = append(events[key{s.Cam, s.Event}], s)
+			k := EventKey{s.Cam, s.Event}
+			events[k] = append(events[k], s)
 		}
 		for k, ss := range events {
 			var who []Who
@@ -407,7 +441,7 @@ func (f *Faces) whoLocked(days map[string]bool) {
 				}
 			}
 			sort.SliceStable(who, func(i, j int) bool { return who[i].By == "face" && who[j].By != "face" })
-			f.app.events.SetWho(k.cam, k.event, who)
+			f.whoQ[k] = who
 		}
 	}
 }
@@ -629,8 +663,8 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 	}
 	f.matchLocked(found)
 	f.whoLocked(map[string]bool{dayOf(e.Start): true})
-	f.saveLocked()
 	f.mu.Unlock()
+	f.flush()
 	a.events.SetFacesDone(e.Cam, e.ID)
 	if cur, ok := a.events.Get(e.Cam, e.ID); ok {
 		for _, w := range cur.Who {
@@ -833,14 +867,14 @@ type LastSeen struct {
 }
 
 func (f *Faces) People() []Person {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return slices.Clone(f.people)
 }
 
 func (f *Faces) PeopleInfo() []PersonInfo {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	out := []PersonInfo{}
 	for _, p := range f.people {
 		pi := PersonInfo{Person: p}
@@ -888,8 +922,8 @@ func (f *Faces) faceInfoLocked(s *Seen) FaceInfo {
 
 // PersonFaces: the faces taken for someone, surest first (to spot wrong ones).
 func (f *Faces) PersonFaces(id string, limit int) []FaceInfo {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	var list []*Seen
 	for _, s := range f.seen {
 		if s.Person == id && s.hasFace() {
@@ -924,8 +958,8 @@ type FaceGroup struct {
 // Unknown groups the faces nobody has named yet: most likely the same person in each
 // group, biggest groups first (the people seen most).
 func (f *Faces) Unknown(limit int) []FaceGroup {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	g, junk := f.galleriesLocked()
 	hidden := f.hiddenLocked()
 	var list []*Seen
@@ -1117,8 +1151,8 @@ func (f *Faces) Stranger(ids []string) (Person, error) {
 
 // Hidden: the faces the user hid or said aren't faces (to bring back).
 func (f *Faces) Hidden() []FaceInfo {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	out := []FaceInfo{}
 	for _, s := range f.seen {
 		if (s.Skip || s.Junk) && s.emb != nil && s.Person == "" {
@@ -1145,6 +1179,7 @@ func (f *Faces) Rename(id, name string) (Person, error) {
 				f.people[i].Unnamed = false
 				f.savePeopleLocked()
 				f.whoLocked(nil)
+				f.saveLocked()
 				go f.announcePeople()
 			}
 			return f.people[i], nil
@@ -1180,14 +1215,15 @@ func (f *Faces) relearnLocked() {
 	// Twice: faces recognised surely in the first pass teach the second.
 	f.matchLocked(all)
 	f.matchLocked(all)
-	f.whoLocked(nil)
+	// Only days where someone's name changed can have different people in their events.
+	f.whoLocked(maps.Clone(f.dirty))
 	f.saveLocked()
 }
 
 // Face returns a sighting (for its picture).
 func (f *Faces) Face(id string) (Seen, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	s, ok := f.seen[id]
 	if !ok {
 		return Seen{}, false
@@ -1197,8 +1233,8 @@ func (f *Faces) Face(id string) (Seen, bool) {
 
 // PersonByName finds people named in a search ("mom", "abir").
 func (f *Faces) PersonByName(name string) (Person, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	for _, p := range f.people {
 		if strings.EqualFold(p.Name, name) {
 			return p, true
@@ -1209,8 +1245,8 @@ func (f *Faces) PersonByName(name string) (Person, bool) {
 
 // EventFaces: the clear faces found in an event, with who they are (if known).
 func (f *Faces) EventFaces(cam, event string) []FaceInfo {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	_, junk := f.galleriesLocked()
 	out := []FaceInfo{}
 	for _, s := range f.seen {
@@ -1235,8 +1271,8 @@ type PersonDay struct {
 
 // Day: who was recognised in the events between from and to, first seen first.
 func (f *Faces) Day(events []Event) []PersonDay {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	by := map[string]*PersonDay{}
 	for _, e := range events {
 		for _, w := range e.Who {

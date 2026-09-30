@@ -79,7 +79,8 @@ type MQTT struct {
 	people    []Person
 	seenAt    map[string]int64 // person -> newest sighting
 	seenLast  map[string]personSeen
-	published map[string]bool // discovery ids we've announced
+	presence  map[string]string // person -> "home"/"not_home" (nil: trackers off)
+	published map[string]bool   // discovery ids we've announced
 	onConnect func()
 	lastErr   string
 }
@@ -194,6 +195,33 @@ func (m *MQTT) SetPeople(people []Person) {
 	m.announce()
 }
 
+// SetPresence: who is home ("home"/"not_home" per person; nil = no trackers).
+func (m *MQTT) SetPresence(states map[string]string) {
+	m.mu.Lock()
+	was := m.presence != nil
+	changed := map[string]string{}
+	for p, st := range states {
+		if m.presence[p] != st {
+			changed[p] = st
+		}
+	}
+	if states == nil {
+		m.presence = nil
+	} else {
+		if m.presence == nil {
+			m.presence = map[string]string{}
+		}
+		maps.Copy(m.presence, states)
+	}
+	m.mu.Unlock()
+	if was != (states != nil) {
+		m.announce()
+	}
+	for p, st := range changed {
+		m.publish("sentinel/people/"+p+"/presence", true, st)
+	}
+}
+
 // PersonSeen: someone was recognised (by "face" or "clothing") on a camera at t. Only
 // newer sightings are published (older events are looked at in the background too).
 func (m *MQTT) PersonSeen(person, camera, by string, t int64) {
@@ -230,7 +258,7 @@ func (m *MQTT) announce() {
 		return
 	}
 	m.mu.Lock()
-	cams, people := m.cams, m.people
+	cams, people, presence := m.cams, m.people, maps.Clone(m.presence)
 	m.mu.Unlock()
 	want := map[string]bool{}
 	pub := func(component, objectID string, cfg map[string]any) {
@@ -265,6 +293,10 @@ func (m *MQTT) announce() {
 			"json_attributes_topic": "sentinel/people/" + p.ID + "/attributes", "icon": "mdi:account-eye", "device": hub})
 		pub("sensor", "person_"+p.ID+"_at", map[string]any{"name": p.Name + " last seen at", "state_topic": "sentinel/people/" + p.ID + "/at",
 			"device_class": "timestamp", "icon": "mdi:account-clock", "device": hub})
+		if presence != nil {
+			pub("device_tracker", "person_"+p.ID+"_presence", map[string]any{"name": p.Name, "state_topic": "sentinel/people/" + p.ID + "/presence",
+				"payload_home": "home", "payload_not_home": "not_home", "source_type": "router", "icon": "mdi:home-account", "device": hub})
+		}
 	}
 	for _, c := range cams {
 		if !c.Enabled {
@@ -299,6 +331,9 @@ func (m *MQTT) announce() {
 	m.mu.Unlock()
 	for p, v := range last {
 		m.publishSeen(p, v.camera, v.by, v.t)
+	}
+	for p, st := range presence {
+		m.publish("sentinel/people/"+p+"/presence", true, st)
 	}
 }
 
