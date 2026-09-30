@@ -534,6 +534,15 @@ func (f *Faces) Run(ctx context.Context) {
 			continue
 		}
 		e := todo[0]
+		if time.Since(time.UnixMilli(e.End)) > 10*time.Minute && systemBusy() {
+			// Catching up on older events waits while the machine is busy.
+			select {
+			case <-ctx.Done():
+			case <-f.wake:
+			case <-time.After(30 * time.Second):
+			}
+			continue
+		}
 		began := time.Now()
 		if err := f.process(ctx, e); err != nil && ctx.Err() == nil {
 			f.setStatus(func(st *FaceStatus) { st.Error = err.Error() })
@@ -649,7 +658,7 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 			if face, q, emb, thumb := f.face(ctx, full, p.Box, log); emb != nil {
 				s.Face, s.Q, s.emb = &face, q, emb
 				if thumb != nil && !dry {
-					_ = writeFileAtomic(f.imgPath(s.ID), thumb, 0o644)
+					_ = writePicture(f.imgPath(s.ID), thumb)
 				}
 			}
 			found = append(found, s)

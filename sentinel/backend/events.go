@@ -374,11 +374,11 @@ func (es *EventStore) persistDay(cam, day string) {
 	}
 }
 
-// writer writes changed day files about a second after they change (a burst of changes
-// is written once).
+// writer writes changed day files a few seconds after they change (a burst of changes,
+// like an event being checked, is written once).
 func (es *EventStore) writer() {
 	for range es.kick {
-		time.Sleep(time.Second)
+		time.Sleep(5 * time.Second)
 		es.Flush()
 	}
 }

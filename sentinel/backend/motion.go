@@ -131,8 +131,11 @@ func (m *MotionDetector) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		m.heartbeat.Store(time.Now().UnixMilli())
 		url := restreamURL(m.cam.ID)
-		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin"}
+		// One thread each: the substream is small, and eight of these starting a thread
+		// per core would crowd out everything else.
+		args := []string{"-hide_banner", "-loglevel", "error", "-nostdin", "-filter_complex_threads", "1"}
 		args = append(args, inputArgs(url)...)
+		args = append(args, "-threads", "1")
 		// One decode feeds both motion (tiny grey frames on stdout) and timeline previews
 		// (small JPEGs on fd 3).
 		args = append(args, "-i", url, "-an", "-sn",

@@ -64,7 +64,7 @@ func smallPicture(p string) (string, bool) {
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 76}); err != nil {
 		return "", false
 	}
-	if writeFileAtomic(sp, buf.Bytes(), 0o644) != nil {
+	if writePicture(sp, buf.Bytes()) != nil {
 		return "", false
 	}
 	return sp, true

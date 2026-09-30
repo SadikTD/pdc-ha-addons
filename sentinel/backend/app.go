@@ -179,7 +179,7 @@ func (a *App) captureThumb(cam, id string) {
 	}
 	p := a.events.ThumbPath(cam, id)
 	_ = os.MkdirAll(filepath.Dir(p), 0o755)
-	if writeFileAtomic(p, img, 0o644) == nil {
+	if writePicture(p, img) == nil {
 		a.events.SetThumb(cam, id)
 	}
 	a.mqtt.Snapshot(cam, img)
@@ -437,7 +437,12 @@ func (a *App) Healthy() bool {
 // measureSizes adds up what each kind of Sentinel data uses on disk (System page).
 func (a *App) measureSizes() {
 	sizes := map[string]int64{}
-	for _, d := range []string{"recordings", "previews", "events", "activity", "exports"} {
+	// Recordings are already counted in memory: walking tens of thousands of files every
+	// few minutes only keeps the disk busy.
+	for _, cs := range a.store.Stats() {
+		sizes["recordings"] += cs.Bytes
+	}
+	for _, d := range []string{"previews", "events", "activity", "exports"} {
 		_ = filepath.WalkDir(filepath.Join(a.media, d), func(_ string, e os.DirEntry, err error) error {
 			if err == nil && !e.IsDir() {
 				if info, err := e.Info(); err == nil {

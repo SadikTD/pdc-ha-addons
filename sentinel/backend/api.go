@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +9,6 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1010,22 +1008,29 @@ func lowPriority(ctx context.Context) context.Context {
 	return context.WithValue(ctx, lowPriorityKey, true)
 }
 
-// fragmentAt returns the init section plus the fragment of the recording containing t
-// (each fragment starts with a keyframe), and how far into that fragment t is. With
-// exact, the fragment must already contain t (it may not be on disk yet).
-func (a *App) fragmentAt(cam string, t time.Time, exact bool) ([]byte, float64, error) {
+// fragmentRef says where the fragment of the recording containing a moment is (each
+// fragment starts with a keyframe), and how far into it the moment is, without reading
+// it. With exact, the fragment must already contain t (it may not be on disk yet).
+type fragmentRef struct {
+	path    string
+	initLen int64
+	frag    Fragment
+	into    float64 // seconds from the fragment's start
+}
+
+func (a *App) fragmentRefAt(cam string, t time.Time, exact bool) (fragmentRef, error) {
 	segs := a.store.Range(cam, t, t.Add(time.Millisecond))
 	if len(segs) == 0 {
-		return nil, 0, errNoFrame
+		return fragmentRef{}, errNoFrame
 	}
 	s := segs[0]
 	p := a.store.Path(cam, s.ID)
 	if p == "" {
-		return nil, 0, errNoFrame
+		return fragmentRef{}, errNoFrame
 	}
 	idx, err := a.store.Index(&s)
 	if err != nil || len(idx.Fragments) == 0 {
-		return nil, 0, errNoFrame
+		return fragmentRef{}, errNoFrame
 	}
 	off := t.Sub(s.Start()).Seconds()
 	frag := idx.Fragments[0]
@@ -1035,55 +1040,26 @@ func (a *App) fragmentAt(cam string, t time.Time, exact bool) ([]byte, float64, 
 		}
 	}
 	if exact && off > frag.Start+frag.Duration {
-		return nil, 0, errNoFrame
+		return fragmentRef{}, errNoFrame
 	}
-	file, err := os.Open(p)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer file.Close()
-	data := make([]byte, idx.InitLength+frag.Length)
-	if _, err := file.ReadAt(data[:idx.InitLength], 0); err != nil {
-		return nil, 0, err
-	}
-	if _, err := file.ReadAt(data[idx.InitLength:], frag.Offset); err != nil {
-		return nil, 0, err
-	}
-	return data, max(0, off-frag.Start), nil
+	return fragmentRef{path: p, initLen: idx.InitLength, frag: frag, into: max(0, off-frag.Start)}, nil
 }
 
-func (a *App) runDecode(ctx context.Context, cam string, t time.Time, exact bool, out []string) ([]byte, error) {
-	data, into, err := a.fragmentAt(cam, t, exact)
+// read returns the init section plus the fragment.
+func (r fragmentRef) read() ([]byte, error) {
+	file, err := os.Open(r.path)
 	if err != nil {
 		return nil, err
 	}
-	sem := extractSem
-	if ctx.Value(lowPriorityKey) != nil {
-		sem = backgroundSem
+	defer file.Close()
+	data := make([]byte, r.initLen+r.frag.Length)
+	if _, err := file.ReadAt(data[:r.initLen], 0); err != nil {
+		return nil, err
 	}
-	select {
-	case sem <- struct{}{}:
-		defer func() { <-sem }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if _, err := file.ReadAt(data[r.initLen:], r.frag.Offset); err != nil {
+		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	args := []string{"-v", "error", "-i", "pipe:0"}
-	if exact && into > 0 {
-		args = append(args, "-ss", fmt.Sprintf("%.3f", into))
-	}
-	args = append(append(args, "-frames:v", "1"), out...)
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	if ctx.Value(lowPriorityKey) != nil { // background work: recording and viewers first
-		cmd = exec.CommandContext(ctx, "nice", append([]string{"-n", "10", "ffmpeg"}, args...)...)
-	}
-	cmd.Stdin = bytes.NewReader(data)
-	b, err := cmd.Output()
-	if err != nil || len(b) < 100 {
-		return nil, fmt.Errorf("could not decode a frame: %v", err)
-	}
-	return b, nil
+	return data, nil
 }
 
 // decodeFrame decodes the frame at t (exact) or the fragment's keyframe as a JPEG.

@@ -479,6 +479,20 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
+// writePicture writes a picture that can be made again (thumbnails, event pictures,
+// face crops) whole or not at all, like writeFileAtomic but without forcing it to the
+// disk at once: each forced write stalls the disk Home Assistant's database shares.
+func writePicture(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 var credRe = regexp.MustCompile(`(?i)([a-z]+://)[^/@\s]*@`)
 
 // redact hides stream credentials in anything that might be logged or shown.

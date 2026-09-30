@@ -136,6 +136,15 @@ func (l *Labeler) Run(ctx context.Context) {
 		}
 		idle := len(l.live) == 0 && l.inFlight == 0 && !backfilling
 		l.mu.Unlock()
+		if idle && systemBusy() {
+			// The machine is busy: older events can wait (live ones wake us).
+			select {
+			case <-l.wake:
+			case <-ctx.Done():
+			case <-time.After(30 * time.Second):
+			}
+			continue
+		}
 		if idle {
 			// Nothing happening: catch up on older events, newest first.
 			if old := l.app.events.Unscanned(time.Now().Add(-backfillWindow).UnixMilli(), 1); len(old) > 0 {
@@ -794,7 +803,7 @@ func overlapOfSmaller(a, b Rect) float64 {
 // to the disk a few seconds late.
 func (l *Labeler) waitFootage(ctx context.Context, cam string, t time.Time) bool {
 	for deadline := time.Now().Add(25 * time.Second); ; {
-		if _, _, err := l.app.fragmentAt(cam, t, true); err == nil {
+		if _, err := l.app.fragmentRefAt(cam, t, true); err == nil {
 			return true
 		}
 		if time.Now().After(deadline) || !sleepCtx(ctx, 700*time.Millisecond) {
@@ -812,7 +821,7 @@ func (l *Labeler) saveSnap(ctx context.Context, e Event, t time.Time) bool {
 	}
 	p := a.events.SnapPath(e.Cam, e.ID)
 	_ = os.MkdirAll(filepath.Dir(p), 0o755)
-	return writeFileAtomic(p, img, 0o644) == nil
+	return writePicture(p, img) == nil
 }
 
 func (l *Labeler) fail(cam string, err error) {

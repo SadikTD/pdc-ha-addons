@@ -63,8 +63,8 @@ func (d *Detector) startLocked() error {
 	if time.Now().Before(d.retryAt) {
 		return errors.New("object detection is unavailable (it failed to start recently)")
 	}
-	// Low priority: recording and live view always come first.
-	cmd := exec.Command("nice", "-n", "10", "python3", d.script)
+	// Lowest priority: Home Assistant, recording and live view always come first.
+	cmd := exec.Command("nice", "-n", "19", "python3", d.script)
 	cmd.Env = append(os.Environ(), "SENTINEL_DETECT_MODEL="+d.model)
 	cmd.Stderr = os.Stderr
 	in, err := cmd.StdinPipe()
