@@ -259,7 +259,7 @@ fun timeToPos(frags: List<Frag>, t: Long): Double? {
  * Recordings: Sentinel's HLS playlist over a window of footage around the chosen
  * moment. Gaps are skipped; the wall-clock time comes from the playlist.
  */
-class RecordingPlayer(context: Context, private val http: OkHttpClient, private val urlFor: (from: Long, to: Long) -> String) : BasePlayer(context) {
+class RecordingPlayer(private val context: Context, private val http: OkHttpClient, private val urlFor: (from: Long, to: Long) -> String) : BasePlayer(context) {
     override val exo: ExoPlayer = ExoPlayer.Builder(context, renderers(context))
         .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(4000, 30_000, 400, 1200).build())
         .setSeekBackIncrementMs(10_000)
@@ -274,6 +274,15 @@ class RecordingPlayer(context: Context, private val http: OkHttpClient, private 
     private var winFrom = 0L
     private var winTo = 0L
     private var loadSeq = 0
+    private var retries = 0
+
+    init {
+        exo.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) retries = 0
+            }
+        })
+    }
 
     /** Called when playback reaches the newest footage (caller switches to live). */
     var onCaughtUp: () -> Unit = {}
@@ -305,9 +314,7 @@ class RecordingPlayer(context: Context, private val http: OkHttpClient, private 
         val seq = ++loadSeq
         _ui.value = _ui.value.copy(loading = true, error = null)
         // A window Sentinel answers at once; playing past its end loads the next one.
-        val now = nowProvider()
-        val from = t - 60_000
-        val to = minOf(now + 60_000, t + 30 * 60_000)
+        val (from, to) = VodCache.window(t, nowProvider())
         val url = urlFor(from, to)
         val body = withContext(Dispatchers.IO) {
             runCatching { http.newCall(Request.Builder().url(url).build()).execute().use { it.body?.bytes() } }.getOrNull()
@@ -322,8 +329,9 @@ class RecordingPlayer(context: Context, private val http: OkHttpClient, private 
         frags = list
         winFrom = from
         winTo = to
-        // The player gets the playlist just read instead of asking for it again.
-        val source = HlsMediaSource.Factory(PreloadedDataSource.Factory(Uri.parse(url), body, OkHttpDataSource.Factory(http)))
+        // The player gets the playlist just read instead of asking for it again; the
+        // footage itself comes from the phone's cache when it was fetched before.
+        val source = HlsMediaSource.Factory(PreloadedDataSource.Factory(Uri.parse(url), body, VodCache.factory(context, http)))
             .setAllowChunklessPreparation(true)
             .createMediaSource(MediaItem.fromUri(url))
         exo.setMediaSource(source, (pos * 1000).toLong())
@@ -331,6 +339,21 @@ class RecordingPlayer(context: Context, private val http: OkHttpClient, private 
         exo.prepare()
         exo.playWhenReady = true
         return true
+    }
+
+    // A file removed by retention after the playlist was made, or the connection dropped:
+    // start over from where we are with a fresh playlist (which skips what is gone),
+    // waiting a little longer each time it keeps failing.
+    override fun onError(e: PlaybackException) {
+        val at = time.takeIf { it > 0 } ?: return
+        val seq = loadSeq
+        retries++
+        val gone = e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS || e.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+        if (retries <= 2) _ui.value = _ui.value.copy(loading = true, error = null)
+        scope.launch {
+            delay(if (gone && retries <= 2) 200L else minOf(10_000L, 1500L * retries))
+            if (seq == loadSeq) load(at)
+        }
     }
 
     override fun onEnded() {

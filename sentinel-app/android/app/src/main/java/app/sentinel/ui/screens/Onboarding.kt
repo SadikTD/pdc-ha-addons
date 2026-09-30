@@ -24,6 +24,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -90,6 +93,7 @@ import app.sentinel.ui.components.Gap
 import app.sentinel.ui.components.GlassCard
 import app.sentinel.ui.components.GradientButton
 import app.sentinel.ui.components.Logo
+import app.sentinel.ui.components.MadeByCredit
 import app.sentinel.ui.components.SubtleButton
 import app.sentinel.ui.components.glass
 import app.sentinel.ui.theme.C
@@ -120,6 +124,22 @@ fun RadarLogo(active: Boolean, modifier: Modifier = Modifier) {
             }
         }
         Logo(Modifier.size(84.dp).graphicsLayer { scaleX = 0.96f + 0.04f * glow; scaleY = 0.96f + 0.04f * glow })
+    }
+}
+
+/** The welcome screens: content scrolls when it must; the credit sits at the bottom of the screen. */
+@Composable
+private fun WelcomeFrame(content: @Composable ColumnScope.() -> Unit) {
+    Backdrop {
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+            val h = maxHeight
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)) {
+                Column(Modifier.fillMaxWidth().heightIn(min = h), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, content = content)
+                    MadeByCredit(Modifier.padding(top = 16.dp, bottom = 10.dp))
+                }
+            }
+        }
     }
 }
 
@@ -165,97 +185,91 @@ fun ConnectScreen(state: AppState, deepLinkId: String?) {
         if (deepLinkId != null) choose(deepLinkId) else search()
     }
 
-    Backdrop {
-        Column(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Gap(24.dp)
-            RadarLogo(active = searching)
-            Text("Sentinel", style = MaterialTheme.typography.displaySmall.copy(brush = C.textAccent))
-            Gap(6.dp)
-            Text("Your cameras, live and recorded, anywhere.", color = C.TextDim, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-            Gap(32.dp)
+    WelcomeFrame {
+        Gap(24.dp)
+        RadarLogo(active = searching)
+        Text("Sentinel", style = MaterialTheme.typography.displaySmall.copy(brush = C.textAccent))
+        Gap(6.dp)
+        Text("Your cameras, live and recorded, anywhere.", color = C.TextDim, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+        Gap(32.dp)
 
-            AnimatedContent(searching to found.isEmpty(), transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(200)) }, label = "found") { (busy, none) ->
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                    when {
-                        busy -> Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = C.Cyan)
-                            Text("  Looking for Sentinel on this Wi-Fi…", color = C.TextDim)
-                        }
-                        none -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clip(CircleShape).clickable { search() }.padding(8.dp)) {
-                            Icon(Icons.Rounded.Wifi, null, tint = C.TextFaint, modifier = Modifier.size(18.dp))
-                            Text("  Not found on this network · ", color = C.TextFaint)
-                            Text("Search again", color = C.VioletLight, fontWeight = FontWeight.SemiBold)
-                        }
-                        else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("FOUND ON THIS WI-FI", color = C.TextDim, style = MaterialTheme.typography.labelSmall)
-                            found.forEach { f ->
-                                GlassCard(Modifier.fillMaxWidth(), onClick = { choose(f.id) }) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(C.accent), contentAlignment = Alignment.Center) {
-                                            Icon(Icons.Rounded.Dns, null, tint = Color.White)
-                                        }
-                                        Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
-                                            Text(f.name.ifBlank { "Sentinel" }, style = MaterialTheme.typography.titleMedium)
-                                            Text("${Engine.formatId(f.id)} · ${f.addr.substringBefore(':')}", color = C.TextDim, fontSize = 13.sp)
-                                        }
-                                        Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, tint = C.VioletLight)
+        AnimatedContent(searching to found.isEmpty(), transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(200)) }, label = "found") { (busy, none) ->
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                when {
+                    busy -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = C.Cyan)
+                        Text("  Looking for Sentinel on this Wi-Fi…", color = C.TextDim)
+                    }
+                    none -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clip(CircleShape).clickable { search() }.padding(8.dp)) {
+                        Icon(Icons.Rounded.Wifi, null, tint = C.TextFaint, modifier = Modifier.size(18.dp))
+                        Text("  Not found on this network · ", color = C.TextFaint)
+                        Text("Search again", color = C.VioletLight, fontWeight = FontWeight.SemiBold)
+                    }
+                    else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("FOUND ON THIS WI-FI", color = C.TextDim, style = MaterialTheme.typography.labelSmall)
+                        found.forEach { f ->
+                            GlassCard(Modifier.fillMaxWidth(), onClick = { choose(f.id) }) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(C.accent), contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Rounded.Dns, null, tint = Color.White)
                                     }
+                                    Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+                                        Text(f.name.ifBlank { "Sentinel" }, style = MaterialTheme.typography.titleMedium)
+                                        Text("${Engine.formatId(f.id)} · ${f.addr.substringBefore(':')}", color = C.TextDim, fontSize = 13.sp)
+                                    }
+                                    Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, tint = C.VioletLight)
                                 }
                             }
                         }
                     }
                 }
             }
-
-            Gap(28.dp)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f).size(1.dp).background(C.GlassBorder))
-                Text("  or  ", color = C.TextFaint, fontSize = 13.sp)
-                Box(Modifier.weight(1f).size(1.dp).background(C.GlassBorder))
-            }
-            Gap(20.dp)
-
-            OutlinedTextField(
-                value = typed,
-                onValueChange = { typed = it.uppercase().take(16); error = null },
-                label = { Text("Sentinel ID") },
-                placeholder = { Text("XXXX-XXXX-XXXX", color = C.TextFaint) },
-                leadingIcon = { Icon(Icons.Rounded.Key, null) },
-                singleLine = true,
-                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 18.sp, letterSpacing = 1.5.sp, color = C.Text),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false, imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(onGo = { choose(typed) }),
-                shape = RoundedCornerShape(16.dp),
-                colors = fieldColors(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            AnimatedVisibility(error != null, enter = expandVertically() + fadeIn()) {
-                Text(error ?: "", color = C.RoseLight, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
-            }
-            Gap(14.dp)
-            GradientButton("Continue", Modifier.fillMaxWidth(), enabled = typed.isNotBlank(), icon = Icons.AutoMirrored.Rounded.ArrowForward) { choose(typed) }
-            Gap(12.dp)
-            SubtleButton("Scan QR code", Modifier.fillMaxWidth(), icon = Icons.Rounded.QrCodeScanner) {
-                GmsBarcodeScanning.getClient(context).startScan()
-                    .addOnSuccessListener { code ->
-                        val raw = code.rawValue ?: return@addOnSuccessListener
-                        val id = if (raw.startsWith("sentinel://")) android.net.Uri.parse(raw).getQueryParameter("id") ?: "" else raw
-                        choose(id)
-                    }
-                    .addOnFailureListener { error = "The QR scanner isn't available on this phone. Type the ID instead." }
-            }
-            Gap(20.dp)
-            Text(
-                "The QR code and ID are in Sentinel → Settings → Sentinel app.",
-                color = C.TextFaint,
-                fontSize = 13.sp,
-                textAlign = TextAlign.Center,
-            )
-            Gap(32.dp)
         }
+
+        Gap(28.dp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f).size(1.dp).background(C.GlassBorder))
+            Text("  or  ", color = C.TextFaint, fontSize = 13.sp)
+            Box(Modifier.weight(1f).size(1.dp).background(C.GlassBorder))
+        }
+        Gap(20.dp)
+
+        OutlinedTextField(
+            value = typed,
+            onValueChange = { typed = it.uppercase().take(16); error = null },
+            label = { Text("Sentinel ID") },
+            placeholder = { Text("XXXX-XXXX-XXXX", color = C.TextFaint) },
+            leadingIcon = { Icon(Icons.Rounded.Key, null) },
+            singleLine = true,
+            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 18.sp, letterSpacing = 1.5.sp, color = C.Text),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false, imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = { choose(typed) }),
+            shape = RoundedCornerShape(16.dp),
+            colors = fieldColors(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        AnimatedVisibility(error != null, enter = expandVertically() + fadeIn()) {
+            Text(error ?: "", color = C.RoseLight, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+        }
+        Gap(14.dp)
+        GradientButton("Continue", Modifier.fillMaxWidth(), enabled = typed.isNotBlank(), icon = Icons.AutoMirrored.Rounded.ArrowForward) { choose(typed) }
+        Gap(12.dp)
+        SubtleButton("Scan QR code", Modifier.fillMaxWidth(), icon = Icons.Rounded.QrCodeScanner) {
+            GmsBarcodeScanning.getClient(context).startScan()
+                .addOnSuccessListener { code ->
+                    val raw = code.rawValue ?: return@addOnSuccessListener
+                    val id = if (raw.startsWith("sentinel://")) android.net.Uri.parse(raw).getQueryParameter("id") ?: "" else raw
+                    choose(id)
+                }
+                .addOnFailureListener { error = "The QR scanner isn't available on this phone. Type the ID instead." }
+        }
+        Gap(20.dp)
+        Text(
+            "The QR code and ID are in Sentinel → Settings → Sentinel app.",
+            color = C.TextFaint,
+            fontSize = 13.sp,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -284,81 +298,75 @@ fun LoginScreen(state: AppState, auth: Auth.LoggedOut) {
         }
     }
 
-    Backdrop {
-        Column(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+    WelcomeFrame {
+        Gap(20.dp)
+        RadarLogo(active = conn.state == "connecting", modifier = Modifier.size(116.dp))
+        Text("Welcome back", style = MaterialTheme.typography.headlineMedium)
+        Gap(10.dp)
+        Row(
+            Modifier.glass(CircleShape).clickable { state.forgetServer() }.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Gap(40.dp)
-            RadarLogo(active = conn.state == "connecting", modifier = Modifier.size(170.dp))
-            Text("Welcome back", style = MaterialTheme.typography.headlineMedium)
-            Gap(10.dp)
-            Row(
-                Modifier.glass(CircleShape).clickable { state.forgetServer() }.padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.Dns, null, tint = C.TextDim, modifier = Modifier.size(16.dp))
-                Text("  ${Engine.formatId(auth.serverId)}", fontFamily = FontFamily.Monospace, color = C.Text, fontSize = 14.sp)
-                Text("   Change", color = C.VioletLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            }
-            Gap(8.dp)
-            AnimatedContent(conn.state, label = "conn") { s ->
-                Text(
-                    when (s) {
-                        "connected" -> if (conn.path == "home") "Connected on your home network" else "Connected over the internet"
-                        "connecting" -> "Connecting to Sentinel…"
-                        "offline" -> conn.error ?: "Can't reach Sentinel"
-                        else -> " "
-                    },
-                    color = when (s) { "connected" -> C.Emerald; "offline" -> C.RoseLight; else -> C.TextDim },
-                    fontSize = 13.sp,
-                    textAlign = TextAlign.Center,
-                )
-            }
-            Gap(28.dp)
-            OutlinedTextField(
-                value = username,
-                onValueChange = { username = it.lowercase().trim(); error = null },
-                label = { Text("Username") },
-                leadingIcon = { Icon(Icons.Rounded.Person, null) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
-                shape = RoundedCornerShape(16.dp),
-                colors = fieldColors(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Gap(12.dp)
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it; error = null },
-                label = { Text("Password") },
-                leadingIcon = { Icon(Icons.Rounded.Lock, null) },
-                trailingIcon = {
-                    IconButton({ show = !show }) { Icon(if (show) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, "Show password", tint = C.TextDim) }
-                },
-                singleLine = true,
-                visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { submit() }),
-                shape = RoundedCornerShape(16.dp),
-                colors = fieldColors(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            AnimatedVisibility(error != null, enter = slideInVertically() + fadeIn(), exit = fadeOut()) {
-                Row(
-                    Modifier.padding(top = 14.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.Rose.copy(alpha = 0.1f))
-                        .border(1.dp, C.Rose.copy(alpha = 0.3f), RoundedCornerShape(14.dp)).padding(12.dp),
-                ) { Text(error ?: "", color = C.RoseLight, fontSize = 14.sp) }
-            }
-            Gap(20.dp)
-            GradientButton("Log in", Modifier.fillMaxWidth(), enabled = username.isNotBlank() && password.isNotEmpty(), loading = busy) { submit() }
-            Gap(14.dp)
-            if (conn.state == "offline") {
-                SubtleButton("Try connecting again", icon = Icons.Rounded.Refresh) { scope.launch { state.engine.reconnect(); state.engine.connect() } }
-            }
-            Gap(24.dp)
-            Text("Ask the person who runs Sentinel to add you under Settings → Sentinel app.", color = C.TextFaint, fontSize = 13.sp, textAlign = TextAlign.Center)
-            Gap(32.dp)
+            Icon(Icons.Rounded.Dns, null, tint = C.TextDim, modifier = Modifier.size(16.dp))
+            Text("  ${Engine.formatId(auth.serverId)}", fontFamily = FontFamily.Monospace, color = C.Text, fontSize = 14.sp)
+            Text("   Change", color = C.VioletLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         }
+        Gap(8.dp)
+        AnimatedContent(conn.state, label = "conn") { s ->
+            Text(
+                when (s) {
+                    "connected" -> if (conn.path == "home") "Connected on your home network" else "Connected over the internet"
+                    "connecting" -> "Connecting to Sentinel…"
+                    "offline" -> conn.error ?: "Can't reach Sentinel"
+                    else -> " "
+                },
+                color = when (s) { "connected" -> C.Emerald; "offline" -> C.RoseLight; else -> C.TextDim },
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Gap(20.dp)
+        OutlinedTextField(
+            value = username,
+            onValueChange = { username = it.lowercase().trim(); error = null },
+            label = { Text("Username") },
+            leadingIcon = { Icon(Icons.Rounded.Person, null) },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+            shape = RoundedCornerShape(16.dp),
+            colors = fieldColors(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Gap(12.dp)
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it; error = null },
+            label = { Text("Password") },
+            leadingIcon = { Icon(Icons.Rounded.Lock, null) },
+            trailingIcon = {
+                IconButton({ show = !show }) { Icon(if (show) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, "Show password", tint = C.TextDim) }
+            },
+            singleLine = true,
+            visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { submit() }),
+            shape = RoundedCornerShape(16.dp),
+            colors = fieldColors(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        AnimatedVisibility(error != null, enter = slideInVertically() + fadeIn(), exit = fadeOut()) {
+            Row(
+                Modifier.padding(top = 14.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.Rose.copy(alpha = 0.1f))
+                    .border(1.dp, C.Rose.copy(alpha = 0.3f), RoundedCornerShape(14.dp)).padding(12.dp),
+            ) { Text(error ?: "", color = C.RoseLight, fontSize = 14.sp) }
+        }
+        Gap(20.dp)
+        GradientButton("Log in", Modifier.fillMaxWidth(), enabled = username.isNotBlank() && password.isNotEmpty(), loading = busy) { submit() }
+        Gap(14.dp)
+        if (conn.state == "offline") {
+            SubtleButton("Try connecting again", icon = Icons.Rounded.Refresh) { scope.launch { state.engine.reconnect(); state.engine.connect() } }
+        }
+        Gap(14.dp)
+        Text("Ask the person who runs Sentinel to add you under Settings → Sentinel app.", color = C.TextFaint, fontSize = 13.sp, textAlign = TextAlign.Center)
     }
 }

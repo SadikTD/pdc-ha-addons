@@ -131,6 +131,7 @@ import app.sentinel.core.fmtTime
 import app.sentinel.core.fmtTimeSec
 import app.sentinel.media.LivePlayer
 import app.sentinel.media.RecordingPlayer
+import app.sentinel.media.VodCache
 import app.sentinel.ui.LocalActivity
 import app.sentinel.ui.components.Backdrop
 import app.sentinel.ui.components.ConnectionPill
@@ -222,8 +223,19 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
         }
         playTime = t
         scope.launch {
-            if (rec.seek(t)) live = false
-            else Toaster.show("No recording at or after ${fmtTime(t)}")
+            if (rec.seek(t)) {
+                live = false
+                return@launch
+            }
+            // Nothing in the next half hour (older footage is kept only around events):
+            // find the next recording, however far.
+            val next = runCatching { api.coverage(cam.id, t, state.serverNow()) }.getOrNull()?.firstOrNull { it.e > t + 1000 }
+            val at = next?.let { maxOf(it.s, t) }
+            if (at != null && at < state.serverNow() - 8_000 && rec.seek(at)) {
+                live = false
+                playTime = at
+                Toaster.show("Nothing recorded at ${fmtTime(t)} — jumped to ${fmtTime(at)}")
+            } else Toaster.show("No recording at or after ${fmtTime(t)}")
         }
     }
 
@@ -302,7 +314,9 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
         while (true) {
             delay(30_000)
             state.awaitVisible()
-            loadRange(if (tl.scrubbing) tl.scrubTime else playTime, tl.span.toLong())
+            // Only the live edge changes; older footage stays as loaded.
+            val c = if (tl.scrubbing) tl.scrubTime else playTime
+            if (c + 2 * tl.span.toLong() > state.serverNow() - MINUTE) loadRange(c, tl.span.toLong())
         }
     }
     // The last day's events for the quick list.
@@ -322,6 +336,20 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
         else -> true
     }
     val jumpName = when (jump) { "person" -> "person"; "animal" -> "animal"; else -> "motion" }
+
+    // While a recording plays, fetch the start of what is likely to be watched next (the
+    // neighbours in the list, the next and previous event here), so moving on is instant.
+    LaunchedEffect(recUi.playing, at, live) {
+        if (live || !recUi.playing) return@LaunchedEffect
+        delay(1500)
+        val ref = playTime
+        val moments = mutableListOf<Pair<Long, (Long, Long) -> String>>()
+        for (d in listOf(1, -1)) list.getOrNull(at + d)?.let { n -> moments += n.t to { f, t -> api.vodUrl(n.c, f, t) } }
+        val sorted = events.filter { ofKind(it) }.sortedBy { it.start }
+        val near = listOfNotNull(sorted.firstOrNull { it.start > ref + 3000 }, sorted.lastOrNull { it.start < ref - 6000 })
+        for (e in near) moments += (e.bestTime - 2000) to { f, t -> api.vodUrl(cam.id, f, t) }
+        VodCache.warm(context, state.engine.http, state.serverNow(), moments)
+    }
 
     // Picture-in-picture and screen-on while watching.
     val aspect = (if (live) (mainUi.videoAspect.takeIf { it > 0 } ?: subUi.videoAspect) else recUi.videoAspect).takeIf { it > 0 } ?: cam.aspect

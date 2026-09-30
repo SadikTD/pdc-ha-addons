@@ -59,6 +59,7 @@ import app.sentinel.core.AppState
 import app.sentinel.core.Auth
 import app.sentinel.core.Engine
 import app.sentinel.core.fmtDuration
+import app.sentinel.ui.components.AboutCard
 import app.sentinel.ui.components.Backdrop
 import app.sentinel.ui.components.ConnectionPill
 import app.sentinel.ui.components.Gap
@@ -128,6 +129,9 @@ fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onS
         if (a.user.admin) MenuItem(Icons.Rounded.Group, "Users", "Who can use the app, and signed-in phones", onUsers)
         MenuItem(Icons.Rounded.Tune, "App settings", "Layout, data saver, app lock, camera order", onSettings)
         MenuItem(Icons.AutoMirrored.Rounded.Logout, "Log out", "Sign this phone out of Sentinel", tint = C.RoseLight) { confirmLogout = true }
+        Gap(20.dp)
+        AboutCard(status?.version, BuildConfig.VERSION_NAME)
+        Gap(24.dp)
     }
     if (confirmLogout) {
         AlertDialog(
