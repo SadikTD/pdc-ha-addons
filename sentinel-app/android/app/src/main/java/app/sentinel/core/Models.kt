@@ -314,6 +314,31 @@ data class PersonInfo(
 data class FaceStatus(val enabled: Boolean = false, val error: String? = null, val backlog: Int = 0, val done: Int = 0, val faces: Int = 0)
 
 @Serializable
+data class PresenceEntry(
+    val person: String,
+    val name: String,
+    val kind: String, // "arrived" or "left"
+    val t: Long,
+    val cam: String,
+    val event: String = "",
+    val by: String = "",
+    @kotlinx.serialization.SerialName("for") val outFor: Long = 0,
+)
+
+@Serializable
+data class PresenceNow(
+    val person: String,
+    val name: String,
+    val state: String, // "home", "away", "unknown"
+    val since: Long = 0,
+    @kotlinx.serialization.SerialName("last_seen") val lastSeen: Long = 0,
+    @kotlinx.serialization.SerialName("last_cam") val lastCam: String = "",
+)
+
+@Serializable
+data class PresenceResponse(val enabled: Boolean = false, val entries: List<PresenceEntry> = emptyList(), val now: List<PresenceNow> = emptyList())
+
+@Serializable
 data class PeopleResponse(val people: List<PersonInfo> = emptyList(), val status: FaceStatus = FaceStatus())
 
 @Serializable

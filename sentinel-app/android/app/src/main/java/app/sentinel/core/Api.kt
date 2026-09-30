@@ -91,6 +91,8 @@ class Api(private val engine: Engine) {
 
     // People (recognised by face; naming is for admins)
     suspend fun people(): PeopleResponse = get("api/people")
+    /** Comings and goings of the people named, between from and to (unix ms). */
+    suspend fun presence(from: Long, to: Long): PresenceResponse = get("api/presence?from=$from&to=$to")
     suspend fun personFaces(id: String, limit: Int = 90): List<FaceInfo> = get("api/people/$id/faces?limit=$limit")
     suspend fun unknownFaces(): List<FaceGroup> = get("api/faces/unknown")
     suspend fun eventFaces(cam: String, id: String): List<FaceInfo> = get("api/faces/event/$cam/${java.net.URLEncoder.encode(id, "UTF-8")}")

@@ -46,8 +46,11 @@ data class PushPrefs(
     val motion: List<String> = emptyList(),
     /** The daily summary (null = on). */
     val summary: Boolean? = null,
+    /** Comings and goings of the people named (null = on). */
+    val presence: Boolean? = null,
 ) {
     val wantsSummary: Boolean get() = summary != false
+    val wantsPresence: Boolean get() = presence != false
 }
 
 /**
@@ -60,6 +63,7 @@ object Push {
     const val CH_STATUS = "status"
     const val CH_MOTION = "motion"
     const val CH_SUMMARY = "summary"
+    const val CH_PRESENCE = "presence"
     private const val PREFS = "push"
 
     fun channels(context: Context) {
@@ -74,6 +78,9 @@ object Push {
         })
         nm.createNotificationChannel(NotificationChannel(CH_MOTION, "Motion", NotificationManager.IMPORTANCE_DEFAULT).apply {
             description = "Any motion on the cameras you chose"
+        })
+        nm.createNotificationChannel(NotificationChannel(CH_PRESENCE, "Comings and goings", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "When the people you named come home and go out"
         })
         nm.createNotificationChannel(NotificationChannel(CH_SUMMARY, "Daily summary", NotificationManager.IMPORTANCE_LOW).apply {
             description = "Once a day: who was seen yesterday, and whether every camera recorded"
@@ -156,6 +163,17 @@ class SentinelMessagingService : FirebaseMessagingService() {
                     .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                     .setContentIntent(Push.summaryIntent(this, date))
                 nm.notifySafe("summary".hashCode(), b.build())
+            }
+            "presence" -> {
+                val title = d["title"] ?: "${d["name"]} ${if (d["kind"] == "arrived") "came home" else "went out"}"
+                b.setChannelId(Push.CH_PRESENCE).setContentTitle(title).setContentText(d["text"] ?: "")
+                    .setContentIntent(Push.openIntent(this, cam, t - 5000))
+                id = "presence/${d["person"]}/${d["kind"]}/$t".hashCode()
+                nm.notifySafe(id, b.build())
+                fetch("api/events/$cam/${d["event"]}/snap.jpg?small=1")?.let { bmp ->
+                    b.setLargeIcon(bmp).setStyle(NotificationCompat.BigPictureStyle().bigPicture(bmp).bigLargeIcon(null as Bitmap?)).setOnlyAlertOnce(true)
+                    nm.notifySafe(id, b.build())
+                }
             }
             "motion" -> {
                 b.setChannelId(Push.CH_MOTION).setContentTitle("Motion · $name").setContentText("${fmtTimeSec(t)} · tap to watch")
