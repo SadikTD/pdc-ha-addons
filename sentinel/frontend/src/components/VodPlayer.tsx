@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import Hls from "hls.js";
 import { Loader2 } from "lucide-react";
-import { vodURL } from "../lib/api";
+import { cachingLoader, vodWindow } from "../lib/vodCache";
 
 // Plays recordings as HLS. The playlist carries EXT-X-PROGRAM-DATE-TIME for every file, which
 // we parse ourselves to map player position <-> wall-clock time (gaps are skipped over).
@@ -77,6 +77,10 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
   const loadSeq = useRef(0);
   const pending = useRef<AbortController | null>(null);
   const [loading, setLoading] = useState(true);
+  // Something went wrong and the player is starting over by itself.
+  const [trouble, setTrouble] = useState(false);
+  const retries = useRef(0);
+  const stallTimer = useRef(0);
   const cb = useRef({ onTime, onPlaying, onCaughtUp, onNoFootage, onMutedByBrowser });
   cb.current = { onTime, onPlaying, onCaughtUp, onNoFootage, onMutedByBrowser };
 
@@ -115,10 +119,8 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     pending.current?.abort();
     pending.current = null;
     setLoading(true);
-    const now = Date.now();
-    const from = t - 60_000;
-    const to = Math.min(now + 60_000, t + 30 * 60_000);
-    const url = vodURL(camera, from, to);
+    window.clearTimeout(stallTimer.current);
+    const { from, to, url } = vodWindow(camera, t);
     const stale = () => seq !== loadSeq.current;
     // Where t is in the playlist, or nothing recorded there (then move on).
     const place = (frags: Frag[]) => {
@@ -138,6 +140,7 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
       hls.current?.destroy();
       hls.current = null;
       const h = new Hls({
+        loader: cachingLoader,
         autoStartLoad: false,
         startFragPrefetch: true,
         testBandwidth: false,
@@ -169,13 +172,18 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
           return;
         }
         if (!data.fatal) return;
-        if (!win.current || win.current.from !== from) {
-          // The playlist itself didn't arrive (connection trouble): try again shortly.
-          h.destroy();
-          if (hls.current === h) hls.current = null;
-          window.setTimeout(() => !stale() && load(t), 2000);
-        } else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && retries.current < 2) {
+          retries.current++;
+          h.recoverMediaError();
+          return;
+        }
+        // The playlist didn't arrive, a file is gone (retention removed it after the
+        // playlist was made) or the connection dropped: start over from where we are with
+        // a fresh playlist, instead of asking again and again for the same thing.
+        const at = win.current?.from === from && v.currentTime > 0 ? posToTime(win.current.frags, v.currentTime) : t;
+        h.destroy();
+        if (hls.current === h) hls.current = null;
+        restart(at, data.response?.code === 404 ? 0 : 1500);
       });
       win.current = null;
       h.attachMedia(v);
@@ -208,6 +216,32 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     );
   };
 
+  // Start over at time `at` after a pause that grows while it keeps failing.
+  const restart = (at: number, wait: number) => {
+    const seq = loadSeq.current;
+    retries.current++;
+    if (retries.current > 1) setTrouble(true);
+    const delay = retries.current > 3 ? Math.min(10_000, wait + retries.current * 1000) : wait;
+    window.setTimeout(() => seq === loadSeq.current && load(at), delay);
+  };
+
+  // Waiting for data for long with nothing arriving: the load is stuck somewhere (a
+  // dropped connection that never errors). Start over from the same moment.
+  const watchStall = () => {
+    window.clearTimeout(stallTimer.current);
+    const v = video.current;
+    const w = win.current;
+    if (!v || !w) return;
+    const pos = v.currentTime;
+    const seq = loadSeq.current;
+    stallTimer.current = window.setTimeout(() => {
+      if (seq !== loadSeq.current || v.paused || v.currentTime !== pos || v.readyState >= 3) return;
+      hls.current?.destroy();
+      hls.current = null;
+      restart(posToTime(w.frags, pos), 0);
+    }, 12_000);
+  };
+
   // Seek requests: stay in the loaded window when possible.
   useEffect(() => {
     const w = win.current;
@@ -234,6 +268,7 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     const v = video.current;
     return () => {
       loadSeq.current++;
+      window.clearTimeout(stallTimer.current);
       pending.current?.abort();
       hls.current?.destroy();
       hls.current = null;
@@ -266,16 +301,23 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
         onTimeUpdate={onTimeUpdate}
         onPlaying={() => {
           setLoading(false);
+          setTrouble(false);
+          retries.current = 0;
+          window.clearTimeout(stallTimer.current);
           cb.current.onPlaying(true);
         }}
         onPause={() => cb.current.onPlaying(false)}
-        onWaiting={() => setLoading(true)}
+        onWaiting={() => {
+          setLoading(true);
+          watchStall();
+        }}
         onSeeked={() => setLoading(false)}
         onEnded={onEnded}
       />
       {loading && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <Loader2 className="size-8 animate-spin text-white/70" />
+          {trouble && <span className="absolute bottom-4 rounded-full bg-black/60 px-3 py-1 text-xs text-white/70">Connection trouble — retrying…</span>}
         </div>
       )}
     </div>

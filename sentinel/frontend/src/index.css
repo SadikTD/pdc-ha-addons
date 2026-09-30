@@ -1,8 +1,10 @@
 @import "tailwindcss";
 @import "@fontsource-variable/inter";
+@import "@fontsource/dancing-script/700.css";
 
 @theme {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-script: "Dancing Script", "Segoe Script", cursive;
   --color-ink-950: #05070b;
   --color-ink-900: #0a0d14;
   --color-ink-850: #0e121b;
@@ -66,3 +68,37 @@ video-stream video { width: 100% !important; height: 100% !important; object-fit
 .fill video-stream video { object-fit: fill; }
 
 input[type="range"] { accent-color: #8b5cf6; }
+
+/* "Made by" signature: the name writes itself in, then its colours drift slowly. */
+@keyframes sig-write {
+  from { clip-path: inset(-20% 100% -20% 0); }
+  to { clip-path: inset(-20% -2% -20% 0); }
+}
+@keyframes sig-flow {
+  from { background-position: 0% 50%; }
+  to { background-position: 200% 50%; }
+}
+@keyframes sig-stroke {
+  to { stroke-dashoffset: 0; }
+}
+@keyframes sig-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes sig-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(8%, -6%) scale(1.08); }
+  66% { transform: translate(-6%, 5%) scale(0.95); }
+}
+@utility signature {
+  font-family: var(--font-script);
+  font-weight: 700;
+  background: linear-gradient(90deg, #c4b5fd, #67e8f9, #f0abfc, #c4b5fd);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: sig-write 1.6s cubic-bezier(0.65, 0, 0.35, 1) 0.3s both, sig-flow 6s linear 1.9s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .signature { animation: none; }
+}

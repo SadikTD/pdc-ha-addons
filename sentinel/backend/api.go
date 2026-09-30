@@ -914,7 +914,13 @@ func (a *App) handleSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "video/mp4")
-	w.Header().Set("Cache-Control", "private, max-age=60")
+	// A finished recording never changes (only its name does, which the URL doesn't use):
+	// the browser may keep what it fetched of it.
+	if s, ok := a.store.Get(r.PathValue("cam"), r.PathValue("id")); ok && !s.Active {
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+	} else {
+		w.Header().Set("Cache-Control", "private, max-age=60")
+	}
 	http.ServeContent(w, r, "", st.ModTime(), f)
 }
 

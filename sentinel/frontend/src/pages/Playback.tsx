@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
-import { Columns2, Expand, ImageOff, Loader2, Maximize2, Minimize2, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Volume2, VolumeX, ZoomIn, ZoomOut } from "lucide-react";
+import { Columns2, Expand, Image as ImageIcon, ImageOff, Loader2, Maximize2, Minimize2, Pause, Play, RotateCcw, RotateCw, SkipBack, SkipForward, Volume2, VolumeX, ZoomIn, ZoomOut } from "lucide-react";
 import { SyncPlayer } from "../components/SyncPlayer";
 import { Scrubber, MIN_RANGE, MAX_RANGE } from "../components/Scrubber";
 import { JumpTo } from "../components/JumpTo";
@@ -12,6 +12,7 @@ import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { useTimeline } from "../lib/useTimeline";
 import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
+import { linkRate } from "../lib/vodCache";
 import { api, type SentinelEvent, type Span } from "../lib/api";
 import { DAY, HOUR, fmtDay, fmtTimeSec } from "../lib/format";
 import { fitGrid } from "../lib/layout";
@@ -116,6 +117,26 @@ export function PlaybackPage() {
   const spans = useMemo(() => mergeSpans(lanes.map((l) => l.spans)), [lanes]);
   const activity = useMemo(() => lanes.flatMap((l) => l.activity), [lanes]);
 
+  // Nothing recorded on any camera at this moment (older footage is kept only around
+  // events): skip to the next recording instead of playing through empty time. Only
+  // with a timeline loaded since the last seek, so an old one can't send us astray.
+  const lanesEpoch = useRef(-1);
+  const lastLanes = useRef(lanes);
+  if (lastLanes.current !== lanes) {
+    lastLanes.current = lanes;
+    lanesEpoch.current = epoch;
+  }
+  useEffect(() => {
+    if (!playing || scrubT !== null || lanesEpoch.current !== epoch || !spans.length) return;
+    const at = master();
+    if (spans.some((s) => at >= s.s - 1500 && at < s.e)) return;
+    const next = spans.find((s) => s.s > at);
+    if (!next || next.s > Date.now() - 5000) return;
+    toast(`Nothing recorded until ${fmtTimeSec(next.s)} — skipped ahead`, "info");
+    seek(next.s);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Math.floor(t / 1000), spans, playing, scrubT, epoch]);
+
   const hourBucket = Math.floor(center / HOUR);
   useEffect(() => {
     api
@@ -188,6 +209,99 @@ export function PlaybackPage() {
   const onFocus = useCallback((id: string) => setFocus((f) => (f === id ? null : id)), []);
   const onOpen = useCallback((id: string) => nav(`/camera/${id}?t=${Math.round(master())}`), [nav, master]);
 
+  // A connection too slow for every camera at once (e.g. away from home): rather than all
+  // of them buffering, the least important ones show moving pictures (a frame every 2 s,
+  // a few KB) and the rest play smoothly. Tap a picture to swap it for video.
+  const [lite, setLite] = useState<string[]>([]);
+  const latest = useRef({ cams, lanes, focus, audio, lite });
+  latest.current = { cams, lanes, focus, audio, lite };
+  const lastCut = useRef(0);
+  const lastStarve = useRef(0);
+  const lastProbe = useRef(0);
+  const probeFails = useRef(0);
+  // The measure errs on the careful side: after a quiet half minute, give the most
+  // important picture tile its video back, until the connection shows it is full.
+  useEffect(() => {
+    const i = window.setInterval(() => {
+      const { lite } = latest.current;
+      if (!lite.length || !clock.current.playing || probeFails.current >= 2) return;
+      if (Date.now() - Math.max(lastStarve.current, lastProbe.current, lastCut.current) < 30_000) return;
+      lastProbe.current = Date.now();
+      setLite((l) => l.slice(1));
+    }, 5000);
+    return () => window.clearInterval(i);
+  }, []);
+  const told = useRef(false);
+  // The camera to turn into pictures next: the last one in the grid that is playing
+  // footage right now, never the enlarged one or the one being listened to.
+  const nextToDim = useCallback(
+    (except: string[]) => {
+      const { cams, lanes, focus, audio } = latest.current;
+      const at = master();
+      const has = (id: string) => !!lanes.find((l) => l.id === id)?.spans.some((s) => at >= s.s && at < s.e);
+      const playing = cams.map((c) => c.id).filter((id) => !except.includes(id) && has(id));
+      if (playing.length <= 1) return null;
+      return [...playing].reverse().find((id) => id !== focus && id !== audio) ?? null;
+    },
+    [master],
+  );
+  const kbps = useRef<Record<string, number>>({});
+  kbps.current = Object.fromEntries((status?.cameras ?? []).map((c) => [c.id, c.recorder?.bitrate_kbps || 1500]));
+  const onStarved = useCallback(
+    (_cam: string) => {
+      lastStarve.current = Date.now();
+      // Starved again soon after a camera got its video back: the connection is full.
+      if (Date.now() - lastProbe.current < 20_000) probeFails.current++;
+      if (Date.now() - lastCut.current < 6000) return;
+      const { cams, lanes, focus, audio, lite } = latest.current;
+      const at = master();
+      const has = (id: string) => !!lanes.find((l) => l.id === id)?.spans.some((s) => at >= s.s && at < s.e);
+      const playingIds = cams.map((c) => c.id).filter((id) => !lite.includes(id) && has(id));
+      // Keep as many cameras on video as the connection carries (measured while it was
+      // this busy), most important first; the rest go to pictures in one step.
+      const cap = linkRate() * 0.8;
+      let dim: string[] = [];
+      if (cap > 0) {
+        const order = [...playingIds].sort((a, b) => Number(b === focus) - Number(a === focus) || Number(b === audio) - Number(a === audio));
+        let left = cap;
+        order.forEach((id, i) => {
+          const need = kbps.current[id] ?? 1500;
+          if (i === 0 || need <= left) left -= need;
+          else dim.push(id);
+        });
+      }
+      // Right after a start the measure runs low (requests queue in the browser): never
+      // more than half at once; the least important go first.
+      dim = dim.slice(-Math.max(1, Math.floor(playingIds.length / 2)));
+      if (!dim.length) {
+        const pick = nextToDim(lite);
+        if (pick) dim = [pick];
+      }
+      if (!dim.length) return;
+      lastCut.current = Date.now();
+      setLite((l) => [...l, ...dim.filter((id) => !l.includes(id))]);
+      if (!told.current) {
+        told.current = true;
+        toast("Slow connection — some cameras show pictures so the rest play smoothly. Tap one for video.", "info");
+      }
+    },
+    [nextToDim, toast, master],
+  );
+  const onVideo = useCallback(
+    (id: string) =>
+      setLite((l) => {
+        const rest = l.filter((x) => x !== id);
+        const pick = nextToDim([...rest, id]);
+        lastCut.current = Date.now();
+        return pick && pick !== id ? [...rest, pick] : rest;
+      }),
+    [nextToDim],
+  );
+  // The enlarged camera always plays video.
+  useEffect(() => {
+    if (focus && latest.current.lite.includes(focus)) onVideo(focus);
+  }, [focus, onVideo]);
+
   const tile = (c: { id: string; name: string }, style: React.CSSProperties, small = false) => (
     <Tile
       key={c.id}
@@ -202,6 +316,9 @@ export function PlaybackPage() {
       muted={audio !== c.id}
       scrubT={scrubT}
       focused={focus === c.id}
+      lite={lite.includes(c.id)}
+      onStarved={onStarved}
+      onVideo={onVideo}
       onAudio={onAudio}
       onFocus={onFocus}
       onOpen={onOpen}
@@ -334,6 +451,9 @@ const Tile = memo(function Tile({
   muted,
   scrubT,
   focused,
+  lite,
+  onStarved,
+  onVideo,
   onAudio,
   onFocus,
   onOpen,
@@ -349,6 +469,9 @@ const Tile = memo(function Tile({
   muted: boolean;
   scrubT: number | null;
   focused: boolean;
+  lite: boolean;
+  onStarved: (id: string) => void;
+  onVideo: (id: string) => void;
   onAudio: (id: string) => void;
   onFocus: (id: string) => void;
   onOpen: (id: string) => void;
@@ -356,7 +479,11 @@ const Tile = memo(function Tile({
   const preview = usePreviewFrame(scrubT !== null ? id : null, scrubT);
   const picture = (
     <>
-      <SyncPlayer camera={id} master={master} playing={playing} rate={rate} epoch={epoch} muted={muted} />
+      {lite ? (
+        <PictureTile id={id} master={master} small={small} onVideo={onVideo} />
+      ) : (
+        <SyncPlayer camera={id} master={master} playing={playing} rate={rate} epoch={epoch} muted={muted} onStarved={onStarved} />
+      )}
       <AnimatePresence>
         {scrubT !== null && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.3 } }} transition={{ duration: 0.1 }} className="absolute inset-0 bg-black">
@@ -397,3 +524,39 @@ const Tile = memo(function Tile({
     </motion.div>
   );
 });
+
+// A camera shown as pictures (its preview frames, following the clock) instead of video.
+function PictureTile({ id, master, small, onVideo }: { id: string; master: () => number; small: boolean; onVideo: (id: string) => void }) {
+  const [t, setT] = useState(() => Math.floor(master() / 2000) * 2000);
+  useEffect(() => {
+    const i = window.setInterval(() => setT(Math.floor(master() / 2000) * 2000), 500);
+    return () => window.clearInterval(i);
+  }, [master]);
+  const frame = usePreviewFrame(id, t);
+  // Keep the last picture up while the next one is on its way.
+  const [shown, setShown] = useState<string | null>(null);
+  useEffect(() => {
+    if (frame?.url) setShown(frame.url);
+  }, [frame?.url]);
+  return (
+    <div className="absolute inset-0 bg-black">
+      {shown ? (
+        <img src={shown} className="h-full w-full object-contain" draggable={false} />
+      ) : (
+        <div className="flex h-full items-center justify-center text-slate-500">{frame ? <ImageOff className="size-5" /> : <Loader2 className="size-5 animate-spin" />}</div>
+      )}
+      {!small && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onVideo(id);
+          }}
+          title="Play this camera's video (another one switches to pictures if the connection is short)"
+          className="absolute bottom-2 left-2 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium text-white/80 backdrop-blur transition hover:bg-violet-500/80 hover:text-white"
+        >
+          <ImageIcon className="size-3.5" /> Pictures · tap for video
+        </button>
+      )}
+    </div>
+  );
+}

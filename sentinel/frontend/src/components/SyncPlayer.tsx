@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { Loader2, VideoOff } from "lucide-react";
-import { vodURL } from "../lib/api";
+import { cachingLoader, vodWindow } from "../lib/vodCache";
 import { releaseVideo } from "./VodPlayer";
 
 // One camera's recording, kept in step with a shared clock. Every quarter second the
@@ -52,75 +52,118 @@ type Props = {
   rate: number;
   epoch: number; // changes on every user seek
   muted: boolean;
+  // Waiting for data for long while the clock runs: the connection can't carry every
+  // camera at once.
+  onStarved?: (camera: string) => void;
 };
 
-export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, rate, epoch, muted }: Props) {
+export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, rate, epoch, muted, onStarved }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const hls = useRef<Hls | null>(null);
   const win = useRef<{ from: number; to: number; frags: Frag[] } | null>(null);
   const busy = useRef(false);
+  // Whether the stream has started downloading: not while the clock is in a gap (that
+  // would buffer footage from minutes later, taking bandwidth from the tiles playing).
+  const started = useRef(true);
   const seq = useRef(0);
   const pending = useRef<AbortController | null>(null);
   const [state, setState] = useState<"loading" | "playing" | "gap" | "error">("loading");
-  const live = useRef({ playing, rate });
-  live.current = { playing, rate };
+  const live = useRef({ playing, rate, onStarved });
+  live.current = { playing, rate, onStarved };
+  // Time spent waiting for data while the clock runs, slowly forgotten while playing: a
+  // tile that keeps stalling now and then adds up just like one that never starts.
+  const stalled = useRef(0);
 
   const load = async (t: number) => {
     const v = video.current;
     if (!v) return;
     const n = ++seq.current;
     pending.current?.abort();
-    const ac = new AbortController();
-    pending.current = ac;
+    pending.current = null;
     busy.current = true;
     setState("loading");
-    const from = t - 60_000;
-    const to = Math.min(Date.now() + 30_000, t + 30 * 60_000);
+    hls.current?.destroy();
+    hls.current = null;
+    const { from, to, url } = vodWindow(camera, t);
+    const stale = () => n !== seq.current;
+    const gap = () => {
+      win.current = { from, to, frags: [] };
+      v.removeAttribute("src");
+      busy.current = false;
+      setState("gap");
+    };
+
+    if (Hls.isSupported()) {
+      // hls.js fetches the playlist itself (once) and we read the times from it.
+      const h = new Hls({ loader: cachingLoader, autoStartLoad: false, testBandwidth: false, maxBufferLength: 12, maxMaxBufferLength: 30, backBufferLength: 10, enableWorker: true });
+      hls.current = h;
+      h.once(Hls.Events.LEVEL_LOADED, (_e, data) => {
+        if (stale()) return;
+        const frags = data.details.fragments.map((f) => ({ pos: f.start, dur: f.duration, pdt: f.programDateTime ?? 0 }));
+        if (!frags.length) return gap();
+        win.current = { from, to, frags };
+        busy.current = false;
+        started.current = false;
+        startSoon();
+      });
+      h.on(Hls.Events.ERROR, (_e, data) => {
+        if (stale()) return;
+        if (data.details === Hls.ErrorDetails.LEVEL_EMPTY_ERROR) {
+          h.destroy();
+          if (hls.current === h) hls.current = null;
+          return gap();
+        }
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) return h.recoverMediaError();
+        // The playlist didn't arrive, a file is gone (removed by retention since) or the
+        // connection dropped: start over with a fresh playlist.
+        h.destroy();
+        if (hls.current === h) hls.current = null;
+        window.setTimeout(() => !stale() && load(master()), data.response?.code === 404 ? 0 : 2000);
+      });
+      h.attachMedia(v);
+      h.loadSource(url);
+      return;
+    }
+
+    // Safari: native HLS, and the playlist read here for the times.
+    const ac = new AbortController();
+    pending.current = ac;
     let frags: Frag[] = [];
     try {
-      frags = parsePlaylist(await (await fetch(vodURL(camera, from, to), { cache: "no-store", signal: ac.signal })).text());
+      frags = parsePlaylist(await (await fetch(url, { cache: "no-store", signal: ac.signal })).text());
     } catch {
-      if (n === seq.current && !ac.signal.aborted) {
+      if (!stale() && !ac.signal.aborted) {
         busy.current = false;
         setState("error");
       }
       return;
     }
-    if (n !== seq.current || ac.signal.aborted) return;
+    if (stale() || ac.signal.aborted) return;
+    if (!frags.length) return gap();
     win.current = { from, to, frags };
-    hls.current?.destroy();
-    hls.current = null;
-    if (!frags.length) {
-      v.removeAttribute("src");
-      busy.current = false;
-      setState("gap");
-      return;
-    }
     const pos = posAt(frags, t) ?? 0;
-    if (Hls.isSupported()) {
-      const h = new Hls({ maxBufferLength: 12, maxMaxBufferLength: 30, backBufferLength: 10, startPosition: pos, enableWorker: true });
-      hls.current = h;
-      h.on(Hls.Events.MANIFEST_PARSED, () => {
+    v.src = url;
+    v.addEventListener(
+      "loadedmetadata",
+      () => {
+        v.currentTime = pos;
         busy.current = false;
-      });
-      h.on(Hls.Events.ERROR, (_e, data) => {
-        if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) h.startLoad();
-        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) h.recoverMediaError();
-      });
-      h.loadSource(vodURL(camera, from, to));
-      h.attachMedia(v);
-    } else {
-      v.src = vodURL(camera, from, to);
-      v.addEventListener(
-        "loadedmetadata",
-        () => {
-          v.currentTime = pos;
-          busy.current = false;
-        },
-        { once: true },
-      );
-    }
+      },
+      { once: true },
+    );
+  };
+
+  // Start downloading once the clock is at (or a few seconds from) this camera's footage.
+  const startSoon = () => {
+    const h = hls.current;
+    const w = win.current;
+    if (started.current || !h || !w) return;
+    const now = master();
+    const pos = posAt(w.frags, now) ?? posAt(w.frags, now + 8000);
+    if (pos === null) return;
+    started.current = true;
+    h.startLoad(pos);
   };
 
   useEffect(() => {
@@ -156,6 +199,7 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
         load(t);
         return;
       }
+      startSoon();
       const pos = posAt(w.frags, t);
       if (pos === null) {
         if (!v.paused) v.pause();
@@ -171,7 +215,14 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
       }
       if (playing && v.paused) v.play().catch(() => {});
       if (!playing && !v.paused) v.pause();
-      setState(v.readyState >= 2 ? "playing" : "loading");
+      const ready = v.readyState >= 2;
+      setState(ready ? "playing" : "loading");
+      if (!playing) stalled.current = 0;
+      else if (ready) stalled.current = Math.max(0, stalled.current - 80);
+      else if ((stalled.current += 250) > 4000) {
+        stalled.current = 0;
+        live.current.onStarved?.(camera);
+      }
     }, 250);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps

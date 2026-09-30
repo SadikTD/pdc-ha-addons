@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import clsx from "clsx";
 import { AlertTriangle, CheckCircle2, Clock3, HardDrive, Info, RefreshCw, ShieldCheck, Wifi, XCircle, Radio } from "lucide-react";
+import { AboutCard } from "../components/MadeBy";
 import { Button, Card, PageHeader, SectionTitle, Stat, StatePill, recState } from "../components/ui";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
@@ -12,6 +14,12 @@ export function SystemPage() {
   const { status, refresh } = useStatus();
   const toast = useToast();
   const [incidents, setIncidents] = useState<Incident[]>([]);
+  const { hash } = useLocation();
+  const loaded = !!status;
+  // Opened from the sidebar's credit: go to the About card.
+  useEffect(() => {
+    if (hash === "#about" && loaded) document.getElementById("about")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [hash, loaded]);
 
   useEffect(() => {
     const load = () => api.incidents(200).then(setIncidents).catch(() => {});
@@ -201,6 +209,8 @@ export function SystemPage() {
           );
         })}
       </Card>
+
+      <AboutCard version={status.version} />
     </>
   );
 }

@@ -19,6 +19,7 @@ import { useTimeline } from "../lib/useTimeline";
 import { EventPicture, LABELS, LabelChips } from "../lib/labels";
 import { useSound } from "../lib/sound";
 import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
+import { warmMoments } from "../lib/vodCache";
 import { api, type SentinelEvent, type Span } from "../lib/api";
 import { eventPath, readList, setCurrent } from "../lib/eventNav";
 import { DAY, HOUR, fmtBitrate, fmtBytes, fmtDay, fmtDuration, fmtTimeSec } from "../lib/format";
@@ -123,11 +124,37 @@ function CameraView({ id, initialT, eventId }: { id: string; initialT: number; e
   }, []);
 
   const dayBucket = Math.floor((center - range) / DAY);
+  // New events only appear at the live edge: watching older footage, the list is loaded
+  // once for the day instead of every 20 s (days of events each time, on a slow link).
+  const nearNow = center > now - 3 * HOUR;
   useEffect(() => {
     const from = Math.min(center - range, now - DAY);
     api.events({ cameras: [id], from: from - DAY, to: now + HOUR, limit: 1000 }).then(setEvents).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, Math.floor(now / 20_000), dayBucket]);
+  }, [id, nearNow ? Math.floor(now / 20_000) : 0, dayBucket]);
+
+  // While a recording plays, fetch the start of what is likely to be watched next (the
+  // neighbours in the list being stepped through, the next and previous event here), so
+  // moving on starts at once.
+  const warmTimer = useRef(0);
+  const warmNext = (ref: number) => {
+    window.clearTimeout(warmTimer.current);
+    warmTimer.current = window.setTimeout(() => {
+      const moments: { camera: string; t: number }[] = [];
+      if (list && at >= 0) {
+        for (const d of [1, -1]) {
+          const it = list.items[at + d];
+          if (it) moments.push({ camera: it.c, t: it.t });
+        }
+      }
+      const sorted = events.filter(ofKind).sort((a, b) => a.start - b.start);
+      const next = sorted.find((x) => x.start > ref + 3000);
+      const prev = [...sorted].reverse().find((x) => x.start < ref - 6000);
+      for (const e of [next, prev]) if (e) moments.push({ camera: id, t: e.start - 3000 });
+      warmMoments(moments);
+    }, 1500);
+  };
+  useEffect(() => () => window.clearTimeout(warmTimer.current), []);
 
   const goLive = useCallback(() => {
     setMode("live");
@@ -384,6 +411,7 @@ function CameraView({ id, initialT, eventId }: { id: string; initialT: number; e
                     if (p) {
                       setPendingT(null);
                       warmPreviews(curT ?? Date.now());
+                      warmNext(curT ?? Date.now());
                     }
                   }}
                   onCaughtUp={() => {
@@ -392,8 +420,18 @@ function CameraView({ id, initialT, eventId }: { id: string; initialT: number; e
                   }}
                   onNoFootage={(t) => {
                     const next = spans.find((s) => s.s > t + 1000);
-                    if (next && next.s < Date.now() - 4000) setSeek((s) => ({ t: next.s, n: s.n + 1 }));
-                    else goLive();
+                    if (next && next.s < Date.now() - 4000) return setSeek((s) => ({ t: next.s, n: s.n + 1 }));
+                    // The next recording may be further than the timeline has loaded (old
+                    // footage is kept only around events): ask, rather than going live.
+                    api
+                      .coverage(id, t, Date.now())
+                      .then((sp) => {
+                        const n = sp.find((s) => s.s > t + 1000);
+                        if (!n || n.s >= Date.now() - 4000) return goLive();
+                        toast(`Nothing recorded at ${fmtTimeSec(t)} — jumped to ${fmtDay(n.s)}, ${fmtTimeSec(n.s)}`, "info");
+                        playAt(n.s);
+                      })
+                      .catch(() => goLive());
                   }}
                 />
               )}

@@ -38,7 +38,10 @@ export function useTimeline(cams: { id: string; name: string }[], start: number,
       }
     };
     const l = loaded.current;
-    const covered = l && l.key === key && start >= l.from && end <= l.to && Date.now() - l.at < 15_000;
+    const inside = l && l.key === key && start >= l.from && end <= l.to;
+    // Refreshed only while the view reaches the live edge: the past doesn't change.
+    if (inside && l.to < Date.now() - 60_000) return;
+    const covered = inside && Date.now() - l.at < 15_000;
     const t = window.setTimeout(fetchNow, covered ? 15_000 : 200);
     return () => {
       cancelled = true;
