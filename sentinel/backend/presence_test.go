@@ -8,7 +8,9 @@ import (
 func TestPresence(t *testing.T) {
 	es := newEventStore(t.TempDir())
 	day := time.Now().Add(-24 * time.Hour).Truncate(24 * time.Hour)
-	at := func(h, m int) int64 { return day.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute).UnixMilli() }
+	at := func(h, m int) int64 {
+		return day.Add(time.Duration(h)*time.Hour + time.Duration(m)*time.Minute).UnixMilli()
+	}
 	add := func(cam string, start int64, by string) {
 		es.events[cam] = append(es.events[cam], &Event{ID: cam + time.UnixMilli(start).Format("1504"), Cam: cam, Start: start, End: start + 20_000,
 			Who: []Who{{Person: "dad", Name: "Dad", By: by}}})

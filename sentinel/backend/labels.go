@@ -103,13 +103,13 @@ func (l *Labeler) Poke() {
 
 func (l *Labeler) Status() LabelerStatus {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	st := l.status
-	st.Enabled = l.app.detector.Available()
-	st.Backlog = len(l.app.events.Unscanned(time.Now().Add(-backfillWindow).UnixMilli(), 100000))
 	if st.Scanned > 0 {
 		st.AvgMs = l.total.Milliseconds() / int64(st.Scanned)
 	}
+	l.mu.Unlock()
+	st.Enabled = l.app.detector.Available()
+	st.Backlog = l.app.events.CountUnscanned(time.Now().Add(-backfillWindow).UnixMilli())
 	return st
 }
 

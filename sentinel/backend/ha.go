@@ -83,6 +83,15 @@ type MQTT struct {
 	published map[string]bool   // discovery ids we've announced
 	onConnect func()
 	lastErr   string
+	// Messages wait here for the sender, so a slow or stuck broker never holds up
+	// motion detection (a publish can block for up to its write timeout).
+	out chan mqttMsg
+}
+
+type mqttMsg struct {
+	topic    string
+	retained bool
+	payload  any
 }
 
 const availTopic = "sentinel/availability"
@@ -93,7 +102,20 @@ type personSeen struct {
 }
 
 func newMQTT() *MQTT {
-	return &MQTT{published: map[string]bool{}, seenAt: map[string]int64{}, seenLast: map[string]personSeen{}}
+	m := &MQTT{published: map[string]bool{}, seenAt: map[string]int64{}, seenLast: map[string]personSeen{}, out: make(chan mqttMsg, 1024)}
+	go m.sender()
+	return m
+}
+
+func (m *MQTT) sender() {
+	for msg := range m.out {
+		m.mu.Lock()
+		c := m.client
+		m.mu.Unlock()
+		if c != nil && m.connected.Load() {
+			c.Publish(msg.topic, 0, msg.retained, msg.payload)
+		}
+	}
 }
 
 func (m *MQTT) Connected() bool { return m.connected.Load() }
@@ -141,6 +163,7 @@ func (m *MQTT) Run(ctx context.Context) {
 			SetAutoReconnect(true).SetConnectRetry(true).
 			SetConnectRetryInterval(10*time.Second).SetMaxReconnectInterval(30*time.Second).
 			SetKeepAlive(30*time.Second).
+			SetWriteTimeout(3*time.Second).
 			SetWill(availTopic, "offline", 1, true)
 		opts.SetOnConnectHandler(func(c mqtt.Client) {
 			m.connected.Store(true)
@@ -180,7 +203,10 @@ func (m *MQTT) publish(topic string, retained bool, payload any) {
 	if c == nil || !m.connected.Load() {
 		return
 	}
-	c.Publish(topic, 0, retained, payload)
+	select {
+	case m.out <- mqttMsg{topic, retained, payload}:
+	default: // the broker is far behind: drop (retained states are resent on reconnect)
+	}
 }
 
 func device(id, name string) map[string]any {

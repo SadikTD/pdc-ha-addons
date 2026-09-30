@@ -40,6 +40,7 @@ type Alerter struct {
 	wa      *WhatsAppClient
 	path    string
 	mu      sync.Mutex
+	fileMu  sync.Mutex
 	samples map[string][]alertSample
 	cams    map[string]*camAlerts
 	log     []AlertRecord // newest last
@@ -698,8 +699,16 @@ func (al *Alerter) finish(id string, err error) {
 	al.saveLocked()
 }
 
-func (al *Alerter) saveLocked() {
+// saveLocked asks for the alert log to be written. The (synced) write happens after
+// the lock is let go: motion detection takes this lock many times a second.
+func (al *Alerter) saveLocked() { go al.save() }
+
+func (al *Alerter) save() {
+	al.fileMu.Lock()
+	defer al.fileMu.Unlock()
+	al.mu.Lock()
 	data, _ := json.Marshal(al.log)
+	al.mu.Unlock()
 	_ = writeFileAtomic(al.path, data, 0o644)
 }
 

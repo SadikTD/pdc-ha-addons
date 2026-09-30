@@ -972,9 +972,13 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	extractSem   = make(chan struct{}, 2) // at most 2 ffmpeg extractions at once
-	extractCache sync.Map                 // cam/2s-bucket -> []byte
-	extractCount atomic.Int64
+	// At most 2 ffmpeg frame decodes at once for what someone is waiting on (face viewer,
+	// scrub previews, alerts) and 2 for background work (object detection, faces), so a
+	// detection backlog never makes the pages wait in its queue.
+	extractSem    = make(chan struct{}, 2)
+	backgroundSem = make(chan struct{}, 2)
+	extractCache  sync.Map // cam/2s-bucket -> []byte
+	extractCount  atomic.Int64
 )
 
 func (a *App) frameFromRecording(ctx context.Context, cam string, t time.Time) ([]byte, bool) {
@@ -1053,9 +1057,13 @@ func (a *App) runDecode(ctx context.Context, cam string, t time.Time, exact bool
 	if err != nil {
 		return nil, err
 	}
+	sem := extractSem
+	if ctx.Value(lowPriorityKey) != nil {
+		sem = backgroundSem
+	}
 	select {
-	case extractSem <- struct{}{}:
-		defer func() { <-extractSem }()
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

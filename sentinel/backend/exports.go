@@ -139,6 +139,15 @@ func (cs *ClipStore) persist(c *Clip) {
 	_ = writeFileAtomic(filepath.Join(cs.metaDir(), c.ID+".json"), data, 0o644)
 }
 
+// progress is shown while a clip is saved; it isn't worth a disk write per percent.
+func (cs *ClipStore) progress(id string, pct float64) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if c := cs.clips[id]; c != nil {
+		c.Progress = pct
+	}
+}
+
 func (cs *ClipStore) update(id string, f func(c *Clip)) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -255,7 +264,7 @@ func (cs *ClipStore) render(ctx context.Context, id string) {
 			pct := min(99, us/total*100)
 			if pct-lastPct >= 2 {
 				lastPct = pct
-				cs.update(id, func(c *Clip) { c.Progress = pct })
+				cs.progress(id, pct)
 			}
 		}
 	}

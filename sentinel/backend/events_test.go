@@ -26,6 +26,7 @@ func TestSetWhoMany(t *testing.T) {
 	}
 	began := time.Now()
 	es.SetWhoMany(who)
+	es.Flush()
 	took := time.Since(began)
 
 	for k := range who {
@@ -53,6 +54,7 @@ func TestSetWhoMany(t *testing.T) {
 		_ = os.Chtimes(f, time.Unix(0, 0), time.Unix(0, 0))
 	}
 	es.SetWhoMany(who)
+	es.Flush()
 	for _, f := range files {
 		if st, _ := os.Stat(f); st.ModTime().Unix() != 0 {
 			t.Fatalf("%s rewritten although nothing changed", f)

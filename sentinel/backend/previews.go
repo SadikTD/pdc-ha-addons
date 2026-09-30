@@ -86,7 +86,7 @@ func (ps *PreviewStore) Add(cam string, t time.Time, jpeg []byte) {
 	ps.index[key] = append(ps.index[key], previewEntry{t: t.UnixMilli(), off: st.Size() + 12, n: uint32(len(jpeg))})
 }
 
-// scan reads an hour file's record headers; caller holds the lock.
+// scan reads an hour file's record headers.
 func (ps *PreviewStore) scan(cam, hour string) []previewEntry {
 	f, err := os.Open(ps.path(cam, hour))
 	if err != nil {
@@ -113,12 +113,22 @@ func (ps *PreviewStore) scan(cam, hour string) []previewEntry {
 	return out
 }
 
+// entries returns an hour's frame index, reading it from disk (outside the lock: motion
+// detection stores frames under it several times a second) the first time.
 func (ps *PreviewStore) entries(cam, hour string) []previewEntry {
 	key := cam + "/" + hour
-	if e, ok := ps.index[key]; ok {
+	ps.mu.Lock()
+	e, ok := ps.index[key]
+	ps.mu.Unlock()
+	if ok {
 		return e
 	}
-	e := ps.scan(cam, hour)
+	e = ps.scan(cam, hour)
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if cur, ok := ps.index[key]; ok { // the hour being written: Add keeps its own up to date
+		return cur
+	}
 	if len(ps.index) > 400 { // bound memory: drop cached hours (they re-scan quickly)
 		for k := range ps.index {
 			if !strings.HasSuffix(k, "/"+ps.hourOf[strings.SplitN(k, "/", 2)[0]]) {
@@ -132,11 +142,17 @@ func (ps *PreviewStore) entries(cam, hour string) []previewEntry {
 
 // Get returns the frame nearest to t (within 6 s), and its timestamp.
 func (ps *PreviewStore) Get(cam string, t time.Time) ([]byte, int64, bool) {
-	ps.mu.Lock()
 	var best previewEntry
 	var bestHour string
 	bestD := int64(6000)
-	for _, h := range []time.Time{t, t.Add(-time.Hour), t.Add(time.Hour)} {
+	// The next or previous hour only matters within 6 s of its edge.
+	hours := []time.Time{t}
+	if start := t.Truncate(time.Hour); t.Sub(start) < 6*time.Second {
+		hours = append(hours, t.Add(-time.Hour))
+	} else if start.Add(time.Hour).Sub(t) < 6*time.Second {
+		hours = append(hours, t.Add(time.Hour))
+	}
+	for _, h := range hours {
 		hour := hourKey(h)
 		list := ps.entries(cam, hour)
 		i := sort.Search(len(list), func(i int) bool { return list[i].t >= t.UnixMilli() })
@@ -153,7 +169,6 @@ func (ps *PreviewStore) Get(cam string, t time.Time) ([]byte, int64, bool) {
 			}
 		}
 	}
-	ps.mu.Unlock()
 	if bestHour == "" {
 		return nil, 0, false
 	}

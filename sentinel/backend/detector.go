@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,13 +30,18 @@ type Detection struct {
 
 type Detector struct {
 	script, model string
-	mu            sync.Mutex
+	mu            prioLock // one picture at a time; waiting users first
 	cmd           *exec.Cmd
 	in            io.WriteCloser
 	lines         chan string
 	size          int
 	models        map[string]int // model name -> input size
 	retryAt       time.Time      // after a failed start, don't try again before this
+	// For Available, without the lock: that's held while the worker thinks (up to
+	// seconds per picture, a minute while it loads), and the status every page polls
+	// and night alerts ask whether detection works.
+	alive   atomic.Bool
+	retryMs atomic.Int64
 }
 
 func newDetector() *Detector {
@@ -50,9 +56,7 @@ func (d *Detector) Available() bool {
 	if _, err := os.Stat(d.model); err != nil {
 		return false
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.cmd != nil || time.Now().After(d.retryAt)
+	return d.alive.Load() || time.Now().UnixMilli() > d.retryMs.Load()
 }
 
 func (d *Detector) startLocked() error {
@@ -73,6 +77,7 @@ func (d *Detector) startLocked() error {
 	}
 	if err := cmd.Start(); err != nil {
 		d.retryAt = time.Now().Add(5 * time.Minute)
+		d.retryMs.Store(d.retryAt.UnixMilli())
 		return fmt.Errorf("object detection did not start: %v", err)
 	}
 	lines := make(chan string, 1)
@@ -86,6 +91,7 @@ func (d *Detector) startLocked() error {
 		_ = cmd.Wait()
 	}()
 	d.cmd, d.in, d.lines = cmd, in, lines
+	d.alive.Store(true)
 	var ready struct {
 		Ready  bool           `json:"ready"`
 		Size   int            `json:"size"`
@@ -98,6 +104,7 @@ func (d *Detector) startLocked() error {
 	if err != nil || !ready.Ready || ready.Size < 32 {
 		d.stopLocked()
 		d.retryAt = time.Now().Add(5 * time.Minute)
+		d.retryMs.Store(d.retryAt.UnixMilli())
 		return fmt.Errorf("object detection did not start: %v", err)
 	}
 	d.size, d.models = ready.Size, ready.Models
@@ -116,6 +123,7 @@ func (d *Detector) stopLocked() {
 		_ = d.in.Close()
 	}
 	d.cmd, d.in, d.lines = nil, nil, nil
+	d.alive.Store(false)
 }
 
 func (d *Detector) readLocked(ctx context.Context, timeout time.Duration) (string, error) {
@@ -171,7 +179,7 @@ func (d *Detector) Raw(ctx context.Context, model string, rgb []byte, w, h int) 
 
 // ask sends one picture to a model and returns the answer line.
 func (d *Detector) ask(ctx context.Context, model string, rgb []byte, w, h int) (string, error) {
-	d.mu.Lock()
+	d.mu.LockFor(ctx)
 	defer d.mu.Unlock()
 	if d.cmd == nil {
 		if err := d.startLocked(); err != nil {
@@ -214,7 +222,7 @@ func (d *Detector) Size(model string) (int, error) {
 
 // Detect runs a model on one RGB picture (w×h, each side at most Size(model)).
 func (d *Detector) Detect(ctx context.Context, model string, rgb []byte, w, h int) ([]Detection, error) {
-	d.mu.Lock()
+	d.mu.LockFor(ctx)
 	defer d.mu.Unlock()
 	if d.cmd == nil {
 		if err := d.startLocked(); err != nil {
@@ -351,4 +359,52 @@ func iou(a, b Rect) float64 {
 	}
 	in := (x1 - x0) * (y1 - y0)
 	return in / (a.W*a.H + b.W*b.H - in)
+}
+
+// prioLock is a mutex where urgent work (a night alert, someone waiting on a page) goes
+// before background work (object detection and faces catching up) that is waiting too:
+// with plain first-come order an alert queued behind every background picture.
+type prioLock struct {
+	mu       sync.Mutex
+	held     bool
+	urgent   []chan struct{}
+	backlogQ []chan struct{}
+}
+
+// Lock takes it as urgent work.
+func (p *prioLock) Lock() { p.lock(true) }
+
+// LockFor takes it as background work when ctx says so (see lowPriority).
+func (p *prioLock) LockFor(ctx context.Context) { p.lock(ctx.Value(lowPriorityKey) == nil) }
+
+func (p *prioLock) lock(urgent bool) {
+	p.mu.Lock()
+	if !p.held {
+		p.held = true
+		p.mu.Unlock()
+		return
+	}
+	ch := make(chan struct{})
+	if urgent {
+		p.urgent = append(p.urgent, ch)
+	} else {
+		p.backlogQ = append(p.backlogQ, ch)
+	}
+	p.mu.Unlock()
+	<-ch // handed over by Unlock, still held
+}
+
+func (p *prioLock) Unlock() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case len(p.urgent) > 0:
+		close(p.urgent[0])
+		p.urgent = p.urgent[1:]
+	case len(p.backlogQ) > 0:
+		close(p.backlogQ[0])
+		p.backlogQ = p.backlogQ[1:]
+	default:
+		p.held = false
+	}
 }

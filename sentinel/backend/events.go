@@ -54,10 +54,17 @@ type EventStore struct {
 	root   string
 	events map[string][]*Event // per camera, sorted by start
 	open   map[string]*Event   // ongoing event per camera
+	// Day files to write. They're written by one background writer, outside the lock:
+	// written (and synced) while holding it, every motion start and end, detection result
+	// and events page waited on the disk.
+	dirty  map[EventKey]bool // {camera, day}
+	kick   chan struct{}
+	fileMu sync.Mutex // one writer at a time
 }
 
 func newEventStore(root string) *EventStore {
-	es := &EventStore{root: root, events: map[string][]*Event{}, open: map[string]*Event{}}
+	es := &EventStore{root: root, events: map[string][]*Event{}, open: map[string]*Event{}, dirty: map[EventKey]bool{}, kick: make(chan struct{}, 1)}
+	go es.writer()
 	cams, _ := os.ReadDir(root)
 	for _, c := range cams {
 		if !c.IsDir() {
@@ -147,24 +154,15 @@ func (es *EventStore) SetWhoMany(who map[EventKey][]Who) {
 	if len(who) == 0 {
 		return
 	}
-	type dayKey2 struct{ cam, day string }
-	changed := map[dayKey2]bool{}
 	es.mu.Lock()
+	defer es.mu.Unlock()
 	for cam, list := range es.events {
 		for _, e := range list {
 			if w, ok := who[EventKey{cam, e.ID}]; ok && !slices.Equal(e.Who, w) {
 				e.Who = w
-				changed[dayKey2{cam, dayKey(e.Start)}] = true
+				es.persistDay(cam, dayKey(e.Start))
 			}
 		}
-	}
-	files := map[string][]byte{}
-	for d := range changed {
-		files[filepath.Join(es.root, d.cam, d.day+".json")] = es.dayJSONLocked(d.cam, d.day)
-	}
-	es.mu.Unlock()
-	for p, b := range files {
-		_ = writeFileAtomic(p, b, 0o644)
 	}
 }
 
@@ -267,6 +265,38 @@ func (es *EventStore) Rescan(cams []string, from, to int64, seenOnly bool) int {
 	return n
 }
 
+// Keys: every event there is.
+func (es *EventStore) Keys() map[EventKey]bool {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	out := map[EventKey]bool{}
+	for cam, list := range es.events {
+		for _, e := range list {
+			out[EventKey{cam, e.ID}] = true
+		}
+	}
+	return out
+}
+
+// CountUnscanned: how many finished events object detection hasn't looked at yet (for
+// the status every page polls: counting, not copying and sorting them all).
+func (es *EventStore) CountUnscanned(since int64) int {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	n := 0
+	for cam, list := range es.events {
+		if es.open[cam] != nil {
+			list = list[:len(list)-1]
+		}
+		for _, e := range list {
+			if e.Scan == "" && e.End != 0 && e.Start >= since {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // Unscanned returns finished events object detection hasn't looked at yet, newest first.
 func (es *EventStore) Unscanned(since int64, limit int) []Event {
 	es.mu.Lock()
@@ -334,9 +364,39 @@ func (es *EventStore) SetThumb(cam, id string) {
 	}
 }
 
-// persistDay rewrites one day file; caller holds the lock.
+// persistDay asks for one day file to be rewritten (shortly, by the writer); caller
+// holds the lock.
 func (es *EventStore) persistDay(cam, day string) {
-	_ = writeFileAtomic(filepath.Join(es.root, cam, day+".json"), es.dayJSONLocked(cam, day), 0o644)
+	es.dirty[EventKey{cam, day}] = true
+	select {
+	case es.kick <- struct{}{}:
+	default:
+	}
+}
+
+// writer writes changed day files about a second after they change (a burst of changes
+// is written once).
+func (es *EventStore) writer() {
+	for range es.kick {
+		time.Sleep(time.Second)
+		es.Flush()
+	}
+}
+
+// Flush writes every changed day file now (also at shutdown).
+func (es *EventStore) Flush() {
+	es.fileMu.Lock()
+	defer es.fileMu.Unlock()
+	es.mu.Lock()
+	files := map[string][]byte{}
+	for k := range es.dirty {
+		files[filepath.Join(es.root, k.Cam, k.ID+".json")] = es.dayJSONLocked(k.Cam, k.ID)
+	}
+	clear(es.dirty)
+	es.mu.Unlock()
+	for p, b := range files {
+		_ = writeFileAtomic(p, b, 0o644)
+	}
 }
 
 func (es *EventStore) dayJSONLocked(cam, day string) []byte {
@@ -448,6 +508,12 @@ func (es *EventStore) Spans(pad time.Duration, keep func(*Event) bool) map[strin
 
 // Cleanup removes events older than days(event) days (with their pictures).
 func (es *EventStore) Cleanup(days func(cam string, e *Event) int) {
+	var gone []string // files to remove once the lock is let go
+	defer func() {
+		for _, p := range gone {
+			removePicture(p)
+		}
+	}()
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	now := time.Now()
@@ -460,8 +526,7 @@ func (es *EventStore) Cleanup(days func(cam string, e *Event) int) {
 			oldest = max(oldest, d)
 			cutoff := now.Add(-time.Duration(d) * 24 * time.Hour).UnixMilli()
 			if e.End != 0 && e.End < cutoff {
-				removePicture(es.ThumbPath(cam, e.ID))
-				removePicture(es.SnapPath(cam, e.ID))
+				gone = append(gone, es.ThumbPath(cam, e.ID), es.SnapPath(cam, e.ID))
 				touched[dayKey(e.Start)] = true
 				continue
 			}
@@ -474,7 +539,7 @@ func (es *EventStore) Cleanup(days func(cam string, e *Event) int) {
 		files, _ := filepath.Glob(filepath.Join(es.root, cam, "*.json"))
 		for _, f := range files {
 			if strings.TrimSuffix(filepath.Base(f), ".json") < cutDay {
-				_ = os.Remove(f)
+				gone = append(gone, f)
 			}
 		}
 		for day := range touched {
@@ -488,10 +553,11 @@ func (es *EventStore) Cleanup(days func(cam string, e *Event) int) {
 // ActivityStore keeps the peak motion score per 10-second bucket (8640 per day) for the
 // timeline heatmap. One byte per bucket: score in tenths of a percent, capped at 25.5 %.
 type ActivityStore struct {
-	mu    sync.Mutex
-	root  string
-	days  map[string][]byte // cam/day -> buckets
-	dirty map[string]bool
+	flushMu sync.Mutex
+	mu      sync.Mutex
+	root    string
+	days    map[string][]byte // cam/day -> buckets
+	dirty   map[string]bool
 }
 
 const bucketsPerDay = 8640
@@ -537,14 +603,23 @@ func (as *ActivityStore) Record(cam string, at time.Time, score float64) {
 	}
 }
 
+// Flush writes the changed days (outside the lock: motion samples keep coming in).
 func (as *ActivityStore) Flush() {
+	as.flushMu.Lock()
+	defer as.flushMu.Unlock()
 	as.mu.Lock()
-	defer as.mu.Unlock()
-	today := time.Now().UTC().Format("20060102")
+	files := map[string][]byte{}
 	for key := range as.dirty {
-		_ = writeFileAtomic(as.file(key), as.days[key], 0o644)
+		files[as.file(key)] = slices.Clone(as.days[key])
 		delete(as.dirty, key)
 	}
+	defer func() {
+		for p, b := range files {
+			_ = writeFileAtomic(p, b, 0o644)
+		}
+	}()
+	defer as.mu.Unlock()
+	today := time.Now().UTC().Format("20060102")
 	// Keep only today's buckets in memory.
 	for key := range as.days {
 		if !strings.HasSuffix(key, "/"+today) {

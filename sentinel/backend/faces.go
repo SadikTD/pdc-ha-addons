@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -116,6 +117,13 @@ type Faces struct {
 	whoQ   map[EventKey][]Who // who was in events, to store on them
 	flushC chan struct{}
 	status FaceStatus
+	// version counts changes; the faces to name are grouped again only after one
+	// (grouping every face is heavy, and the page asks every 30 s and after each action).
+	version  atomic.Int64
+	unknownM sync.Mutex
+	unknownV int64
+	unknownL int
+	unknownC []FaceGroup
 }
 
 type FaceStatus struct {
@@ -161,6 +169,7 @@ func (f *Faces) enabled() bool { return f.app.settings.Get().FaceRecognition }
 func dayOf(ms int64) string { return time.UnixMilli(ms).In(time.Local).Format("20060102") }
 
 func (f *Faces) savePeopleLocked() {
+	f.version.Add(1)
 	b, _ := json.MarshalIndent(f.people, "", " ")
 	_ = writeFileAtomic(filepath.Join(f.root, "people.json"), b, 0o644)
 }
@@ -220,7 +229,10 @@ func (f *Faces) flush() {
 	}
 }
 
-func (f *Faces) touchLocked(s *Seen) { f.dirty[dayOf(s.T)] = true }
+func (f *Faces) touchLocked(s *Seen) {
+	f.dirty[dayOf(s.T)] = true
+	f.version.Add(1)
+}
 
 func (f *Faces) imgPath(id string) string { return filepath.Join(f.root, "img", id+".jpg") }
 
@@ -267,6 +279,7 @@ func newID() string {
 // Cleanup drops sightings whose events are gone (retention), except the faces the user
 // named: they are what recognition learns from (at most galleryMax per person, the best).
 func (f *Faces) Cleanup() {
+	exists := f.app.events.Keys() // once, not an events lookup per sighting under our lock
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	perPerson := map[string][]*Seen{}
@@ -275,7 +288,7 @@ func (f *Faces) Cleanup() {
 			perPerson[s.Person] = append(perPerson[s.Person], s)
 			continue
 		}
-		if _, ok := f.app.events.Get(s.Cam, s.Event); !ok {
+		if !exists[EventKey{s.Cam, s.Event}] {
 			delete(f.seen, id)
 			_ = os.Remove(f.imgPath(id))
 			f.touchLocked(s)
@@ -545,8 +558,8 @@ func (f *Faces) setStatus(fn func(*FaceStatus)) {
 }
 
 func (f *Faces) Status() FaceStatus {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	st := f.status
 	for _, s := range f.seen {
 		if s.hasFace() {
@@ -958,8 +971,20 @@ type FaceGroup struct {
 // Unknown groups the faces nobody has named yet: most likely the same person in each
 // group, biggest groups first (the people seen most).
 func (f *Faces) Unknown(limit int) []FaceGroup {
+	f.unknownM.Lock()
+	defer f.unknownM.Unlock()
+	v := f.version.Load()
+	if f.unknownC != nil && f.unknownV == v && f.unknownL == limit {
+		return f.unknownC
+	}
 	f.mu.RLock()
-	defer f.mu.RUnlock()
+	out := f.unknownLocked(limit)
+	f.mu.RUnlock()
+	f.unknownC, f.unknownV, f.unknownL = out, v, limit
+	return out
+}
+
+func (f *Faces) unknownLocked(limit int) []FaceGroup {
 	g, junk := f.galleriesLocked()
 	hidden := f.hiddenLocked()
 	var list []*Seen

@@ -118,6 +118,8 @@ func main() {
 	}
 	app.mu.Unlock()
 	app.activity.Flush()
+	app.events.Flush()
+	app.faces.flush()
 	app.previews.Close()
 	logf("bye")
 }
