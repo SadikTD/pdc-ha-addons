@@ -70,6 +70,7 @@ class Api(private val engine: Engine) {
     // Sentinel
     suspend fun status(): Status = get("api/status")
     suspend fun coverage(cam: String, from: Long, to: Long): List<Span> = get("api/recordings/$cam?from=$from&to=$to")
+    suspend fun personEvents(person: String, limit: Int = 60): List<SentinelEvent> = get("api/events?person=$person&limit=$limit")
     suspend fun events(cameras: List<String> = emptyList(), from: Long? = null, to: Long? = null, limit: Int = 500, labels: List<String> = emptyList()): List<SentinelEvent> {
         val q = buildList {
             if (cameras.isNotEmpty()) add("cameras=${cameras.joinToString(",")}")
@@ -91,10 +92,12 @@ class Api(private val engine: Engine) {
     // People (recognised by face; naming is for admins)
     suspend fun people(): PeopleResponse = get("api/people")
     suspend fun personFaces(id: String, limit: Int = 90): List<FaceInfo> = get("api/people/$id/faces?limit=$limit")
-    suspend fun unknownFaces(limit: Int = 40): List<FaceGroup> = get("api/faces/unknown?limit=$limit")
+    suspend fun unknownFaces(): List<FaceGroup> = get("api/faces/unknown")
+    suspend fun eventFaces(cam: String, id: String): List<FaceInfo> = get("api/faces/event/$cam/${java.net.URLEncoder.encode(id, "UTF-8")}")
     suspend fun nameFaces(ids: List<String>, person: String? = null, name: String? = null): PersonInfo = send("POST", "api/faces/name", NameFaces(ids, person, name))
     suspend fun notPerson(ids: List<String>, person: String) = call("POST", "api/faces/not", Engine.json.encodeToString(NotPerson(ids, person)))
     suspend fun notFaces(ids: List<String>) = call("POST", "api/faces/junk", Engine.json.encodeToString(FaceIds(ids)))
+    suspend fun restoreFaces(ids: List<String>) = call("POST", "api/faces/restore", Engine.json.encodeToString(FaceIds(ids)))
     suspend fun renamePerson(id: String, name: String): PersonInfo = send("PATCH", "api/people/$id", mapOf("name" to name))
     suspend fun forgetPerson(id: String) = call("DELETE", "api/people/$id")
 
@@ -135,6 +138,8 @@ class Api(private val engine: Engine) {
     /** Live video as fragmented MP4. FLAC audio comes straight from go2rtc (no ffmpeg), which starts faster. */
     fun liveUrl(cam: String, hq: Boolean) = engine.url("go2rtc/api/stream.mp4?src=${if (hq) cam else "${cam}_sub"}&mp4=flac")
     fun faceUrl(id: String) = engine.url("api/faces/$id.jpg")
+    /** The whole frame a face was taken from, in full quality. */
+    fun faceFrameUrl(id: String) = engine.url("api/faces/$id/frame.jpg")
     fun clipVideoUrl(id: String) = engine.url("api/clips/$id/video")
     fun clipThumbUrl(c: Clip) = engine.url("api/clips/${c.id}/thumb.jpg?v=${c.status}")
 }

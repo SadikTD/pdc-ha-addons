@@ -139,15 +139,25 @@ Sentinel recognises the people you name, on every camera:
   face. Each sighting also keeps the colours of the person's clothes; a sighting without
   a usable face whose clothes clearly match one named person's, within 6 hours and in
   daylight (infrared has no colours), is shown as "≈ Name".
-- **Naming (People page, or More → People in the app, admins):** faces nobody has named
-  yet are grouped by likeness, the people seen most first. Name a group once (tap faces
-  that don't belong to take them out first), or tap several single faces and name them
-  together. Faces that look like someone you already named are offered as "This is …".
-  Every face you confirm makes that person easier to recognise; tap a wrong face on a
-  person's page to take it out, "Not a face" teaches it to ignore patterns (e.g. wood
-  grain), and "Forget" removes a person.
-- Events show names instead of "Person"; filter Events by person, or search "Abir
-  yesterday".
+- **Naming (People page, or More → People in the app, admins):** under **To name**,
+  faces nobody has named yet are grouped by likeness (the people seen most first), faces
+  that look like someone you named wait under **Might be someone you know** (✓ / ✗), and
+  the rest are under **Seen once**. Tap any face to see it **in full quality**: the frame
+  it was taken from, zoomed in on the person with the face outlined ("Whole picture"
+  zooms out; ← → or swipe for the others), and name it there, say it's not the same
+  person as its group, or that it's not a face. Tick faces to name several at once from
+  the bar that appears. Names are typed or picked (with their picture). Every action
+  can be undone from its message. Every face you confirm makes that person easier to
+  recognise.
+- **Known people:** each person has a page with where they were seen lately and every
+  face taken for them; take out a wrong one, rename, or forget the person.
+- **Names everywhere:** events show names instead of "Person" (filter Events by person,
+  or search "Abir yesterday"); under the camera player, **In this moment** shows who is
+  in the event being watched (tap to see large, or to name them there); the daily
+  **Summary** says who was seen, when and where; and Home Assistant gets two sensors per
+  person, **<Name> last seen** (the camera, with the time in its attributes) and
+  **<Name> last seen at** (a timestamp), for automations like "tell me when Abir gets
+  home".
 
 Faces, fingerprints and names stay on the Pi (`/media/sentinel/faces`); faces you named
 are kept, the rest go with their events. Turn it off under Settings → Alerts →
@@ -247,8 +257,11 @@ at home and from anywhere, with no port forwarding, VPN or other add-on:
   signed out on its own. Five wrong passwords lock the username for a growing time.
 - **Events:** opening one plays it with **‹ 12 / 340 ›** at the top to step through the
   list; back returns to the list where you left it, with the event last watched marked.
-  Recognised people show by name, with a filter per person.
-- **People** (More): who Sentinel recognises; admins name new faces and fix wrong ones.
+  Recognised people show by name, with a filter per person; under the player, who is in
+  the event being watched.
+- **People** (More): who Sentinel recognises, each with their own page; admins name new
+  faces (tap one to see it full screen, tick several to name them together) and fix
+  wrong ones.
 
 Setup: install the app (APK from the GitHub releases), then log in. At home the app
 finds Sentinel by itself; elsewhere, scan the QR code or type the Sentinel ID shown in

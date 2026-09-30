@@ -1,5 +1,6 @@
 package app.sentinel.ui.screens
 
+import app.sentinel.ui.screens.EventPeopleStrip
 import app.sentinel.core.ListItem
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -578,6 +579,10 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
                 }
             }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                // Who is in the person event being watched (tap to see large, and name).
+                val playingPerson = events.find { it.has("person") && playTime >= it.start - 3000 && playTime <= it.endOr(state.serverNow()) + 2000 }?.id
+                    ?: list.getOrNull(at)?.id?.takeIf { !live }
+                Box(Modifier.padding(horizontal = 14.dp)) { EventPeopleStrip(state, cam.id, playingPerson) { c, t -> onOpenCamera(c) } }
                 // Timeline header: what's in view, and zoom buttons for those who don't pinch.
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(fmtDay(timelineCenter, state.serverNow()), color = C.Text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)

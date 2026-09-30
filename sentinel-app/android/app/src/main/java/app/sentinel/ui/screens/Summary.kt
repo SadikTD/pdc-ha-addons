@@ -1,5 +1,7 @@
 package app.sentinel.ui.screens
 
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -66,7 +68,7 @@ import kotlinx.coroutines.delay
 
 /** One day at a glance: who was seen where, when it was busy, and whether every camera recorded. */
 @Composable
-fun SummaryScreen(state: AppState, date: String?, onBack: () -> Unit, openCamera: (String, Long?) -> Unit) {
+fun SummaryScreen(state: AppState, date: String?, onBack: () -> Unit, openCamera: (String, Long?) -> Unit, onPerson: (String) -> Unit = {}) {
     val today = LocalDate.now()
     var day by rememberSaveable { mutableStateOf(date?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: today) }
     var sum by remember { mutableStateOf<DaySummary?>(null) }
@@ -139,6 +141,23 @@ fun SummaryScreen(state: AppState, date: String?, onBack: () -> Unit, openCamera
         }
         item { HourChart("People and animals by hour", s, LABEL_ORDER.mapIndexed { i, l -> Triple(LABELS.getValue(l).plural, LABELS.getValue(l).color, i + 1) }) }
         item { HourChart("Motion events by hour", s, listOf(Triple("Motion", MotionColor, 0))) }
+        if (s.people.isNotEmpty()) {
+            item { Text("Who was seen", color = C.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp)) }
+            s.people.forEach { p ->
+                item {
+                    GlassCard(Modifier.fillMaxWidth(), onClick = { onPerson(p.person) }) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (p.cover != null) AsyncImage(state.api.faceUrl(p.cover), null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(CircleShape))
+                            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                Text(p.name, color = C.Text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                                Text("${if (p.first == p.last) fmtTime(p.first) else "${fmtTime(p.first)} – ${fmtTime(p.last)}"} · ${p.events} event${if (p.events == 1) "" else "s"}", color = C.TextDim, fontSize = 12.sp)
+                                Text(p.cams.joinToString(", ") { c -> s.cameras.find { it.id == c }?.name ?: c }, color = C.TextFaint, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (s.highlights.isNotEmpty()) {
             item { Text("Highlights", color = C.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp)) }
             s.highlights.chunked(2).forEach { row ->
@@ -148,7 +167,7 @@ fun SummaryScreen(state: AppState, date: String?, onBack: () -> Unit, openCamera
                             Column(Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).clickable { openCamera(e.camera, e.bestTime - 3000) }) {
                                 Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(14.dp))) {
                                     EventPicture(state.api, e, Modifier.matchParentSize())
-                                    LabelChips(e.labels, Modifier.align(Alignment.BottomStart).padding(6.dp), small = true)
+                                    LabelChips(e.labels, Modifier.align(Alignment.BottomStart).padding(6.dp), small = true, who = e.who)
                                 }
                                 Row(Modifier.padding(top = 5.dp, start = 2.dp, end = 2.dp)) {
                                     Text(s.cameras.find { it.id == e.camera }?.name ?: e.camera, color = C.Text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))

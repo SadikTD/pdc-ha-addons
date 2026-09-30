@@ -107,6 +107,7 @@ data class DaySummary(
     /** Per hour: motion, person, cat, dog. */
     val hours: List<List<Int>> = emptyList(),
     val highlights: List<SentinelEvent> = emptyList(),
+    val people: List<PersonDay> = emptyList(),
     val pending: Int = 0,
     val problems: Int = 0,
     val text: String = "",
@@ -323,13 +324,28 @@ data class FaceInfo(
     val by: String? = null,
     val sim: Double = 0.0,
     val person: String? = null,
+    val name: String? = null,
+    /** The face and the person, in the frame (0..1). */
+    val face: Box? = null,
+    val box: Box = Box(),
 )
 
 @Serializable
 data class Suggestion(val person: String, val name: String)
 
 @Serializable
-data class FaceGroup(val faces: List<FaceInfo> = emptyList(), val size: Int = 0, val ids: List<String> = emptyList(), val suggest: Suggestion? = null)
+data class FaceGroup(
+    val faces: List<FaceInfo> = emptyList(),
+    val size: Int = 0,
+    val ids: List<String> = emptyList(),
+    val cams: List<String> = emptyList(),
+    val last: Long = 0,
+    val suggest: Suggestion? = null,
+)
+
+/** Someone recognised during a day (Summary). */
+@Serializable
+data class PersonDay(val person: String, val name: String, val cover: String? = null, val events: Int = 0, val first: Long = 0, val last: Long = 0, val cams: List<String> = emptyList())
 
 @Serializable
 data class NameFaces(val faces: List<String>, val person: String? = null, val name: String? = null)

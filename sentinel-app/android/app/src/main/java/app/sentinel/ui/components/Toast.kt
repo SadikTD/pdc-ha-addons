@@ -1,5 +1,7 @@
 package app.sentinel.ui.components
 
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
@@ -35,12 +37,14 @@ import app.sentinel.ui.theme.C
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 
-data class ToastMsg(val text: String, val error: Boolean = false, val id: Long = System.nanoTime())
+data class ToastMsg(val text: String, val error: Boolean = false, val action: String? = null, val onAction: (() -> Unit)? = null, val id: Long = System.nanoTime())
 
 /** App-wide messages ("Clip saved", "Couldn't reach Sentinel"). */
 object Toaster {
     val current = MutableStateFlow<ToastMsg?>(null)
     fun show(text: String) { current.value = ToastMsg(text) }
+    /** A message with a button (e.g. "Undo"); stays a little longer. */
+    fun show(text: String, action: String, onAction: () -> Unit) { current.value = ToastMsg(text, action = action, onAction = onAction) }
     fun error(text: String) { current.value = ToastMsg(text, error = true) }
 }
 
@@ -49,7 +53,7 @@ fun ToastHost(modifier: Modifier = Modifier) {
     val msg by Toaster.current.collectAsStateWithLifecycle()
     LaunchedEffect(msg?.id) {
         if (msg != null) {
-            delay(if (msg!!.error) 4000 else 2600)
+            delay(if (msg!!.error || msg!!.action != null) 5000 else 2600)
             Toaster.current.value = null
         }
     }
@@ -71,7 +75,11 @@ fun ToastHost(modifier: Modifier = Modifier) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(if (m.error) Icons.Rounded.ErrorOutline else Icons.Rounded.CheckCircle, null, tint = color, modifier = Modifier.size(20.dp))
-                Text("  ${m.text}", color = C.Text, fontSize = 14.sp)
+                Text("  ${m.text}", color = C.Text, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false))
+                if (m.action != null) Text(
+                    m.action, color = C.VioletLight, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 12.dp).clip(RoundedCornerShape(8.dp)).clickable { Toaster.current.value = null; m.onAction?.invoke() }.padding(horizontal = 6.dp, vertical = 4.dp),
+                )
             }
         }
     }

@@ -1,79 +1,90 @@
 package app.sentinel.ui.screens
 
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Face
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PersonOff
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.BasicTextField
 import app.sentinel.core.AppState
 import app.sentinel.core.FaceGroup
 import app.sentinel.core.FaceInfo
 import app.sentinel.core.FaceStatus
 import app.sentinel.core.PersonInfo
+import app.sentinel.core.SentinelEvent
 import app.sentinel.core.fmtDay
 import app.sentinel.core.fmtTime
-import app.sentinel.ui.components.Chip
+import app.sentinel.ui.components.Backdrop
 import app.sentinel.ui.components.EmptyState
-import app.sentinel.ui.components.Gap
+import app.sentinel.ui.components.EventPicture
+import app.sentinel.ui.components.FaceAction
+import app.sentinel.ui.components.FaceViewer
 import app.sentinel.ui.components.GlassCard
 import app.sentinel.ui.components.GradientButton
-import app.sentinel.ui.components.SectionTitle
+import app.sentinel.ui.components.LabelChips
+import app.sentinel.ui.components.NamePick
+import app.sentinel.ui.components.NamePicker
+import app.sentinel.ui.components.RoundIcon
 import app.sentinel.ui.components.Shimmer
 import app.sentinel.ui.components.SubtleButton
 import app.sentinel.ui.components.Toaster
@@ -82,25 +93,31 @@ import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** Faces the viewer is showing, and where they come from (for its actions). */
+private data class Viewing(val faces: List<FaceInfo>, val index: Int, val group: FaceGroup? = null)
+
 /**
  * People Sentinel recognises (by face on any camera, and the same day by their clothes),
- * and, for admins, faces it doesn't know yet, grouped by likeness: name a group once and
- * Sentinel recognises them from then on.
+ * and faces it doesn't know yet: tap a face to see it large and name it there; tick faces
+ * to name several at once.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun PeopleScreen(state: AppState, onBack: () -> Unit, openCamera: (String, Long) -> Unit) {
+fun PeopleScreen(state: AppState, onBack: () -> Unit, openCamera: (String, Long) -> Unit, openPerson: (String) -> Unit) {
     var people by remember { mutableStateOf<List<PersonInfo>?>(null) }
     var status by remember { mutableStateOf<FaceStatus?>(null) }
     var groups by remember { mutableStateOf<List<FaceGroup>?>(null) }
-    var open by remember { mutableStateOf<PersonInfo?>(null) }
+    var tab by rememberSaveable { mutableStateOf<String?>(null) }
+    var picked by remember { mutableStateOf(setOf<String>()) }
+    var out by remember { mutableStateOf(setOf<String>()) }
+    var viewing by remember { mutableStateOf<Viewing?>(null) }
     val scope = rememberCoroutineScope()
     val admin = state.isAdmin
-    val cams = state.status.value?.cameras.orEmpty().associate { it.id to it.name }
 
     suspend fun load() {
         runCatching { state.api.people() }.onSuccess { people = it.people; status = it.status; state.peopleCache = it.people }
-        if (admin) runCatching { state.api.unknownFaces() }.onSuccess { groups = it }
+        if (admin) runCatching { state.api.unknownFaces() }.onSuccess { g -> groups = g; val all = g.flatMap { it.ids }.toSet(); picked = picked.filter { it in all }.toSet() }
+        else groups = emptyList()
     }
     LaunchedEffect(Unit) {
         while (true) {
@@ -109,340 +126,369 @@ fun PeopleScreen(state: AppState, onBack: () -> Unit, openCamera: (String, Long)
             delay(30_000)
         }
     }
+    val acts = remember { FaceActs(state) { scope.launch { load() } } }
+    val g = groups.orEmpty()
+    val toName = g.sumOf { it.size }
+    val current = tab ?: if (!admin || (people.orEmpty().isNotEmpty() && toName == 0)) "known" else "name"
+    val multi = g.filter { it.size > 1 }
+    val maybe = g.filter { it.size == 1 && it.suggest != null }
+    val once = g.filter { it.size == 1 && it.suggest == null }.flatMap { it.faces }
 
-    SubPage("People", onBack) {
-        item {
-            Text(
-                "Sentinel recognises the people you name: by face on any camera, and on the same day by their clothes when a camera only sees them from above.",
-                color = C.TextDim, fontSize = 13.sp,
-            )
-        }
-        status?.let { st ->
-            if (!st.enabled) item {
-                Text(st.error?.let { "Face recognition isn't working: $it" } ?: "Face recognition is off (Sentinel Settings).", color = C.Amber, fontSize = 13.sp)
-            } else if (st.backlog > 0) item {
-                Text("Looking for faces in ${st.backlog} earlier events with people…", color = C.TextFaint, fontSize = 12.sp)
+    Backdrop {
+        Column(Modifier.fillMaxSize().statusBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                RoundIcon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", size = 40.dp, background = Color(0x10FFFFFF), onClick = onBack)
+                Text("People", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(horizontal = 12.dp))
             }
-        }
-        item { SectionTitle("Known people", Modifier.padding(top = 6.dp)) }
-        item {
-            val list = people
-            when {
-                list == null -> Shimmer(Modifier.fillMaxWidth().padding(vertical = 4.dp).size(width = 1.dp, height = 120.dp).clip(RoundedCornerShape(18.dp)))
-                list.isEmpty() -> Text(
-                    if (admin) "Nobody yet. Name someone below and Sentinel starts recognising them." else "Nobody yet. An admin can name people in the app or on the Sentinel page.",
-                    color = C.TextDim, fontSize = 13.sp,
-                )
-                else -> FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    list.forEach { p -> PersonTile(state, p, cams) { open = p } }
+            if (admin) Row(Modifier.padding(horizontal = 14.dp).clip(RoundedCornerShape(14.dp)).background(C.Glass).padding(4.dp)) {
+                listOf("name" to "To name · $toName", "known" to "Known · ${people?.size ?: 0}").forEach { (k, label) ->
+                    Text(
+                        label, color = if (current == k) Color.White else C.TextDim, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (current == k) Color(0x22FFFFFF) else Color.Transparent).clickable { tab = k }.padding(vertical = 9.dp),
+                    )
                 }
             }
-        }
-        if (admin) {
-            item { SectionTitle("Who is this?", Modifier.padding(top = 10.dp)) }
-            item {
-                Text("Faces seen but not known yet, grouped by likeness (most seen first). Tap a face that doesn't belong to take it out, then name the group.", color = C.TextFaint, fontSize = 12.sp)
+            status?.let { st ->
+                val note = when {
+                    !st.enabled -> st.error?.let { "Face recognition isn't working: $it" } ?: "Face recognition is off (Sentinel Settings)."
+                    st.backlog > 0 -> "Looking for faces in ${st.backlog} earlier events…"
+                    else -> null
+                }
+                if (note != null) Text(note, color = if (st.enabled) C.TextFaint else C.Amber, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
             }
-            val g = groups
-            if (g == null) item { Shimmer(Modifier.fillMaxWidth().size(width = 1.dp, height = 140.dp).clip(RoundedCornerShape(18.dp))) }
-            else if (g.isEmpty()) item {
-                EmptyState(Icons.Rounded.Face, "No new faces", if ((status?.faces ?: 0) > 0) "Every clear face seen so far has a name." else "Faces appear here as people walk past the cameras facing them.")
-            }
-            else {
-                g.filter { it.size > 1 || it.suggest != null }.forEach { grp ->
-                    item(key = grp.ids.first()) {
-                        GroupCard(state, grp, people.orEmpty(), cams) { msg ->
-                            Toaster.show(msg)
-                            scope.launch { load() }
+            Box(Modifier.weight(1f)) {
+                if (current == "known") KnownGrid(state, people, openPerson)
+                else LazyVerticalGrid(
+                    GridCells.Adaptive(96.dp),
+                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 120.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    val full: androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope.() -> GridItemSpan = { GridItemSpan(maxLineSpan) }
+                    if (groups == null) items(12) { Shimmer(Modifier.aspectRatio(1f).clip(RoundedCornerShape(16.dp))) }
+                    else if (g.isEmpty()) item(span = full) {
+                        EmptyState(Icons.Rounded.Face, "Everyone has a name", "New faces show up here as people walk past the cameras.")
+                    }
+                    multi.forEach { grp ->
+                        item(key = "g-${grp.ids.first()}", span = full) {
+                            GroupCard(state, grp, people.orEmpty(), out, { id -> out = if (id in out) out - id else out + id }, acts) { i -> viewing = Viewing(grp.faces, i, grp) }
+                        }
+                    }
+                    if (maybe.isNotEmpty()) {
+                        item(key = "maybe-title", span = full) {
+                            Column(Modifier.padding(top = 10.dp)) {
+                                Text("Might be someone you know · ${maybe.size}", color = C.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Each looks like someone you named, but not enough to be sure.", color = C.TextFaint, fontSize = 12.sp)
+                            }
+                        }
+                        items(maybe, key = { "m-${it.ids.first()}" }) { grp ->
+                            val s = grp.suggest!!
+                            Column(Modifier.clip(RoundedCornerShape(16.dp)).background(C.Ink850).border(1.dp, C.GlassBorder, RoundedCornerShape(16.dp))) {
+                                FaceTile(state, grp.faces.first(), onOpen = { viewing = Viewing(maybe.map { it.faces.first() }, maybe.indexOf(grp)) })
+                                Text("${s.name}?", color = C.Text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+                                Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(Icons.Rounded.Check, "Yes, ${s.name}", tint = C.Emerald, modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(C.Emerald.copy(alpha = 0.15f)).clickable { acts.name(grp.ids, NamePick(person = s.person, label = s.name)) }.padding(6.dp))
+                                    Icon(Icons.Rounded.Close, "Not ${s.name}", tint = C.TextDim, modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(Color(0x12FFFFFF)).clickable { acts.not(grp.ids, s.person, s.name) }.padding(6.dp))
+                                }
+                            }
+                        }
+                    }
+                    if (once.isNotEmpty()) {
+                        item(key = "once-title", span = full) {
+                            Column(Modifier.padding(top = 10.dp)) {
+                                Text("Seen once · ${once.size}", color = C.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Tap a face to see it large. Tick the ones of one person, then name them together.", color = C.TextFaint, fontSize = 12.sp)
+                            }
+                        }
+                        items(once, key = { "o-${it.id}" }) { f ->
+                            FaceTile(state, f, picked = f.id in picked, onToggle = { picked = if (f.id in picked) picked - f.id else picked + f.id }) {
+                                viewing = Viewing(once, once.indexOf(f))
+                            }
                         }
                     }
                 }
-                val once = g.filter { it.size == 1 && it.suggest == null }.mapNotNull { it.faces.firstOrNull() }
-                if (once.isNotEmpty()) item(key = "once") {
-                    Singles(state, once, people.orEmpty()) { msg ->
-                        Toaster.show(msg)
-                        scope.launch { load() }
+                // Selection bar
+                androidx.compose.animation.AnimatedVisibility(picked.isNotEmpty(), Modifier.align(Alignment.BottomCenter), enter = slideInVertically { it }, exit = slideOutVertically { it }) {
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)).background(C.Ink850).border(1.dp, C.GlassBorder, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                            .navigationBarsPadding().padding(14.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("${picked.size} selected", color = C.Text, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            Text("Not faces", color = C.RoseLight, fontSize = 13.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { acts.junk(picked.toList()) { picked = emptySet() } }.padding(8.dp))
+                            Icon(Icons.Rounded.Close, "Clear", tint = C.TextDim, modifier = Modifier.size(36.dp).clip(CircleShape).clickable { picked = emptySet() }.padding(8.dp))
+                        }
+                        NamePicker(people.orEmpty(), "Name them…", state = state) { p -> acts.name(picked.toList(), p) { picked = emptySet() } }
                     }
                 }
             }
         }
     }
-    open?.let { p ->
-        PersonSheet(state, p, admin, cams, onClose = { open = null }, onChanged = { scope.launch { load() } }, openCamera = openCamera)
-    }
-}
 
-@Composable
-private fun PersonTile(state: AppState, p: PersonInfo, cams: Map<String, String>, onClick: () -> Unit) {
-    Column(
-        Modifier.width(104.dp).clip(RoundedCornerShape(18.dp)).background(C.Glass).border(1.dp, C.GlassBorder, RoundedCornerShape(18.dp))
-            .combinedClickableCompat(onClick).padding(10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Avatar(state, p.cover, 64.dp)
-        Gap(6.dp)
-        Text(p.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("${p.sightings} this week", color = C.TextFaint, fontSize = 11.sp)
-        p.last?.let { Text(cams[it.cam] ?: it.cam, color = C.TextDim, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center) }
-    }
-}
-
-@Composable
-private fun Avatar(state: AppState, id: String?, size: Dp) {
-    Box(Modifier.size(size).clip(CircleShape).background(Color(0x12FFFFFF)).border(2.dp, Color(0x22FFFFFF), CircleShape), contentAlignment = Alignment.Center) {
-        if (id != null) AsyncImage(state.api.faceUrl(id), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        else Icon(Icons.Rounded.Person, null, tint = C.TextFaint, modifier = Modifier.size(size / 2))
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun FaceThumb(state: AppState, f: FaceInfo, dim: Boolean = false, badge: String? = null, badgeColor: Color = C.TextDim, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
-    val haptic = LocalHapticFeedback.current
-    Box(
-        Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, C.GlassBorder, RoundedCornerShape(12.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick?.let { l -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); l() } }),
-    ) {
-        AsyncImage(state.api.faceUrl(f.id), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().alpha(if (dim) 0.25f else 1f))
-        if (dim) Icon(Icons.Rounded.Close, null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(26.dp))
-        if (badge != null) Text(
-            badge, color = badgeColor, fontSize = 9.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0x99000000)),
+    viewing?.let { v ->
+        FaceViewer(
+            state, v.faces, v.index, onClose = { viewing = null }, people = people.orEmpty(),
+            title = v.group?.let { "Likely the same person · ${it.size} faces" },
+            onName = { f, p -> acts.name(listOf(f.id), p) { viewing = null } },
+            actions = { f ->
+                val m = g.find { it.size == 1 && it.suggest != null && it.ids.first() == f.id }?.suggest
+                buildList {
+                    if (m != null) {
+                        add(FaceAction("Yes, ${m.name}", Icons.Rounded.Check) { acts.name(listOf(it.id), NamePick(person = m.person, label = m.name)) { viewing = null } })
+                        add(FaceAction("Not ${m.name}", Icons.Rounded.PersonOff) { acts.not(listOf(it.id), m.person, m.name) { viewing = null } })
+                    }
+                    if (v.group != null) add(FaceAction(if (f.id in out) "Put back in the group" else "Not the same person", Icons.Rounded.PersonOff) { out = if (it.id in out) out - it.id else out + it.id })
+                    add(FaceAction("Not a face", Icons.Rounded.Close, danger = true) { acts.junk(listOf(it.id)) { viewing = null } })
+                }
+            },
+            onWatch = { viewing = null; openCamera(it.cam, it.t - 3000) },
         )
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun GroupCard(state: AppState, g: FaceGroup, people: List<PersonInfo>, cams: Map<String, String>, done: (String) -> Unit) {
-    var left by remember(g.ids.first()) { mutableStateOf(setOf<String>()) }
-    var name by remember(g.ids.first()) { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val ids = g.ids.filter { it !in left }
-    fun save(person: String?, label: String) {
-        if (ids.isEmpty()) return
-        busy = true
+/** Naming and fixing faces, with a message and a reload after. */
+private class FaceActs(val state: AppState, val reload: () -> Unit) {
+    private val scope = kotlinx.coroutines.MainScope()
+    private fun run(block: suspend () -> Unit, msg: String, after: () -> Unit, undo: List<String>? = null) {
         scope.launch {
-            runCatching { state.api.nameFaces(ids, person = person, name = if (person == null) label else null) }
-                .onSuccess { done("${ids.size} face${if (ids.size == 1) "" else "s"} named $label. Sentinel will recognise them from now on.") }
-                .onFailure { Toaster.error(it.message ?: "Couldn't save") }
-            busy = false
+            runCatching { block() }.onSuccess {
+                if (undo != null) Toaster.show(msg, "Undo") {
+                    scope.launch { runCatching { state.api.restoreFaces(undo) }.onSuccess { Toaster.show("Undone"); reload() }.onFailure { e -> Toaster.error(e.message ?: "Couldn't undo") } }
+                } else Toaster.show(msg)
+                after()
+                reload()
+            }.onFailure { Toaster.error(it.message ?: "Couldn't save") }
         }
     }
+    private fun n(ids: List<String>) = "${ids.size} face${if (ids.size == 1) "" else "s"}"
+    fun name(ids: List<String>, p: NamePick, after: () -> Unit = {}) =
+        run({ state.api.nameFaces(ids, person = p.person, name = p.name) }, "${n(ids)} named ${p.label}.", after, ids)
+    fun not(ids: List<String>, person: String, name: String, after: () -> Unit = {}) = run({ state.api.notPerson(ids, person) }, "Not $name: Sentinel learns from it.", after)
+    fun junk(ids: List<String>, after: () -> Unit = {}) = run({ state.api.notFaces(ids) }, "${n(ids)} ignored.", after, ids)
+}
+
+@Composable
+private fun FaceTile(state: AppState, f: FaceInfo, picked: Boolean = false, dim: Boolean = false, ring: Boolean = true, onToggle: (() -> Unit)? = null, onOpen: () -> Unit) {
+    Box(
+        Modifier.aspectRatio(1f).clip(RoundedCornerShape(16.dp)).background(C.Ink850)
+            .border(if (picked && ring) 2.dp else 1.dp, if (picked && ring) C.VioletLight else C.GlassBorder, RoundedCornerShape(16.dp)).clickable(onClick = onOpen),
+    ) {
+        AsyncImage(state.api.faceUrl(f.id), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().alpha(if (dim) 0.3f else 1f))
+        if (dim) Text("Left out", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Center))
+        if (onToggle != null) Box(
+            Modifier.align(Alignment.TopStart).padding(4.dp).size(30.dp).clip(CircleShape).clickable(onClick = onToggle).padding(4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                Modifier.size(22.dp).clip(CircleShape).background(if (picked) C.Violet else Color(0x66000000)).border(2.dp, if (picked) C.VioletLight else Color.White.copy(alpha = 0.85f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { if (picked) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(14.dp)) }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GroupCard(state: AppState, g: FaceGroup, people: List<PersonInfo>, out: Set<String>, toggle: (String) -> Unit, acts: FaceActs, open: (Int) -> Unit) {
+    val cams = state.status.value?.cameras.orEmpty().associate { it.id to it.name }
+    var all by remember { mutableStateOf(false) }
+    val ids = g.ids.filter { it !in out }
+    val shown = if (all) g.faces else g.faces.take(8)
     GlassCard(Modifier.fillMaxWidth()) {
         Column {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                g.faces.forEach { f ->
-                    FaceThumb(state, f, dim = f.id in left) { left = if (f.id in left) left - f.id else left + f.id }
+            Text("Likely the same person · ${g.size} faces", color = C.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "${g.cams.joinToString(", ") { cams[it] ?: it }} · last seen ${fmtDay(g.last, state.serverNow())} ${fmtTime(g.last)}${if (g.size - ids.size > 0) " · ${g.size - ids.size} left out" else ""}",
+                color = C.TextFaint, fontSize = 12.sp,
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.height(10.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp), maxItemsInEachRow = 4) {
+                shown.forEachIndexed { i, f ->
+                    Box(Modifier.weight(1f)) {
+                        FaceTile(state, f, picked = f.id !in out, dim = f.id in out, ring = false, onToggle = { toggle(f.id) }) { open(i) }
+                    }
                 }
-                if (g.size > g.faces.size) Box(Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(Color(0x12FFFFFF)), contentAlignment = Alignment.Center) {
-                    Text("+${g.size - g.faces.size}", color = C.TextDim, fontSize = 13.sp)
-                }
+                repeat((4 - shown.size % 4) % 4) { Box(Modifier.weight(1f)) }
             }
-            Gap(6.dp)
-            val where = g.faces.map { cams[it.cam] ?: it.cam }.distinct().take(3).joinToString(", ")
-            Text("${g.size} face${if (g.size == 1) "" else "s"} · $where${if (left.isNotEmpty()) " · ${left.size} taken out" else ""}", color = C.TextFaint, fontSize = 12.sp)
-            Gap(10.dp)
+            if (g.faces.size > shown.size) Text(
+                "Show all ${g.faces.size}", color = C.VioletLight, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 6.dp).clip(RoundedCornerShape(8.dp)).clickable { all = true }.padding(4.dp),
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.height(10.dp))
             g.suggest?.let { s ->
-                GradientButton("This is ${s.name}", Modifier.fillMaxWidth(), enabled = !busy && ids.isNotEmpty(), loading = busy, icon = Icons.Rounded.Check) { save(s.person, s.name) }
-                Gap(8.dp)
+                GradientButton("This is ${s.name}", Modifier.fillMaxWidth(), enabled = ids.isNotEmpty(), icon = Icons.Rounded.AutoAwesome) { acts.name(ids, NamePick(person = s.person, label = s.name)) }
+                androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
             }
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.Glass).border(1.dp, C.GlassBorder, RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.weight(1f)) {
-                    if (name.isEmpty()) Text(if (g.suggest != null) "Or someone else…" else "Who is this?", color = C.TextFaint, fontSize = 14.sp)
-                    BasicTextField(
-                        name, { name = it }, singleLine = true,
-                        textStyle = TextStyle(color = C.Text, fontSize = 14.sp), cursorBrush = SolidColor(C.VioletLight),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { if (name.isNotBlank()) save(null, name.trim()) }),
-                        modifier = Modifier.fillMaxWidth(),
+            NamePicker(people, if (g.suggest != null) "Or someone else…" else "Who is this? (${ids.size} faces)", state = state) { p -> acts.name(ids, p) }
+            androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
+            SubtleButton("Not faces", Modifier.fillMaxWidth(), icon = Icons.Rounded.Close, tint = C.TextDim) { acts.junk(ids) }
+        }
+    }
+}
+
+@Composable
+private fun KnownGrid(state: AppState, people: List<PersonInfo>?, openPerson: (String) -> Unit) {
+    val cams = state.status.value?.cameras.orEmpty().associate { it.id to it.name }
+    LazyVerticalGrid(
+        GridCells.Adaptive(150.dp),
+        contentPadding = PaddingValues(14.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        when {
+            people == null -> items(6) { Shimmer(Modifier.aspectRatio(0.8f).clip(RoundedCornerShape(22.dp))) }
+            people.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+                EmptyState(Icons.Rounded.Person, "Nobody named yet", if (state.isAdmin) "Name a face under “To name” and Sentinel starts recognising that person." else "An admin can name people in the app or on the Sentinel page.")
+            }
+            else -> items(people, key = { it.id }) { p ->
+                Column(Modifier.clip(RoundedCornerShape(22.dp)).background(C.Ink850).border(1.dp, C.GlassBorder, RoundedCornerShape(22.dp)).clickable { openPerson(p.id) }) {
+                    Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
+                        if (p.cover != null) AsyncImage(state.api.faceUrl(p.cover), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                        else Icon(Icons.Rounded.Person, null, tint = C.TextFaint, modifier = Modifier.fillMaxSize().padding(36.dp))
+                        Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xDD000000)))).padding(10.dp)) {
+                            Text(p.name, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${p.sightings} events this week", color = Color.White.copy(alpha = 0.75f), fontSize = 11.sp)
+                        }
+                    }
+                    Text(
+                        p.last?.let { "Last: ${cams[it.cam] ?: it.cam}, ${fmtDay(it.t, state.serverNow())} ${fmtTime(it.t)}" } ?: "Not seen this week",
+                        color = C.TextDim, fontSize = 11.sp, maxLines = 2, modifier = Modifier.padding(10.dp),
                     )
-                }
-                if (name.isNotBlank()) Text(
-                    "Save", color = C.VioletLight, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).combinedClickableCompat { save(null, name.trim()) }.padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
-            if (people.isNotEmpty()) {
-                Gap(8.dp)
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    people.forEach { p -> Chip(p.name, false, icon = Icons.Rounded.Person) { save(p.id, p.name) } }
-                }
-            }
-            Gap(8.dp)
-            SubtleButton("Not a face", Modifier.fillMaxWidth(), icon = Icons.Rounded.Close, tint = C.TextDim) {
-                busy = true
-                scope.launch {
-                    runCatching { state.api.notFaces(ids) }.onSuccess { done("Ignored. Similar ones won't show up again.") }.onFailure { Toaster.error(it.message ?: "Couldn't save") }
-                    busy = false
                 }
             }
         }
     }
 }
 
-/** Faces seen once: tap the ones of the same person, then name them together. */
-@OptIn(ExperimentalLayoutApi::class)
+/** One person: where they were seen lately, and the faces taken for them. */
 @Composable
-private fun Singles(state: AppState, faces: List<FaceInfo>, people: List<PersonInfo>, done: (String) -> Unit) {
-    var picked by remember { mutableStateOf(setOf<String>()) }
-    var name by remember { mutableStateOf("") }
+fun PersonScreen(state: AppState, id: String, onBack: () -> Unit, openCamera: (String, Long) -> Unit) {
+    var people by remember { mutableStateOf(state.peopleCache) }
+    var faces by remember { mutableStateOf<List<FaceInfo>?>(null) }
+    var events by remember { mutableStateOf<List<SentinelEvent>?>(null) }
+    var viewing by remember { mutableStateOf<Int?>(null) }
+    var renaming by remember { mutableStateOf(false) }
+    var confirmForget by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    fun save(person: String?, label: String) {
-        val ids = picked.toList()
-        if (ids.isEmpty()) return
-        scope.launch {
-            runCatching { state.api.nameFaces(ids, person = person, name = if (person == null) label else null) }
-                .onSuccess { picked = emptySet(); name = ""; done("${ids.size} face${if (ids.size == 1) "" else "s"} named $label.") }
-                .onFailure { Toaster.error(it.message ?: "Couldn't save") }
-        }
+    val admin = state.isAdmin
+    val cams = state.status.value?.cameras.orEmpty().associate { it.id to it.name }
+    suspend fun load() {
+        runCatching { state.api.people().people }.onSuccess { people = it; state.peopleCache = it }
+        runCatching { state.api.personFaces(id, 300) }.onSuccess { faces = it }
+        runCatching { state.api.personEvents(id) }.onSuccess { events = it }
     }
-    GlassCard(Modifier.fillMaxWidth()) {
-        Column {
-            Text("Seen once", style = MaterialTheme.typography.titleSmall)
-            Text("Tap the faces of one person (they may be seen from different angles), then name them together.", color = C.TextFaint, fontSize = 12.sp)
-            Gap(10.dp)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                faces.forEach { f ->
-                    Box(Modifier.border(2.dp, if (f.id in picked) C.VioletLight else Color.Transparent, RoundedCornerShape(14.dp)).padding(2.dp)) {
-                        FaceThumb(state, f, badge = if (f.id in picked) "✓" else null, badgeColor = C.VioletLight) {
-                            picked = if (f.id in picked) picked - f.id else picked + f.id
+    LaunchedEffect(id) { load() }
+    val acts = remember { FaceActs(state) { scope.launch { load() } } }
+    val p = people.find { it.id == id }
+
+    Backdrop {
+        Column(Modifier.fillMaxSize().statusBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                RoundIcon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", size = 40.dp, background = Color(0x10FFFFFF), onClick = onBack)
+                Text(p?.name ?: "", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(horizontal = 12.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (admin && p != null) RoundIcon(Icons.Rounded.Edit, "Rename", size = 40.dp, background = Color(0x10FFFFFF)) { renaming = true }
+            }
+            LazyVerticalGrid(
+                GridCells.Adaptive(96.dp),
+                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxSize().navigationBarsPadding(),
+            ) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (p?.cover != null) AsyncImage(state.api.faceUrl(p.cover), null, contentScale = ContentScale.Crop, modifier = Modifier.size(92.dp).clip(RoundedCornerShape(24.dp)))
+                        Column(Modifier.padding(start = 14.dp)) {
+                            Text(p?.name ?: "…", style = MaterialTheme.typography.headlineSmall)
+                            p?.let {
+                                Text("${it.sightings} events this week · ${it.faces} known faces", color = C.TextDim, fontSize = 13.sp)
+                                it.last?.let { l -> Text("Last seen: ${cams[l.cam] ?: l.cam}, ${fmtDay(l.t, state.serverNow())} ${fmtTime(l.t)}", color = C.TextFaint, fontSize = 12.sp) }
+                            }
                         }
                     }
                 }
-            }
-            if (picked.isNotEmpty()) {
-                Gap(10.dp)
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.Glass).border(1.dp, C.GlassBorder, RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(Modifier.weight(1f)) {
-                        if (name.isEmpty()) Text("Who is this? (${picked.size} picked)", color = C.TextFaint, fontSize = 14.sp)
-                        BasicTextField(
-                            name, { name = it }, singleLine = true,
-                            textStyle = TextStyle(color = C.Text, fontSize = 14.sp), cursorBrush = SolidColor(C.VioletLight),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                            keyboardActions = KeyboardActions(onDone = { if (name.isNotBlank()) save(null, name.trim()) }),
-                            modifier = Modifier.fillMaxWidth(),
+                item(span = { GridItemSpan(maxLineSpan) }) { Text("Recent sightings", color = C.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp)) }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    val ev = events
+                    when {
+                        ev == null -> Shimmer(Modifier.fillMaxWidth().height(120.dp).clip(RoundedCornerShape(16.dp)))
+                        ev.isEmpty() -> Text("No events with ${p?.name ?: "them"} this week.", color = C.TextDim, fontSize = 13.sp)
+                        else -> Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ev.forEach { e ->
+                                Column(Modifier.width(200.dp).clip(RoundedCornerShape(16.dp)).clickable { openCamera(e.camera, e.bestTime - 3000) }) {
+                                    Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(16.dp))) {
+                                        EventPicture(state.api, e, Modifier.matchParentSize())
+                                        LabelChips(e.labels, Modifier.align(Alignment.BottomStart).padding(6.dp), small = true, who = e.who)
+                                    }
+                                    Text("${cams[e.camera] ?: e.camera} · ${fmtDay(e.start, state.serverNow())} ${fmtTime(e.start)}", color = C.TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp, start = 2.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Column(Modifier.padding(top = 12.dp)) {
+                        Text("Faces · ${faces?.size ?: 0}", color = C.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                        Text(if (admin) "Tap a face to check it; take out any that isn't ${p?.name ?: "them"}." else "Tap a face to see it large.", color = C.TextFaint, fontSize = 12.sp)
+                    }
+                }
+                val list = faces
+                if (list == null) items(8) { Shimmer(Modifier.aspectRatio(1f).clip(RoundedCornerShape(16.dp))) }
+                else items(list, key = { it.id }) { f ->
+                    Box {
+                        FaceTile(state, f) { viewing = list.indexOf(f) }
+                        Text(
+                            if (f.by == "you") "Named" else "${(f.sim * 100).toInt()}%", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(5.dp).clip(RoundedCornerShape(6.dp)).background(if (f.by == "you") C.Emerald else Color(0x99000000)).padding(horizontal = 5.dp, vertical = 2.dp),
                         )
                     }
-                    if (name.isNotBlank()) Text(
-                        "Save", color = C.VioletLight, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
-                        modifier = Modifier.clip(RoundedCornerShape(8.dp)).combinedClickableCompat { save(null, name.trim()) }.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
                 }
-                if (people.isNotEmpty()) {
-                    Gap(8.dp)
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        people.forEach { p -> Chip(p.name, false, icon = Icons.Rounded.Person) { save(p.id, p.name) } }
-                    }
-                }
-                Gap(8.dp)
-                SubtleButton("Not a face", Modifier.fillMaxWidth(), icon = Icons.Rounded.Close, tint = C.TextDim) {
-                    val ids = picked.toList()
-                    scope.launch {
-                        runCatching { state.api.notFaces(ids) }.onSuccess { picked = emptySet(); done("Ignored.") }.onFailure { Toaster.error(it.message ?: "Couldn't save") }
-                    }
+                if (admin && p != null) item(span = { GridItemSpan(maxLineSpan) }) {
+                    SubtleButton("Forget ${p.name}", Modifier.fillMaxWidth().padding(top = 16.dp), tint = C.RoseLight) { confirmForget = true }
                 }
             }
         }
     }
-}
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
-@Composable
-private fun PersonSheet(state: AppState, p: PersonInfo, admin: Boolean, cams: Map<String, String>, onClose: () -> Unit, onChanged: () -> Unit, openCamera: (String, Long) -> Unit) {
-    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var faces by remember { mutableStateOf<List<FaceInfo>?>(null) }
-    var renaming by remember { mutableStateOf(false) }
-    var newName by remember { mutableStateOf(p.name) }
-    var confirmNot by remember { mutableStateOf<FaceInfo?>(null) }
-    var confirmForget by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(p.id) { faces = runCatching { state.api.personFaces(p.id) }.getOrDefault(emptyList()) }
-
-    ModalBottomSheet(onDismissRequest = onClose, sheetState = sheet, containerColor = C.Ink850) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).navigationBarsPadding().padding(bottom = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(state, p.cover, 56.dp)
-                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                    Text(p.name, style = MaterialTheme.typography.titleLarge)
-                    Text("${p.sightings} events this week · ${p.faces} faces", color = C.TextDim, fontSize = 12.sp)
-                    p.last?.let { Text("Last: ${cams[it.cam] ?: it.cam}, ${fmtDay(it.t, state.serverNow())} ${fmtTime(it.t)}", color = C.TextFaint, fontSize = 12.sp) }
-                }
-                if (admin) Icon(Icons.Rounded.Edit, "Rename", tint = C.TextDim, modifier = Modifier.size(36.dp).clip(CircleShape).combinedClickableCompat { renaming = true }.padding(8.dp))
-            }
-            Gap(12.dp)
-            Text(
-                if (admin) "Faces taken for ${p.name}. Tap one to see that moment; press and hold one that isn't ${p.name} to take it out." else "Faces taken for ${p.name}. Tap one to see that moment.",
-                color = C.TextFaint, fontSize = 12.sp,
-            )
-            Gap(10.dp)
-            val list = faces
-            if (list == null) Shimmer(Modifier.fillMaxWidth().size(width = 1.dp, height = 80.dp).clip(RoundedCornerShape(12.dp)))
-            else FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                list.forEach { f ->
-                    FaceThumb(
-                        state, f,
-                        badge = if (f.by == "you") "named" else "${(f.sim * 100).toInt()}%",
-                        badgeColor = if (f.by == "you") C.Emerald else C.TextDim,
-                        onLongClick = if (admin) ({ confirmNot = f }) else null,
-                    ) { onClose(); openCamera(f.cam, f.t - 3000) }
-                }
-            }
-            if (admin) {
-                Gap(16.dp)
-                SubtleButton("Forget ${p.name}", Modifier.fillMaxWidth(), tint = C.RoseLight) { confirmForget = true }
-            }
-        }
+    viewing?.let { i ->
+        val list = faces.orEmpty()
+        FaceViewer(
+            state, list, i, onClose = { viewing = null }, people = if (admin) people else emptyList(), title = p?.name,
+            onName = if (admin) ({ f, pick -> acts.name(listOf(f.id), pick) { if (pick.person != id) viewing = null } }) else null,
+            actions = { if (admin && p != null) listOf(FaceAction("Not ${p.name}", Icons.Rounded.PersonOff, danger = true) { f -> acts.not(listOf(f.id), p.id, p.name) { viewing = null } }) else emptyList() },
+            onWatch = { viewing = null; openCamera(it.cam, it.t - 3000) },
+        )
     }
-    confirmNot?.let { f ->
+    if (renaming && p != null) {
+        var name by remember { mutableStateOf(p.name) }
         AlertDialog(
-            onDismissRequest = { confirmNot = null },
-            title = { Text("Not ${p.name}?") },
-            text = { Text("This face is taken out, and Sentinel learns from it.") },
+            onDismissRequest = { renaming = false },
+            title = { Text("Rename") },
+            text = {
+                BasicTextField(
+                    name, { name = it }, singleLine = true, textStyle = TextStyle(color = C.Text, fontSize = 16.sp), cursorBrush = SolidColor(C.VioletLight),
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.Glass).padding(12.dp),
+                )
+            },
             confirmButton = {
                 TextButton({
-                    confirmNot = null
-                    faces = faces?.filter { it.id != f.id }
-                    scope.launch { runCatching { state.api.notPerson(listOf(f.id), p.id) }.onSuccess { onChanged() }.onFailure { Toaster.error(it.message ?: "Couldn't save") } }
-                }) { Text("Not ${p.name}", color = C.RoseLight) }
+                    renaming = false
+                    scope.launch { runCatching { state.api.renamePerson(id, name.trim()) }.onSuccess { load() }.onFailure { Toaster.error(it.message ?: "Couldn't rename") } }
+                }) { Text("Save", color = C.VioletLight) }
             },
-            dismissButton = { TextButton({ confirmNot = null }) { Text("Cancel", color = C.TextDim) } },
+            dismissButton = { TextButton({ renaming = false }) { Text("Cancel", color = C.TextDim) } },
             containerColor = C.Ink800,
         )
     }
-    if (renaming) AlertDialog(
-        onDismissRequest = { renaming = false },
-        title = { Text("Rename") },
-        text = {
-            BasicTextField(
-                newName, { newName = it }, singleLine = true, textStyle = TextStyle(color = C.Text, fontSize = 16.sp), cursorBrush = SolidColor(C.VioletLight),
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.Glass).padding(12.dp),
-            )
-        },
-        confirmButton = {
-            TextButton({
-                renaming = false
-                scope.launch { runCatching { state.api.renamePerson(p.id, newName.trim()) }.onSuccess { onChanged(); onClose() }.onFailure { Toaster.error(it.message ?: "Couldn't rename") } }
-            }) { Text("Save", color = C.VioletLight) }
-        },
-        dismissButton = { TextButton({ renaming = false }) { Text("Cancel", color = C.TextDim) } },
-        containerColor = C.Ink800,
-    )
-    if (confirmForget) AlertDialog(
+    if (confirmForget && p != null) AlertDialog(
         onDismissRequest = { confirmForget = false },
         title = { Text("Forget ${p.name}?") },
-        text = { Text("Their faces become unknown again. Nothing else is deleted.") },
+        text = { Text("Their faces go back to “To name”. Nothing else is deleted.") },
         confirmButton = {
             TextButton({
                 confirmForget = false
-                scope.launch { runCatching { state.api.forgetPerson(p.id) }.onSuccess { onChanged(); onClose() }.onFailure { Toaster.error(it.message ?: "Couldn't do that") } }
+                scope.launch { runCatching { state.api.forgetPerson(id) }.onSuccess { onBack() }.onFailure { Toaster.error(it.message ?: "Couldn't do that") } }
             }) { Text("Forget", color = C.RoseLight) }
         },
         dismissButton = { TextButton({ confirmForget = false }) { Text("Cancel", color = C.TextDim) } },
@@ -450,5 +496,45 @@ private fun PersonSheet(state: AppState, p: PersonInfo, admin: Boolean, cams: Ma
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-private fun Modifier.combinedClickableCompat(onClick: () -> Unit): Modifier = this.combinedClickable(onClick = onClick)
+/** The faces in the event being watched, with who they are; tap one to see it large and name it. */
+@Composable
+fun EventPeopleStrip(state: AppState, cam: String, eventId: String?, openCamera: (String, Long) -> Unit) {
+    var faces by remember { mutableStateOf<List<FaceInfo>>(emptyList()) }
+    var viewing by remember { mutableStateOf<Int?>(null) }
+    val scope = rememberCoroutineScope()
+    suspend fun load() {
+        faces = if (eventId == null) emptyList() else runCatching { state.api.eventFaces(cam, eventId) }.getOrDefault(emptyList())
+    }
+    LaunchedEffect(cam, eventId) { load() }
+    val acts = remember { FaceActs(state) { scope.launch { load() } } }
+    val shown = faces.filterIndexed { i, f -> f.person == null || faces.indexOfFirst { it.person == f.person } == i }.take(8)
+    if (shown.isEmpty()) return
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Face, null, tint = C.TextFaint, modifier = Modifier.size(18.dp))
+        shown.forEachIndexed { i, f ->
+            Row(
+                Modifier.clip(CircleShape).background(C.Glass).border(1.dp, C.GlassBorder, CircleShape).clickable { viewing = i }.padding(start = 3.dp, end = 12.dp, top = 3.dp, bottom = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsyncImage(state.api.faceUrl(f.id), null, contentScale = ContentScale.Crop, modifier = Modifier.size(30.dp).clip(CircleShape))
+                Text("  ${f.name ?: "Who is this?"}", color = if (f.name != null) C.Text else C.VioletLight, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+    viewing?.let { i ->
+        val admin = state.isAdmin
+        FaceViewer(
+            state, shown, i, onClose = { viewing = null }, people = if (admin) state.peopleCache else emptyList(),
+            onName = if (admin) ({ f, p -> acts.name(listOf(f.id), p) { viewing = null } }) else null,
+            actions = { f ->
+                if (!admin) emptyList() else buildList {
+                    if (f.person != null) add(FaceAction("Not ${f.name}", Icons.Rounded.PersonOff, danger = true) { acts.not(listOf(it.id), it.person!!, it.name ?: "them") { viewing = null } })
+                    add(FaceAction("Not a face", Icons.Rounded.Close, danger = true) { acts.junk(listOf(it.id)) { viewing = null } })
+                }
+            },
+        )
+    }
+}

@@ -1,5 +1,6 @@
 package app.sentinel.ui
 
+import app.sentinel.ui.screens.PersonScreen
 import app.sentinel.ui.screens.PeopleScreen
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -144,6 +145,7 @@ object Routes {
     const val Settings = "settings"
     const val Notifications = "notifications"
     const val People = "people"
+    const val Person = "person/{id}"
     const val Summary = "summary?date={date}"
     fun summary(date: String? = null) = "summary" + (date?.takeIf { it.isNotBlank() }?.let { "?date=$it" } ?: "")
     fun camera(id: String, t: Long? = null, ev: String? = null) = "camera/$id" + (if (t != null) "?t=$t" else "") + (if (ev != null) "${if (t != null) "&" else "?"}ev=${android.net.Uri.encode(ev)}" else "")
@@ -197,9 +199,14 @@ private fun MainNav(state: AppState) {
         composable(Routes.System) { SystemScreen(state, onBack = { nav.popBackStack() }, onOpenCamera = { nav.navigate(Routes.camera(it)) }) }
         composable(Routes.Settings) { SettingsScreen(state, onBack = { nav.popBackStack() }) }
         composable(Routes.Notifications) { NotificationsScreen(state, onBack = { nav.popBackStack() }) }
-        composable(Routes.People) { PeopleScreen(state, onBack = { nav.popBackStack() }, openCamera = { id, t -> nav.navigate(Routes.camera(id, t)) }) }
+        composable(Routes.People) {
+            PeopleScreen(state, onBack = { nav.popBackStack() }, openCamera = { id, t -> nav.navigate(Routes.camera(id, t)) }, openPerson = { nav.navigate("person/$it") })
+        }
+        composable(Routes.Person, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+            PersonScreen(state, entry.arguments?.getString("id") ?: "", onBack = { nav.popBackStack() }, openCamera = { id, t -> nav.navigate(Routes.camera(id, t)) })
+        }
         composable(Routes.Summary, arguments = listOf(navArgument("date") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
-            SummaryScreen(state, entry.arguments?.getString("date"), onBack = { nav.popBackStack() }, openCamera = { id, t -> nav.navigate(Routes.camera(id, t)) })
+            SummaryScreen(state, entry.arguments?.getString("date"), onBack = { nav.popBackStack() }, openCamera = { id, t -> nav.navigate(Routes.camera(id, t)) }, onPerson = { nav.navigate("person/$it") })
         }
     }
 }
