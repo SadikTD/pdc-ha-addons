@@ -75,14 +75,16 @@ type MQTT struct {
 	client    mqtt.Client
 	connected atomic.Bool
 	cams      []Camera
-	published map[string]bool // discovery ids we've announced
+	people    []Person
+	seenAt    map[string]int64 // person -> newest sighting published
+	published map[string]bool  // discovery ids we've announced
 	onConnect func()
 	lastErr   string
 }
 
 const availTopic = "sentinel/availability"
 
-func newMQTT() *MQTT { return &MQTT{published: map[string]bool{}} }
+func newMQTT() *MQTT { return &MQTT{published: map[string]bool{}, seenAt: map[string]int64{}} }
 
 func (m *MQTT) Connected() bool { return m.connected.Load() }
 
@@ -175,6 +177,32 @@ func device(id, name string) map[string]any {
 	return map[string]any{"identifiers": []string{"sentinel_" + id}, "name": name, "manufacturer": "Sentinel", "model": "Sentinel NVR camera", "via_device": "sentinel_nvr"}
 }
 
+// SetPeople: the people Sentinel recognises (a "last seen" sensor each).
+func (m *MQTT) SetPeople(people []Person) {
+	m.mu.Lock()
+	m.people = people
+	m.mu.Unlock()
+	m.announce()
+}
+
+// PersonSeen: someone was recognised (by "face" or "clothing") on a camera at t. Only
+// newer sightings are published (older events are looked at in the background too).
+func (m *MQTT) PersonSeen(person, camera, by string, t int64) {
+	m.mu.Lock()
+	newer := t > m.seenAt[person]
+	if newer {
+		m.seenAt[person] = t
+	}
+	m.mu.Unlock()
+	if !newer {
+		return
+	}
+	m.publish("sentinel/people/"+person+"/camera", true, camera)
+	m.publish("sentinel/people/"+person+"/at", true, time.UnixMilli(t).Format(time.RFC3339))
+	b, _ := json.Marshal(map[string]any{"camera": camera, "by": by, "time": time.UnixMilli(t).Format(time.RFC3339)})
+	m.publish("sentinel/people/"+person+"/attributes", true, b)
+}
+
 func (m *MQTT) SetCameras(cams []Camera) {
 	m.mu.Lock()
 	m.cams = cams
@@ -188,7 +216,7 @@ func (m *MQTT) announce() {
 		return
 	}
 	m.mu.Lock()
-	cams := m.cams
+	cams, people := m.cams, m.people
 	m.mu.Unlock()
 	want := map[string]bool{}
 	pub := func(component, objectID string, cfg map[string]any) {
@@ -212,6 +240,14 @@ func (m *MQTT) announce() {
 		for _, label := range watchLabels {
 			pub("binary_sensor", label, map[string]any{"name": objectNames[label] + " (any camera)", "state_topic": "sentinel/" + label, "device_class": "occupancy", "icon": objectIcons[label], "device": hub})
 		}
+	}
+	// People recognised: where and when each was last seen (for automations like
+	// "Abir came home").
+	for _, p := range people {
+		pub("sensor", "person_"+p.ID+"_camera", map[string]any{"name": p.Name + " last seen", "state_topic": "sentinel/people/" + p.ID + "/camera",
+			"json_attributes_topic": "sentinel/people/" + p.ID + "/attributes", "icon": "mdi:account-eye", "device": hub})
+		pub("sensor", "person_"+p.ID+"_at", map[string]any{"name": p.Name + " last seen at", "state_topic": "sentinel/people/" + p.ID + "/at",
+			"device_class": "timestamp", "icon": "mdi:account-clock", "device": hub})
 	}
 	for _, c := range cams {
 		if !c.Enabled {

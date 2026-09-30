@@ -36,6 +36,7 @@ type DaySummary struct {
 	Cameras    []CamDay       `json:"cameras"`
 	Hours      [24][4]int     `json:"hours"` // per hour: motion, person, cat, dog
 	Highlights []Highlight    `json:"highlights"`
+	People     []PersonDay    `json:"people"`  // recognised people (see faces.go)
 	Pending    int            `json:"pending"` // events not checked for people yet
 	Problems   int            `json:"problems"`
 	Text       string         `json:"text"`
@@ -113,6 +114,7 @@ func (a *App) Summary(d time.Time, allowed func(string) bool) DaySummary {
 	for _, id := range cams {
 		sum.Cameras = append(sum.Cameras, *byCam[id])
 	}
+	sum.People = a.faces.Day(events)
 	// Highlights: the clearest sightings, people first, at most two per camera and spread
 	// over the day (not ten pictures of one visit).
 	sort.SliceStable(highlights, func(i, j int) bool {

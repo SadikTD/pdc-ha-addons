@@ -616,6 +616,11 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 	f.saveLocked()
 	f.mu.Unlock()
 	a.events.SetFacesDone(e.Cam, e.ID)
+	if cur, ok := a.events.Get(e.Cam, e.ID); ok {
+		for _, w := range cur.Who {
+			a.mqtt.PersonSeen(w.Person, cameraName(a.settings.Get(), e.Cam), w.By, e.Start)
+		}
+	}
 	return found, nil
 }
 
@@ -688,7 +693,7 @@ func clampRect(r Rect) Rect {
 	return Rect{X: x0, Y: y0, W: max(x1-x0, 0), H: max(y1-y0, 0)}
 }
 
-// faceThumb: the face with some room around it, 128x128 JPEG.
+// faceThumb: the face with some room around it, 256x256 JPEG.
 func faceThumb(full frameRGB, face Rect) []byte {
 	cx, cy := (face.X+face.W/2)*float64(full.w), (face.Y+face.H/2)*float64(full.h)
 	side := max(face.W*float64(full.w), face.H*float64(full.h)) * 1.6
@@ -697,13 +702,13 @@ func faceThumb(full frameRGB, face Rect) []byte {
 	if x1-x0 < 8 || y1-y0 < 8 {
 		return nil
 	}
-	rgb := resizeRGB(full.rgb, full.w, full.h, x0, y0, x1, y1, 128, 128)
-	img := image.NewRGBA(image.Rect(0, 0, 128, 128))
-	for i := 0; i < 128*128; i++ {
+	rgb := resizeRGB(full.rgb, full.w, full.h, x0, y0, x1, y1, 256, 256)
+	img := image.NewRGBA(image.Rect(0, 0, 256, 256))
+	for i := 0; i < 256*256; i++ {
 		img.Pix[4*i], img.Pix[4*i+1], img.Pix[4*i+2], img.Pix[4*i+3] = rgb[3*i], rgb[3*i+1], rgb[3*i+2], 255
 	}
 	var buf bytes.Buffer
-	if jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}) != nil {
+	if jpeg.Encode(&buf, img, &jpeg.Options{Quality: 88}) != nil {
 		return nil
 	}
 	return buf.Bytes()
@@ -855,10 +860,14 @@ type FaceInfo struct {
 	By     string  `json:"by,omitempty"`
 	Sim    float64 `json:"sim,omitempty"`
 	Person string  `json:"person,omitempty"`
+	Name   string  `json:"name,omitempty"`
+	Face   *Rect   `json:"face,omitempty"` // in the frame (normalised)
+	Box    Rect    `json:"box"`            // the person, in the frame
 }
 
-func faceInfo(s *Seen) FaceInfo {
-	return FaceInfo{ID: s.ID, Cam: s.Cam, Event: s.Event, T: s.T, Q: math.Round(s.Q*100) / 100, By: s.By, Sim: math.Round(s.Sim*100) / 100, Person: s.Person}
+func (f *Faces) faceInfoLocked(s *Seen) FaceInfo {
+	return FaceInfo{ID: s.ID, Cam: s.Cam, Event: s.Event, T: s.T, Q: math.Round(s.Q*100) / 100, By: s.By, Sim: math.Round(s.Sim*100) / 100,
+		Person: s.Person, Name: f.nameOfLocked(s.Person), Face: s.Face, Box: s.Box}
 }
 
 // PersonFaces: the faces taken for someone, surest first (to spot wrong ones).
@@ -882,15 +891,17 @@ func (f *Faces) PersonFaces(id string, limit int) []FaceInfo {
 		if len(out) >= limit {
 			break
 		}
-		out = append(out, faceInfo(s))
+		out = append(out, f.faceInfoLocked(s))
 	}
 	return out
 }
 
 type FaceGroup struct {
-	Faces   []FaceInfo `json:"faces"` // the clearest first (up to 12)
-	Size    int        `json:"size"`  // all faces in the group
-	IDs     []string   `json:"ids"`   // all of them, to name at once
+	Faces   []FaceInfo `json:"faces"` // all of them, the clearest first
+	Size    int        `json:"size"`
+	IDs     []string   `json:"ids"` // all of them, to name at once
+	Cams    []string   `json:"cams"`
+	Last    int64      `json:"last"` // last seen (unix ms)
 	Suggest *Who       `json:"suggest,omitempty"`
 }
 
@@ -945,9 +956,11 @@ func (f *Faces) Unknown(limit int) []FaceGroup {
 		fg := FaceGroup{Size: len(c.members)}
 		for _, s := range c.members {
 			fg.IDs = append(fg.IDs, s.ID)
-			if len(fg.Faces) < 12 {
-				fg.Faces = append(fg.Faces, faceInfo(s))
+			fg.Faces = append(fg.Faces, f.faceInfoLocked(s))
+			if !slices.Contains(fg.Cams, s.Cam) {
+				fg.Cams = append(fg.Cams, s.Cam)
 			}
+			fg.Last = max(fg.Last, s.T)
 		}
 		// Like someone already named, but not enough to say so: ask.
 		cen := make([]float32, len(c.sum))
@@ -988,6 +1001,7 @@ func (f *Faces) Name(ids []string, id, name string) (Person, error) {
 		f.people = append(f.people, Person{ID: newID(), Name: name, Created: time.Now().UnixMilli()})
 		p = &f.people[len(f.people)-1]
 		f.savePeopleLocked()
+		go f.announcePeople()
 	}
 	for _, fid := range ids {
 		if s, ok := f.seen[fid]; ok && s.emb != nil {
@@ -1041,6 +1055,7 @@ func (f *Faces) Rename(id, name string) (Person, error) {
 				f.people[i].Name = name
 				f.savePeopleLocked()
 				f.whoLocked(nil)
+				go f.announcePeople()
 			}
 			return f.people[i], nil
 		}
@@ -1054,6 +1069,7 @@ func (f *Faces) Forget(id string) {
 	defer f.mu.Unlock()
 	f.people = slices.DeleteFunc(f.people, func(p Person) bool { return p.ID == id })
 	f.savePeopleLocked()
+	go f.announcePeople()
 	for _, s := range f.seen {
 		if s.Person == id {
 			s.Person, s.By, s.Sim = "", "", 0
@@ -1099,4 +1115,72 @@ func (f *Faces) PersonByName(name string) (Person, bool) {
 		}
 	}
 	return Person{}, false
+}
+
+// EventFaces: the clear faces found in an event, with who they are (if known).
+func (f *Faces) EventFaces(cam, event string) []FaceInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, junk := f.galleriesLocked()
+	out := []FaceInfo{}
+	for _, s := range f.seen {
+		if s.Cam == cam && s.Event == event && s.hasFace() && s.Q >= faceMinQ && !isJunk(s.emb, junk) {
+			out = append(out, f.faceInfoLocked(s))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Q > out[j].Q })
+	return out
+}
+
+// PersonDay: someone recognised during a day.
+type PersonDay struct {
+	Person string   `json:"person"`
+	Name   string   `json:"name"`
+	Cover  string   `json:"cover,omitempty"`
+	Events int      `json:"events"`
+	First  int64    `json:"first"`
+	Last   int64    `json:"last"`
+	Cams   []string `json:"cams"`
+}
+
+// Day: who was recognised in the events between from and to, first seen first.
+func (f *Faces) Day(events []Event) []PersonDay {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	by := map[string]*PersonDay{}
+	for _, e := range events {
+		for _, w := range e.Who {
+			pd := by[w.Person]
+			if pd == nil {
+				pd = &PersonDay{Person: w.Person, Name: w.Name, First: e.Start}
+				by[w.Person] = pd
+			}
+			pd.Events++
+			pd.First, pd.Last = min(pd.First, e.Start), max(pd.Last, e.Start)
+			if !slices.Contains(pd.Cams, e.Cam) {
+				pd.Cams = append(pd.Cams, e.Cam)
+			}
+		}
+	}
+	out := []PersonDay{}
+	for _, pd := range by {
+		best := 0.0
+		for _, s := range f.seen {
+			if s.Person == pd.Person && s.hasFace() && s.Q > best {
+				best, pd.Cover = s.Q, s.ID
+			}
+		}
+		out = append(out, *pd)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].First < out[j].First })
+	return out
+}
+
+// announcePeople tells Home Assistant (MQTT) who Sentinel knows, and where each was
+// last seen.
+func (f *Faces) announcePeople() {
+	f.mu.Lock()
+	people := slices.Clone(f.people)
+	f.mu.Unlock()
+	f.app.mqtt.SetPeople(people)
 }

@@ -7,6 +7,7 @@ import {
   Volume2, VolumeX, X, ZoomIn, ZoomOut, Zap, ImageOff, Columns2, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { JumpTo } from "../components/JumpTo";
+import { EventPeople } from "../components/EventPeople";
 import { LiveStream } from "../components/LiveStream";
 import { VodPlayer, type VodHandle } from "../components/VodPlayer";
 import { Scrubber, MIN_RANGE, MAX_RANGE } from "../components/Scrubber";
@@ -283,6 +284,8 @@ function CameraView({ id, initialT, eventId }: { id: string; initialT: number; e
   // not the page).
   const listBox = useRef<HTMLDivElement>(null);
   const activeId = listEvents.find((e) => center >= e.start - 3000 && center <= (e.end || now))?.id;
+  // The person event under the playhead (its faces are shown under the player).
+  const playingPerson = events.find((e) => e.labels?.includes("person") && center >= e.start - 3000 && center <= (e.end || now) + 2000)?.id ?? (eventId || undefined);
   useEffect(() => {
     const box = listBox.current;
     const el = activeId && box?.querySelector<HTMLElement>(`[data-ev="${CSS.escape(activeId)}"]`);
@@ -486,6 +489,9 @@ function CameraView({ id, initialT, eventId }: { id: string; initialT: number; e
               </Button>
             </div>
           </Card>
+
+          {/* Who is in the event being watched */}
+          <EventPeople cam={id} eventId={playingPerson} />
 
           {/* Timeline */}
           <Card className="px-3 pb-3 pt-3 md:px-4">

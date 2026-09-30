@@ -127,8 +127,9 @@ export type SentinelEvent = {
 export type Who = { person: string; name: string; by: "face" | "clothing" };
 export type Person = { id: string; name: string; created: number };
 export type PersonInfo = Person & { faces: number; sightings: number; last?: { cam: string; event: string; t: number }; cover?: string };
-export type FaceInfo = { id: string; cam: string; event: string; t: number; q: number; by?: "you" | "face"; sim?: number; person?: string };
-export type FaceGroup = { faces: FaceInfo[]; size: number; ids: string[]; suggest?: { person: string; name: string } };
+export type FaceInfo = { id: string; cam: string; event: string; t: number; q: number; by?: "you" | "face"; sim?: number; person?: string; name?: string; face?: Rect; box: Rect };
+export type FaceGroup = { faces: FaceInfo[]; size: number; ids: string[]; cams: string[]; last: number; suggest?: { person: string; name: string } };
+export type PersonDay = { person: string; name: string; cover?: string; events: number; first: number; last: number; cams: string[] };
 export type FaceStatus = { enabled: boolean; error?: string; backlog: number; done: number; faces: number };
 
 export type DetectionStatus = { enabled: boolean; error?: string; backlog: number; scanned: number; found: number; avg_ms: number; scanning: string; last_found: number };
@@ -145,6 +146,7 @@ export type DaySummary = {
   cameras: CamDay[];
   hours: [number, number, number, number][];
   highlights: Highlight[];
+  people?: PersonDay[];
   pending: number;
   problems: number;
   text: string;
@@ -275,7 +277,8 @@ export const api = {
   renamePerson: (id: string, name: string) => request<Person>("PATCH", `api/people/${id}`, { name }),
   forgetPerson: (id: string) => request<{ ok: boolean }>("DELETE", `api/people/${id}`),
   personFaces: (id: string, limit = 60) => request<FaceInfo[]>("GET", `api/people/${id}/faces?limit=${limit}`),
-  unknownFaces: (limit = 40) => request<FaceGroup[]>("GET", `api/faces/unknown?limit=${limit}`),
+  unknownFaces: () => request<FaceGroup[]>("GET", "api/faces/unknown"),
+  eventFaces: (cam: string, id: string) => request<FaceInfo[]>("GET", `api/faces/event/${cam}/${encodeURIComponent(id)}`),
   nameFaces: (faces: string[], who: { person?: string; name?: string }) => request<Person>("POST", "api/faces/name", { faces, ...who }),
   notPerson: (faces: string[], person: string) => request<{ ok: boolean }>("POST", "api/faces/not", { faces, person }),
   notFaces: (faces: string[]) => request<{ ok: boolean }>("POST", "api/faces/junk", { faces }),

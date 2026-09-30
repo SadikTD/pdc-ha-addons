@@ -116,6 +116,7 @@ createRoot(document.getElementById("root")!).render(
                     <Route path="/events" element={<EventsPage />} />
                     <Route path="/summary" element={<SummaryPage />} />
                     <Route path="/people" element={<PeoplePage />} />
+                    <Route path="/people/:id" element={<PeoplePage />} />
                     <Route path="/clips" element={<ClipsPage />} />
                     <Route path="/system" element={<SystemPage />} />
                     <Route path="/settings" element={<SettingsPage />} />

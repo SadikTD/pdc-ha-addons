@@ -295,6 +295,10 @@ func (rm *Remote) allowed(u *AppUser, r *http.Request) bool {
 		return true // filtered per camera by the handlers
 	case get && n == 3 && at(1) == "faces" && at(2) != "unknown":
 		return true // the face picture: checked against the camera by the handler
+	case get && n == 4 && at(1) == "faces" && at(3) == "frame.jpg":
+		return true // checked against the camera by the handler
+	case get && n == 5 && at(1) == "faces" && at(2) == "event":
+		return u.CanSee(at(3))
 	case u.Admin && (get && (p == "/api/faces/unknown" || n == 4 && at(1) == "people" && at(3) == "faces") ||
 		r.Method == http.MethodPost && (p == "/api/faces/name" || p == "/api/faces/not" || p == "/api/faces/junk") ||
 		n == 3 && at(1) == "people" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete)):

@@ -212,7 +212,7 @@ func (a *App) Routes(www string) http.Handler {
 	mux.HandleFunc("GET /api/faces/unknown", func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 {
-			limit = 40
+			limit = 5000
 		}
 		writeJSON(w, 200, a.faces.Unknown(limit))
 	})
@@ -256,6 +256,30 @@ func (a *App) Routes(www string) http.Handler {
 		}
 		a.faces.Junk(req.Faces)
 		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	// The faces found in an event (for naming people while watching).
+	mux.HandleFunc("GET /api/faces/event/{cam}/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !camAllowed(r, r.PathValue("cam")) {
+			writeJSON(w, 200, []FaceInfo{})
+			return
+		}
+		writeJSON(w, 200, a.faces.EventFaces(r.PathValue("cam"), r.PathValue("id")))
+	})
+	// The whole frame a face was taken from, in full quality (the viewer zooms into it).
+	mux.HandleFunc("GET /api/faces/{id}/frame.jpg", func(w http.ResponseWriter, r *http.Request) {
+		s, ok := a.faces.Face(r.PathValue("id"))
+		if !ok || !camAllowed(r, s.Cam) {
+			writeErr(w, 404, "no such face")
+			return
+		}
+		img, err := a.decodeFrame(r.Context(), s.Cam, time.UnixMilli(s.T), "null", 3, true)
+		if err != nil {
+			writeErr(w, 404, "the recording of that moment is gone")
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Write(img)
 	})
 	mux.HandleFunc("GET /api/faces/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSuffix(r.PathValue("id"), ".jpg")

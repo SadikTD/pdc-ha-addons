@@ -71,6 +71,7 @@ func main() {
 	app.objects = newObjectSensors()
 	app.labeler = newLabeler(app)
 	app.faces = newFaces(app)
+	app.mqtt.SetPeople(app.faces.People())
 	app.Init()
 	go app.clips.Run(ctx)
 	go app.labeler.Run(ctx)

@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import clsx from "clsx";
 import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2, ShieldCheck, Sparkles, Zap } from "lucide-react";
 import { Card, IconButton, PageHeader } from "../components/ui";
-import { api, type DaySummary } from "../lib/api";
+import { api, faceURL, type DaySummary } from "../lib/api";
 import { openEvent } from "../lib/eventNav";
 import { DAY, fmtDay, fmtDuration, fmtTime } from "../lib/format";
 import { EventPicture, LABELS, LABEL_ORDER, LabelChips, MOTION_COLOR } from "../lib/labels";
@@ -148,6 +148,34 @@ export function SummaryPage() {
             />
             <HourChart title="Motion events by hour" hours={sum.hours} series={[{ key: "motion", name: "Motion events", color: MOTION_COLOR, idx: 0 }]} />
           </div>
+
+          {/* Who was seen (people the user named) */}
+          {sum.people && sum.people.length > 0 && (
+            <Card className="p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-white">Who was seen</h2>
+                <span className="text-xs text-slate-500">Recognised by face, or the same day by their clothes</span>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {sum.people.map((p) => (
+                  <button
+                    key={p.person}
+                    onClick={() => nav(`/events?who=${p.person}&range=custom&from=${toLocalInput(sum.from)}&to=${toLocalInput(sum.to)}`)}
+                    className="flex items-center gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3 text-left transition hover:border-white/15 hover:bg-white/[0.04]"
+                  >
+                    {p.cover ? <img src={faceURL(p.cover)} alt="" className="size-12 rounded-full object-cover" /> : <span className="size-12 rounded-full bg-white/5" />}
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-white">{p.name}</span>
+                      <span className="block text-xs text-slate-400">
+                        {p.first === p.last ? fmtTime(p.first) : `${fmtTime(p.first)} – ${fmtTime(p.last)}`} · {p.events} event{p.events === 1 ? "" : "s"}
+                      </span>
+                      <span className="block truncate text-[11px] text-slate-500">{p.cams.map((c) => sum.cameras.find((x) => x.id === c)?.name ?? c).join(", ")}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </Card>
+          )}
 
           {/* Highlights */}
           <Card className="p-5">
@@ -311,4 +339,8 @@ function niceMax(v: number) {
   const p = Math.pow(10, Math.floor(Math.log10(v)));
   for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
   return v;
+}
+
+function toLocalInput(ms: number) {
+  return new Date(ms - new Date(ms).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
