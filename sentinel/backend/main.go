@@ -119,6 +119,7 @@ func main() {
 	app.mu.Unlock()
 	app.activity.Flush()
 	app.events.Flush()
+	store.SaveIndexFile()
 	app.faces.flush()
 	app.previews.Close()
 	logf("bye")

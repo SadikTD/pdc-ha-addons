@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/gob"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -349,14 +352,21 @@ func (st *Store) Index(s *Segment) (*MP4Index, error) {
 	return idx, nil
 }
 
-// WarmIndex maps every finished recording, newest first, in the background after
-// startup, so opening a video never waits for its files to be read (1-2 s per hour of
-// footage when cold). Gentle: recording and live viewers come first.
+// WarmIndex maps every finished recording in the background after startup, so opening
+// a video never waits for its files to be read (1-2 s per hour of footage when cold).
+//
+// Mapping a file takes a hundred or more small reads, and the disk is shared with
+// recording and with Home Assistant's database: reading all ~20,000 files flat out
+// after every restart kept the disk saturated for half an hour and made Home Assistant
+// lose its connection. So the maps are kept in a file (read in one go at startup), new
+// recordings are mapped as they finish (finalize), and whatever is left is mapped using
+// at most about a fifth of the disk's time.
 func (st *Store) WarmIndex(ctx context.Context) {
+	st.loadIndexFile()
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(20 * time.Second):
+	case <-time.After(2 * time.Minute):
 	}
 	st.mu.RLock()
 	var todo []Segment
@@ -371,15 +381,60 @@ func (st *Store) WarmIndex(ctx context.Context) {
 	sort.Slice(todo, func(i, j int) bool { return todo[i].Start().After(todo[j].Start()) })
 	began := time.Now()
 	for i := range todo {
-		if ctx.Err() != nil {
+		t0 := time.Now()
+		_, _ = st.Index(&todo[i])
+		if !sleepCtx(ctx, max(20*time.Millisecond, 4*time.Since(t0))) {
 			return
 		}
-		_, _ = st.Index(&todo[i])
-		time.Sleep(3 * time.Millisecond)
 	}
 	if len(todo) > 0 {
 		logf("mapped %d recordings for playback in %s", len(todo), time.Since(began).Round(time.Second))
 	}
+	st.SaveIndexFile()
+	for sleepCtx(ctx, time.Hour) {
+		st.SaveIndexFile()
+	}
+}
+
+func (st *Store) indexFile() string { return filepath.Join(st.root, ".playback-index.gob") }
+
+// loadIndexFile reads the saved maps of the recordings still here.
+func (st *Store) loadIndexFile() {
+	f, err := os.Open(st.indexFile())
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	var saved map[string]*MP4Index
+	if err := gob.NewDecoder(bufio.NewReaderSize(f, 1<<20)).Decode(&saved); err != nil {
+		logf("playback index: %v (mapping recordings again)", err)
+		return
+	}
+	st.mu.Lock()
+	n := 0
+	for key, idx := range saved {
+		if s, ok := st.byID[key]; ok && !s.Active && idx != nil {
+			st.mp4cache[key] = idx
+			n++
+		}
+	}
+	st.mu.Unlock()
+	logf("playback index: %d recordings mapped from the saved index", n)
+}
+
+// SaveIndexFile writes the maps of finished recordings (hourly, and at shutdown).
+func (st *Store) SaveIndexFile() {
+	st.mu.RLock()
+	snap := make(map[string]*MP4Index, len(st.mp4cache))
+	for k, v := range st.mp4cache {
+		snap[k] = v // never changed once made
+	}
+	st.mu.RUnlock()
+	var b bytes.Buffer
+	if err := gob.NewEncoder(&b).Encode(snap); err != nil {
+		return
+	}
+	_ = writeFileAtomic(st.indexFile(), b.Bytes(), 0o644)
 }
 
 // Range returns copies of segments overlapping [from, to).
