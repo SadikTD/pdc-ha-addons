@@ -125,9 +125,9 @@ export type SentinelEvent = {
 };
 
 export type Who = { person: string; name: string; by: "face" | "clothing" };
-export type Person = { id: string; name: string; created: number };
+export type Person = { id: string; name: string; created: number; unnamed?: boolean };
 export type PersonInfo = Person & { faces: number; sightings: number; last?: { cam: string; event: string; t: number }; cover?: string };
-export type FaceInfo = { id: string; cam: string; event: string; t: number; q: number; by?: "you" | "face"; sim?: number; person?: string; name?: string; face?: Rect; box: Rect };
+export type FaceInfo = { id: string; cam: string; event: string; t: number; q: number; by?: "you" | "face" | "hidden" | "not a face"; sim?: number; person?: string; name?: string; face?: Rect; box: Rect };
 export type FaceGroup = { faces: FaceInfo[]; size: number; ids: string[]; cams: string[]; last: number; suggest?: { person: string; name: string } };
 export type PersonDay = { person: string; name: string; cover?: string; events: number; first: number; last: number; cams: string[] };
 export type FaceStatus = { enabled: boolean; error?: string; backlog: number; done: number; faces: number };
@@ -282,6 +282,9 @@ export const api = {
   nameFaces: (faces: string[], who: { person?: string; name?: string }) => request<Person>("POST", "api/faces/name", { faces, ...who }),
   notPerson: (faces: string[], person: string) => request<{ ok: boolean }>("POST", "api/faces/not", { faces, person }),
   notFaces: (faces: string[]) => request<{ ok: boolean }>("POST", "api/faces/junk", { faces }),
+  hideFaces: (faces: string[]) => request<{ ok: boolean }>("POST", "api/faces/hide", { faces }),
+  strangerFaces: (faces: string[]) => request<Person>("POST", "api/faces/stranger", { faces }),
+  hiddenFaces: () => request<FaceInfo[]>("GET", "api/faces/hidden"),
   restoreFaces: (faces: string[]) => request<{ ok: boolean }>("POST", "api/faces/restore", { faces }),
   wrongLabel: (e: SentinelEvent, label: Label) => request<SentinelEvent>("POST", `api/events/${e.camera}/${e.id}/wrong`, { label }),
   search: (q: string, limit = 500) => request<{ query: SearchQuery; events: SentinelEvent[] }>("GET", `api/search?q=${encodeURIComponent(q)}&limit=${limit}`),

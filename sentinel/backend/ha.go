@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -76,15 +77,23 @@ type MQTT struct {
 	connected atomic.Bool
 	cams      []Camera
 	people    []Person
-	seenAt    map[string]int64 // person -> newest sighting published
-	published map[string]bool  // discovery ids we've announced
+	seenAt    map[string]int64 // person -> newest sighting
+	seenLast  map[string]personSeen
+	published map[string]bool // discovery ids we've announced
 	onConnect func()
 	lastErr   string
 }
 
 const availTopic = "sentinel/availability"
 
-func newMQTT() *MQTT { return &MQTT{published: map[string]bool{}, seenAt: map[string]int64{}} }
+type personSeen struct {
+	camera, by string
+	t          int64
+}
+
+func newMQTT() *MQTT {
+	return &MQTT{published: map[string]bool{}, seenAt: map[string]int64{}, seenLast: map[string]personSeen{}}
+}
 
 func (m *MQTT) Connected() bool { return m.connected.Load() }
 
@@ -192,11 +201,16 @@ func (m *MQTT) PersonSeen(person, camera, by string, t int64) {
 	newer := t > m.seenAt[person]
 	if newer {
 		m.seenAt[person] = t
+		m.seenLast[person] = personSeen{camera, by, t}
 	}
 	m.mu.Unlock()
 	if !newer {
 		return
 	}
+	m.publishSeen(person, camera, by, t)
+}
+
+func (m *MQTT) publishSeen(person, camera, by string, t int64) {
 	m.publish("sentinel/people/"+person+"/camera", true, camera)
 	m.publish("sentinel/people/"+person+"/at", true, time.UnixMilli(t).Format(time.RFC3339))
 	b, _ := json.Marshal(map[string]any{"camera": camera, "by": by, "time": time.UnixMilli(t).Format(time.RFC3339)})
@@ -244,6 +258,9 @@ func (m *MQTT) announce() {
 	// People recognised: where and when each was last seen (for automations like
 	// "Abir came home").
 	for _, p := range people {
+		if p.Unnamed {
+			continue // strangers: on the People page, not as sensors
+		}
 		pub("sensor", "person_"+p.ID+"_camera", map[string]any{"name": p.Name + " last seen", "state_topic": "sentinel/people/" + p.ID + "/camera",
 			"json_attributes_topic": "sentinel/people/" + p.ID + "/attributes", "icon": "mdi:account-eye", "device": hub})
 		pub("sensor", "person_"+p.ID+"_at", map[string]any{"name": p.Name + " last seen at", "state_topic": "sentinel/people/" + p.ID + "/at",
@@ -275,6 +292,13 @@ func (m *MQTT) announce() {
 	m.mu.Unlock()
 	for _, key := range stale {
 		m.publish("homeassistant/"+key+"/config", true, "")
+	}
+	// Where each person was last seen (also what happened while the broker was away).
+	m.mu.Lock()
+	last := maps.Clone(m.seenLast)
+	m.mu.Unlock()
+	for p, v := range last {
+		m.publishSeen(p, v.camera, v.by, v.t)
 	}
 }
 

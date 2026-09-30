@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import clsx from "clsx";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Expand, Loader2, Pencil, ScanFace, Sparkles, Trash2, UserRound, UserX, Users, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Eye, EyeOff, Expand, HelpCircle, Loader2, Pencil, ScanFace, Sparkles, Trash2, UserRound, UserX, Users, X } from "lucide-react";
 import { Button, Empty, PageHeader } from "../components/ui";
 import { FaceViewer, type ViewerAction } from "../components/FaceViewer";
 import { NamePicker, type Pick } from "../components/NamePicker";
@@ -66,6 +66,8 @@ function useFaceActions(reload: () => void) {
   return {
     name: (ids: string[], p: Pick) => run(() => api.nameFaces(ids, p.person ? { person: p.person } : { name: p.name }), `${plural(ids.length)} named ${p.label}. Sentinel will recognise them from now on.`, ids),
     junk: (ids: string[]) => run(() => api.notFaces(ids), `${plural(ids.length)} ignored. Similar ones won't show up again.`, ids),
+    hide: (ids: string[]) => run(() => api.hideFaces(ids), `${plural(ids.length)} hidden. Faces like them won't be asked about; their events stay “Person”.`, ids),
+    stranger: (ids: string[]) => run(() => api.strangerFaces(ids), `Kept as an unknown person. Sentinel will tell you when they come back.`, ids),
     not: (ids: string[], person: PersonInfo | { id: string; name: string }) => run(() => api.notPerson(ids, person.id), `Taken out of ${person.name}. Sentinel learns from it.`),
   };
 }
@@ -172,6 +174,8 @@ function ToName({ data, reload }: { data: Data; reload: () => void }) {
     ...(g && g.size > 1
       ? [{ label: out.has(viewer?.faces[viewer.index]?.id ?? "") ? "Put back in this group" : "Not the same person as the others", icon: <UserX className="size-4" />, onClick: (f: FaceInfo) => setOut((s) => (s.has(f.id) ? new Set([...s].filter((x) => x !== f.id)) : new Set(s).add(f.id))) }]
       : []),
+    { label: "Someone I don't know", icon: <HelpCircle className="size-4" />, onClick: (f) => acts.stranger([f.id]).then((ok) => ok && next()) },
+    { label: "Don't name (hide)", icon: <EyeOff className="size-4" />, onClick: (f) => acts.hide([f.id]).then((ok) => ok && next()) },
     { label: "Not a face", icon: <X className="size-4" />, tone: "danger", onClick: (f) => acts.junk([f.id]).then((ok) => ok && next()) },
   ];
   const next = () => setViewer((v) => (v && v.faces.length > 1 ? { ...v, faces: v.faces.filter((_, i) => i !== v.index), index: Math.min(v.index, v.faces.length - 2) } : null));
@@ -230,6 +234,8 @@ function ToName({ data, reload }: { data: Data; reload: () => void }) {
         </section>
       )}
 
+      <HiddenFaces reload={reload} />
+
       {/* Selection bar */}
       <AnimatePresence>
         {picked.size > 0 && (
@@ -246,6 +252,12 @@ function ToName({ data, reload }: { data: Data; reload: () => void }) {
             </div>
             <span className="text-sm font-medium text-white">{picked.size} selected</span>
             <NamePicker className="min-w-56 flex-1" people={data.people} placeholder="Name them…" dropUp onPick={(p) => acts.name([...picked], p).then((ok) => ok && setPicked(new Set()))} />
+            <Button size="sm" variant="ghost" title="Someone you don't know: kept as “Unknown person”, recognised when they come back" onClick={() => acts.stranger([...picked]).then((ok) => ok && setPicked(new Set()))}>
+              <HelpCircle className="size-3.5" /> Don't know
+            </Button>
+            <Button size="sm" variant="ghost" title="Don't name them: hidden, with faces like them" onClick={() => acts.hide([...picked]).then((ok) => ok && setPicked(new Set()))}>
+              <EyeOff className="size-3.5" /> Hide
+            </Button>
             <Button size="sm" variant="ghost" onClick={() => acts.junk([...picked]).then((ok) => ok && setPicked(new Set()))}>
               Not faces
             </Button>
@@ -376,8 +388,16 @@ function GroupCard({
           </Button>
         )}
         <NamePicker className="min-w-56 flex-1" people={people} placeholder={g.suggest ? "Or someone else…" : `Who is this? (${ids.length} face${ids.length === 1 ? "" : "s"})`} disabled={busy || ids.length === 0} onPick={(p) => act(() => acts.name(ids, p))} />
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <Button size="sm" variant="ghost" disabled={busy || ids.length === 0} title="Kept as “Unknown person”: recognised when they come back, and you can name them later" onClick={() => act(() => acts.stranger(ids))}>
+          <HelpCircle className="size-3.5" /> Someone I don't know
+        </Button>
+        <Button size="sm" variant="ghost" disabled={busy || ids.length === 0} title="Hidden, with faces like them; their events stay “Person”" onClick={() => act(() => acts.hide(ids))}>
+          <EyeOff className="size-3.5" /> Don't name
+        </Button>
         <Button size="sm" variant="ghost" disabled={busy || ids.length === 0} onClick={() => act(() => acts.junk(ids))}>
-          Not faces
+          <X className="size-3.5" /> Not faces
         </Button>
       </div>
       {g.size > 1 && <p className="mt-2 text-[11px] text-slate-500">Untick a face that isn't the same person (or open it and say so); it stays to be named on its own.</p>}
@@ -388,7 +408,8 @@ function GroupCard({
 // ---- Known people ----
 
 function Known({ people, onName }: { people: PersonInfo[]; onName: () => void }) {
-  const { status } = useStatus();
+  const named = people.filter((p) => !p.unnamed);
+  const strangers = people.filter((p) => p.unnamed);
   if (people.length === 0)
     return (
       <Empty
@@ -398,6 +419,23 @@ function Known({ people, onName }: { people: PersonInfo[]; onName: () => void })
         action={<Button onClick={onName}>Name faces</Button>}
       />
     );
+  return (
+    <div className="flex flex-col gap-8">
+      {named.length > 0 && <PeopleGrid people={named} />}
+      {strangers.length > 0 && (
+        <section>
+          <h2 className="mb-1 text-sm font-semibold uppercase tracking-wider text-slate-400">Unknown people · {strangers.length}</h2>
+          <p className="mb-3 text-xs text-slate-500">People you don't know, recognised when they come back. Open one to give them a name if you find out who they are.</p>
+          <PeopleGrid people={strangers} />
+        </section>
+      )}
+    </div>
+  );
+}
+
+function PeopleGrid({ people }: { people: PersonInfo[] }) {
+  const { status } = useStatus();
+  if (people.length === 0) return null;
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
       {people.map((p, i) => {
@@ -596,5 +634,52 @@ function PersonPage({ id }: { id: string }) {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// Faces the user hid or said aren't faces: shown on request, each can be brought back.
+function HiddenFaces({ reload }: { reload: () => void }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [faces, setFaces] = useState<FaceInfo[] | null>(null);
+  const load = useCallback(() => api.hiddenFaces().then(setFaces).catch(() => setFaces([])), []);
+  useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+  const back = async (ids: string[]) => {
+    try {
+      await api.restoreFaces(ids);
+      toast(`${ids.length} face${ids.length === 1 ? "" : "s"} back under “To name”.`, "success");
+      load();
+      reload();
+    } catch (e) {
+      toast((e as Error).message, "error");
+    }
+  };
+  return (
+    <section className="rounded-2xl border border-white/[0.06] p-4">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 text-left text-sm font-medium text-slate-400 hover:text-white">
+        <EyeOff className="size-4" /> Hidden and “not a face”
+        <ChevronDown className={clsx("ml-auto size-4 transition", open && "rotate-180")} />
+      </button>
+      {open &&
+        (!faces ? (
+          <Loader2 className="mt-3 size-4 animate-spin text-slate-500" />
+        ) : faces.length === 0 ? (
+          <p className="mt-3 text-xs text-slate-500">Nothing hidden.</p>
+        ) : (
+          <div className="mt-3 grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
+            {faces.map((f) => (
+              <div key={f.id} className="overflow-hidden rounded-2xl border border-white/[0.07] bg-ink-850">
+                <img src={faceURL(f.id)} alt="" loading="lazy" className="aspect-square w-full object-cover opacity-70" />
+                <div className="px-2 pt-1 text-center text-[10px] text-slate-500">{f.by === "hidden" ? "Hidden" : "Not a face"}</div>
+                <button onClick={() => back([f.id])} className="flex w-full items-center justify-center gap-1 py-1.5 text-xs font-medium text-violet-300 hover:bg-white/5">
+                  <Eye className="size-3.5" /> Show again
+                </button>
+              </div>
+            ))}
+          </div>
+        ))}
+    </section>
   );
 }

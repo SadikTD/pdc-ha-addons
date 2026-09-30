@@ -72,6 +72,7 @@ func main() {
 	app.labeler = newLabeler(app)
 	app.faces = newFaces(app)
 	app.mqtt.SetPeople(app.faces.People())
+	app.faces.seedLastSeen()
 	app.Init()
 	go app.clips.Run(ctx)
 	go app.labeler.Run(ctx)

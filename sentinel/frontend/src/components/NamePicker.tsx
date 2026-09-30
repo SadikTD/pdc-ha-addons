@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { Check, Plus, UserRound } from "lucide-react";
 import { faceURL, type PersonInfo } from "../lib/api";
@@ -28,14 +29,34 @@ export function NamePicker({
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
   const box = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  // The list is drawn above everything (cards animate and would cover it), next to the
+  // input: below it, or above when there's more room there.
+  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number } | null>(null);
   const q = text.trim().toLowerCase();
   const matches = useMemo(() => people.filter((p) => !q || p.name.toLowerCase().includes(q)).slice(0, 8), [people, q]);
   const exact = people.some((p) => p.name.toLowerCase() === q);
   const options: Pick[] = [...matches.map((p) => ({ person: p.id, label: p.name })), ...(q && !exact ? [{ name: text.trim(), label: text.trim() }] : [])];
 
   useEffect(() => setHi(0), [q]);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = box.current?.getBoundingClientRect();
+      if (!r) return;
+      const up = dropUp ?? (window.innerHeight - r.bottom < 300 && r.top > window.innerHeight - r.bottom);
+      setPos(up ? { left: r.left, width: r.width, bottom: window.innerHeight - r.top + 4 } : { left: r.left, width: r.width, top: r.bottom + 4 });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, dropUp]);
   useEffect(() => {
-    const onDown = (e: MouseEvent) => !box.current?.contains(e.target as Node) && setOpen(false);
+    const onDown = (e: MouseEvent) => !box.current?.contains(e.target as Node) && !list.current?.contains(e.target as Node) && setOpen(false);
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
@@ -70,8 +91,15 @@ export function NamePicker({
           className="min-w-0 flex-1 bg-transparent text-sm text-white placeholder:text-slate-500 focus:outline-none"
         />
       </div>
-      {open && options.length > 0 && (
-        <div className={clsx("absolute inset-x-0 z-20 overflow-hidden rounded-xl border border-white/10 bg-ink-900 py-1 shadow-2xl shadow-black/60", dropUp ? "bottom-full mb-1" : "top-full mt-1")}>
+      {open &&
+        options.length > 0 &&
+        pos &&
+        createPortal(
+        <div
+          ref={list}
+          style={{ position: "fixed", left: pos.left, width: pos.width, top: pos.top, bottom: pos.bottom }}
+          className="z-[100] max-h-72 overflow-y-auto rounded-xl border border-white/10 bg-ink-900 py-1 shadow-2xl shadow-black/60"
+        >
           {options.map((o, i) => {
             const p = people.find((x) => x.id === o.person);
             return (
@@ -96,7 +124,8 @@ export function NamePicker({
               </button>
             );
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

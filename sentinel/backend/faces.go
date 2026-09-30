@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"math"
@@ -61,6 +62,9 @@ type Person struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Created int64  `json:"created"`
+	// Someone the user doesn't know ("Unknown person 2"): recognised like anyone else,
+	// so they can see the same stranger come back, and named later if they learn who.
+	Unnamed bool `json:"unnamed,omitempty"`
 }
 
 // Seen is one person in one frame of an event.
@@ -80,12 +84,24 @@ type Seen struct {
 	Sim    float64  `json:"sim,omitempty"`    // how alike, when recognised
 	Not    []string `json:"not,omitempty"`    // people the user said it isn't
 	Junk   bool     `json:"junk,omitempty"`   // the user said it's not a face
+	Skip   bool     `json:"skip,omitempty"`   // the user doesn't want to name them (hidden, and faces like it)
 
 	emb  []float32
 	look []float32
 }
 
 func (s *Seen) hasFace() bool { return s.emb != nil && !s.Junk }
+
+// hiddenLocked: the faces the user chose not to name; faces like them aren't asked about.
+func (f *Faces) hiddenLocked() [][]float32 {
+	var out [][]float32
+	for _, s := range f.seen {
+		if s.Skip && s.emb != nil && s.Person == "" {
+			out = append(out, s.emb)
+		}
+	}
+	return out
+}
 
 type Faces struct {
 	app  *App
@@ -911,9 +927,10 @@ func (f *Faces) Unknown(limit int) []FaceGroup {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	g, junk := f.galleriesLocked()
+	hidden := f.hiddenLocked()
 	var list []*Seen
 	for _, s := range f.seen {
-		if s.hasFace() && s.Person == "" && s.Q >= faceMinQ && !isJunk(s.emb, junk) {
+		if s.hasFace() && s.Person == "" && !s.Skip && s.Q >= faceMinQ && !isJunk(s.emb, junk) && (len(hidden) == 0 || closeness(s.emb, hidden) < faceMatch) {
 			list = append(list, s)
 		}
 	}
@@ -998,10 +1015,7 @@ func (f *Faces) Name(ids []string, id, name string) (Person, error) {
 		if name == "" {
 			return Person{}, errNoPerson
 		}
-		f.people = append(f.people, Person{ID: newID(), Name: name, Created: time.Now().UnixMilli()})
-		p = &f.people[len(f.people)-1]
-		f.savePeopleLocked()
-		go f.announcePeople()
+		p = f.addPersonLocked(name, false)
 	}
 	for _, fid := range ids {
 		if s, ok := f.seen[fid]; ok && s.emb != nil {
@@ -1012,6 +1026,21 @@ func (f *Faces) Name(ids []string, id, name string) (Person, error) {
 	}
 	f.relearnLocked()
 	return *p, nil
+}
+
+func (f *Faces) addPersonLocked(name string, unnamed bool) *Person {
+	f.people = append(f.people, Person{ID: newID(), Name: name, Created: time.Now().UnixMilli(), Unnamed: unnamed})
+	f.savePeopleLocked()
+	go f.announcePeople()
+	return &f.people[len(f.people)-1]
+}
+
+// newPerson makes a person and gives them these faces.
+func (f *Faces) newPerson(ids []string, name string, unnamed bool) (Person, error) {
+	f.mu.Lock()
+	id := f.addPersonLocked(name, unnamed).ID
+	f.mu.Unlock()
+	return f.Name(ids, id, "")
 }
 
 // NotPerson says these faces aren't that person (they may still be someone else).
@@ -1051,11 +1080,58 @@ func (f *Faces) Restore(ids []string) {
 	defer f.mu.Unlock()
 	for _, fid := range ids {
 		if s, ok := f.seen[fid]; ok {
-			s.Junk, s.Person, s.By, s.Sim = false, "", "", 0
+			s.Junk, s.Skip, s.Person, s.By, s.Sim = false, false, "", "", 0
 			f.touchLocked(s)
 		}
 	}
 	f.relearnLocked()
+}
+
+// Hide: the user doesn't want to name these people; they (and faces like them) are no
+// longer asked about. Their events stay "Person".
+func (f *Faces) Hide(ids []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, fid := range ids {
+		if s, ok := f.seen[fid]; ok {
+			s.Skip, s.Person, s.By, s.Sim = true, "", "", 0
+			f.touchLocked(s)
+		}
+	}
+	f.relearnLocked()
+}
+
+// Stranger: these faces are someone the user doesn't know: "Unknown person N".
+func (f *Faces) Stranger(ids []string) (Person, error) {
+	f.mu.Lock()
+	n := 0
+	for _, p := range f.people {
+		var k int
+		if _, err := fmt.Sscanf(p.Name, "Unknown person %d", &k); err == nil && k > n {
+			n = k
+		}
+	}
+	f.mu.Unlock()
+	return f.newPerson(ids, fmt.Sprintf("Unknown person %d", n+1), true)
+}
+
+// Hidden: the faces the user hid or said aren't faces (to bring back).
+func (f *Faces) Hidden() []FaceInfo {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []FaceInfo{}
+	for _, s := range f.seen {
+		if (s.Skip || s.Junk) && s.emb != nil && s.Person == "" {
+			fi := f.faceInfoLocked(s)
+			fi.By = "hidden"
+			if s.Junk {
+				fi.By = "not a face"
+			}
+			out = append(out, fi)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].T > out[j].T })
+	return out
 }
 
 func (f *Faces) Rename(id, name string) (Person, error) {
@@ -1066,6 +1142,7 @@ func (f *Faces) Rename(id, name string) (Person, error) {
 		if f.people[i].ID == id {
 			if name != "" {
 				f.people[i].Name = name
+				f.people[i].Unnamed = false
 				f.savePeopleLocked()
 				f.whoLocked(nil)
 				go f.announcePeople()
@@ -1196,4 +1273,14 @@ func (f *Faces) announcePeople() {
 	people := slices.Clone(f.people)
 	f.mu.Unlock()
 	f.app.mqtt.SetPeople(people)
+}
+
+// seedLastSeen tells Home Assistant where everyone was last seen (at start).
+func (f *Faces) seedLastSeen() {
+	s := f.app.settings.Get()
+	for _, p := range f.PeopleInfo() {
+		if p.Last != nil {
+			f.app.mqtt.PersonSeen(p.ID, cameraName(s, p.Last.Cam), "face", p.Last.T)
+		}
+	}
 }

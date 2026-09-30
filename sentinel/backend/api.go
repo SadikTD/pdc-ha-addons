@@ -258,6 +258,37 @@ func (a *App) Routes(www string) http.Handler {
 		a.faces.Restore(req.Faces)
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
+	// Don't name them: hidden, with faces like them.
+	mux.HandleFunc("POST /api/faces/hide", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Faces []string `json:"faces"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Faces) == 0 {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		a.faces.Hide(req.Faces)
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	// Someone the user doesn't know: kept as "Unknown person N".
+	mux.HandleFunc("POST /api/faces/stranger", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Faces []string `json:"faces"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Faces) == 0 {
+			writeErr(w, 400, "bad request")
+			return
+		}
+		p, err := a.faces.Stranger(req.Faces)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, p)
+	})
+	mux.HandleFunc("GET /api/faces/hidden", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, a.faces.Hidden())
+	})
 	mux.HandleFunc("POST /api/faces/junk", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Faces []string `json:"faces"`

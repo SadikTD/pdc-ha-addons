@@ -149,6 +149,12 @@ Sentinel recognises the people you name, on every camera:
   the bar that appears. Names are typed or picked (with their picture). Every action
   can be undone from its message. Every face you confirm makes that person easier to
   recognise.
+- **People you don't know, or don't want to name:** "Someone I don't know" keeps them as
+  **Unknown person 1, 2, …**: recognised like anyone else (so you see when the same
+  stranger comes back), listed under Known → Unknown people, and renamed any time you
+  find out who they are. "Don't name" hides the faces and new ones like them; their
+  events stay "Person". Hidden faces (and "not a face" ones) can be brought back at the
+  bottom of "To name".
 - **Known people:** each person has a page with where they were seen lately and every
   face taken for them; take out a wrong one, rename, or forget the person.
 - **Names everywhere:** events show names instead of "Person" (filter Events by person,
