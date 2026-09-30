@@ -30,6 +30,11 @@ function parsePlaylist(text: string): Frag[] {
   return frags;
 }
 
+function inBuffer(v: HTMLVideoElement, pos: number) {
+  for (let i = 0; i < v.buffered.length; i++) if (pos >= v.buffered.start(i) && pos < v.buffered.end(i) - 0.3) return true;
+  return false;
+}
+
 // Player position for wall-clock time t, or null when t falls in a gap.
 function posAt(frags: Frag[], t: number): number | null {
   let lo = 0;
@@ -55,9 +60,12 @@ type Props = {
   // Waiting for data for long while the clock runs: the connection can't carry every
   // camera at once.
   onStarved?: (camera: string) => void;
+  // Where each tile answers "do you have footage at moment t but can't play it yet?",
+  // so the shared clock can wait for the main camera.
+  waits?: Map<string, (t: number) => boolean>;
 };
 
-export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, rate, epoch, muted, onStarved }: Props) {
+export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, rate, epoch, muted, onStarved, waits }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const hls = useRef<Hls | null>(null);
   const win = useRef<{ from: number; to: number; frags: Frag[] } | null>(null);
@@ -73,6 +81,23 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
   // Time spent waiting for data while the clock runs, slowly forgotten while playing: a
   // tile that keeps stalling now and then adds up just like one that never starts.
   const stalled = useRef(0);
+  const lastSeek = useRef(0);
+
+  // "Stuck": has footage at moment t, but the video can't play it yet (loading, or
+  // decoding up to the frame after a seek).
+  useEffect(() => {
+    if (!waits) return;
+    waits.set(camera, (t) => {
+      const w = win.current;
+      if (!w || busy.current || shown.current !== "loading") return false;
+      return posAt(w.frags, t) !== null;
+    });
+    return () => {
+      waits.delete(camera);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camera, waits]);
+  const shown = useRef<string>("loading");
 
   const load = async (t: number) => {
     const v = video.current;
@@ -166,8 +191,24 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
     h.startLoad(pos);
   };
 
+  // A jump (timeline, skip buttons): inside the footage already loaded, just move there;
+  // tearing the player down and starting over showed a black tile on every jump.
+  const firstLoad = useRef(true);
   useEffect(() => {
-    load(master());
+    const t = master();
+    const v = video.current;
+    const w = win.current;
+    if (!firstLoad.current && v && w && hls.current && w.frags.length && t >= w.from + 2000 && t < w.to - 5000) {
+      const pos = posAt(w.frags, t);
+      if (pos !== null) {
+        if (!started.current) startSoon();
+        lastSeek.current = performance.now();
+        v.currentTime = pos;
+        return;
+      }
+    }
+    firstLoad.current = false;
+    load(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera, epoch]);
 
@@ -207,15 +248,25 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
         return;
       }
       const drift = v.currentTime - pos;
-      if (Math.abs(drift) > (playing ? 1.5 : 0.15)) {
-        v.currentTime = pos;
+      // How far off is too far: more at higher speeds (1.5 s of footage is only 0.4 s
+      // of real time at 4x).
+      const tol = playing ? Math.max(1.5, 1.5 * rate) : 0.15;
+      if (Math.abs(drift) > tol) {
+        // Don't chase: a seek takes a moment (loading, decoding from the keyframe),
+        // and seeking again meanwhile only starts it over (the tile stayed blank).
+        const now = performance.now();
+        if (!v.seeking && (inBuffer(v, pos) || now - lastSeek.current > 4000)) {
+          lastSeek.current = now;
+          v.currentTime = pos;
+        }
       } else if (playing) {
         // Ahead: slow down a little; behind: speed up a little.
         v.playbackRate = rate * (1 - Math.max(-0.12, Math.min(0.12, drift * 0.25)));
       }
       if (playing && v.paused) v.play().catch(() => {});
       if (!playing && !v.paused) v.pause();
-      const ready = v.readyState >= 2;
+      const ready = v.readyState >= 2 && !v.seeking;
+      shown.current = ready ? "playing" : "loading";
       setState(ready ? "playing" : "loading");
       if (!playing) stalled.current = 0;
       else if (ready) stalled.current = Math.max(0, stalled.current - 80);

@@ -52,10 +52,30 @@ export function PlaybackPage() {
 
   // Shared clock: base time at a performance.now() instant, advancing at `rate` while playing.
   const clock = useRef({ base: initial, at: performance.now(), rate: 1, playing: true });
+  // Tiles report here when they can't play the current moment yet; the clock waits for
+  // the main camera (the enlarged one, else the first playing one) like a video player
+  // waits for its data. Running on without it, the main camera fell further behind with
+  // every jump to catch up, and showed a spinner again and again.
+  const waits = useRef(new Map<string, (t: number) => boolean>()).current;
+  const lead = useRef<string | null>(null);
+  const stuckSince = useRef(0);
   const master = useCallback(() => {
     const c = clock.current;
-    return c.playing ? c.base + (performance.now() - c.at) * c.rate : c.base;
-  }, []);
+    if (!c.playing) return c.base;
+    const t = c.base + (performance.now() - c.at) * c.rate;
+    const stuck = lead.current ? waits.get(lead.current)?.(t) : false;
+    const now = performance.now();
+    if (!stuck) {
+      stuckSince.current = 0;
+      return t;
+    }
+    // Waiting (holding where we are, never going back), but not forever: a camera
+    // that can't play at all mustn't stop the rest.
+    if (!stuckSince.current) stuckSince.current = now;
+    if (now - stuckSince.current > 8000) return t;
+    clock.current = { ...c, base: t, at: now };
+    return t;
+  }, [waits]);
   const [t, setT] = useState(initial);
   const [epoch, setEpoch] = useState(0);
   const [playing, setPlaying] = useState(true);
@@ -213,8 +233,8 @@ export function PlaybackPage() {
   // of them buffering, the least important ones show moving pictures (a frame every 2 s,
   // a few KB) and the rest play smoothly. Tap a picture to swap it for video.
   const [lite, setLite] = useState<string[]>([]);
-  const latest = useRef({ cams, lanes, focus, audio, lite });
-  latest.current = { cams, lanes, focus, audio, lite };
+  const latest = useRef({ cams, lanes, focus, audio, lite, rate });
+  latest.current = { cams, lanes, focus, audio, lite, rate };
   const lastCut = useRef(0);
   const lastStarve = useRef(0);
   const lastProbe = useRef(0);
@@ -253,15 +273,18 @@ export function PlaybackPage() {
       // Starved again soon after a camera got its video back: the connection is full.
       if (Date.now() - lastProbe.current < 20_000) probeFails.current++;
       if (Date.now() - lastCut.current < 6000) return;
-      const { cams, lanes, focus, audio, lite } = latest.current;
+      const { cams, lanes, focus, audio, lite, rate } = latest.current;
       const at = master();
       const has = (id: string) => !!lanes.find((l) => l.id === id)?.spans.some((s) => at >= s.s && at < s.e);
       const playingIds = cams.map((c) => c.id).filter((id) => !lite.includes(id) && has(id));
-      // Keep as many cameras on video as the connection carries (measured while it was
-      // this busy), most important first; the rest go to pictures in one step.
+      // Only a connection that measurably can't carry the cameras counts: a tile that is
+      // slow to start after a jump (or a busy computer) is no reason to take its video
+      // away, and on the home network that happened for no good reason.
       const cap = linkRate() * 0.8;
+      const need = playingIds.reduce((n, id) => n + (kbps.current[id] ?? 1500), 0) * rate;
+      if (cap <= 0 || cap >= need) return;
       let dim: string[] = [];
-      if (cap > 0) {
+      {
         const order = [...playingIds].sort((a, b) => Number(b === focus) - Number(a === focus) || Number(b === audio) - Number(a === audio));
         let left = cap;
         order.forEach((id, i) => {
@@ -273,10 +296,6 @@ export function PlaybackPage() {
       // Right after a start the measure runs low (requests queue in the browser): never
       // more than half at once; the least important go first.
       dim = dim.slice(-Math.max(1, Math.floor(playingIds.length / 2)));
-      if (!dim.length) {
-        const pick = nextToDim(lite);
-        if (pick) dim = [pick];
-      }
       if (!dim.length) return;
       lastCut.current = Date.now();
       setLite((l) => [...l, ...dim.filter((id) => !l.includes(id))]);
@@ -316,7 +335,9 @@ export function PlaybackPage() {
       muted={audio !== c.id}
       scrubT={scrubT}
       focused={focus === c.id}
-      lite={lite.includes(c.id)}
+      lite={lite.includes(c.id) || fast(c.id)}
+      fastForward={fast(c.id)}
+      waits={waits}
       onStarved={onStarved}
       onVideo={onVideo}
       onAudio={onAudio}
@@ -324,6 +345,18 @@ export function PlaybackPage() {
       onOpen={onOpen}
     />
   );
+
+  // At 4x and faster no computer decodes every camera's full video (7 cameras at 4x are
+  // ~700 frames a second): the main camera plays, the others show pictures that keep
+  // up with it.
+  const fast = (id: string) => rate >= 4 && cams.length > 1 && id !== lead.current;
+
+  // The camera the clock waits for: the enlarged one, else the first one showing video
+  // that has footage now.
+  lead.current =
+    focus ??
+    cams.find((c) => !lite.includes(c.id) && lanes.find((l) => l.id === c.id)?.spans.some((sp) => t >= sp.s && t < sp.e))?.id ??
+    null;
 
   return (
     <div ref={page} className="flex flex-col gap-3 bg-ink-950 md:h-[calc(100dvh-4.5rem)]">
@@ -452,6 +485,8 @@ const Tile = memo(function Tile({
   scrubT,
   focused,
   lite,
+  fastForward,
+  waits,
   onStarved,
   onVideo,
   onAudio,
@@ -470,6 +505,8 @@ const Tile = memo(function Tile({
   scrubT: number | null;
   focused: boolean;
   lite: boolean;
+  fastForward: boolean;
+  waits: Map<string, (t: number) => boolean>;
   onStarved: (id: string) => void;
   onVideo: (id: string) => void;
   onAudio: (id: string) => void;
@@ -480,9 +517,9 @@ const Tile = memo(function Tile({
   const picture = (
     <>
       {lite ? (
-        <PictureTile id={id} master={master} small={small} onVideo={onVideo} />
+        <PictureTile id={id} master={master} small={small} onVideo={onVideo} fastForward={fastForward} />
       ) : (
-        <SyncPlayer camera={id} master={master} playing={playing} rate={rate} epoch={epoch} muted={muted} onStarved={onStarved} />
+        <SyncPlayer camera={id} master={master} playing={playing} rate={rate} epoch={epoch} muted={muted} onStarved={onStarved} waits={waits} />
       )}
       <AnimatePresence>
         {scrubT !== null && (
@@ -526,7 +563,7 @@ const Tile = memo(function Tile({
 });
 
 // A camera shown as pictures (its preview frames, following the clock) instead of video.
-function PictureTile({ id, master, small, onVideo }: { id: string; master: () => number; small: boolean; onVideo: (id: string) => void }) {
+function PictureTile({ id, master, small, onVideo, fastForward }: { id: string; master: () => number; small: boolean; onVideo: (id: string) => void; fastForward: boolean }) {
   const [t, setT] = useState(() => Math.floor(master() / 2000) * 2000);
   useEffect(() => {
     const i = window.setInterval(() => setT(Math.floor(master() / 2000) * 2000), 500);
@@ -545,7 +582,12 @@ function PictureTile({ id, master, small, onVideo }: { id: string; master: () =>
       ) : (
         <div className="flex h-full items-center justify-center text-slate-500">{frame ? <ImageOff className="size-5" /> : <Loader2 className="size-5 animate-spin" />}</div>
       )}
-      {!small && (
+      {!small && fastForward && (
+        <span className="absolute bottom-2 left-2 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium text-white/80 backdrop-blur">
+          <ImageIcon className="size-3.5" /> Fast-forward preview
+        </span>
+      )}
+      {!small && !fastForward && (
         <button
           onClick={(e) => {
             e.stopPropagation();
