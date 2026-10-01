@@ -140,3 +140,10 @@ test('event log is capped and newest first', () => {
   assert.deepEqual(log.list().map(e => e.detail), ['4', '3', '2']);
   assert.deepEqual(createEventLog(join(dir, 'e.json')).list().map(e => e.detail), ['4', '3', '2']);
 });
+
+test('dashboard script parses (a syntax error leaves every page blank)', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const r = spawnSync(process.execPath, ['--check', fileURLToPath(new URL('./www/app.js', import.meta.url))], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+});

@@ -702,7 +702,7 @@ function renderSettings(force = false) {
       <div class="field"><div class="fl">Home Assistant notifications<small>Warn in Home Assistant when WhatsApp is unlinked or offline</small></div>${toggle('ha_notifications', bd.ha_notifications, 'Home Assistant notifications')}</div>
       <div class="field"><label for="f-off">Offline warning after<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Minutes disconnected before warning</small></label><input class="input" id="f-off" type="number" min="1" max="1440" name="offline_notify_minutes" value="${bd.offline_notify_minutes}">${err('offline_notify_minutes')}</div>
       <div class="field col"><label for="f-worker">Pitch-checker Worker address</label><input class="input wide" id="f-worker" name="worker_url" value="${esc(bd.worker_url)}" placeholder="https://name.account.workers.dev" autocomplete="off">
-        <div class="help">${onPi() ? 'Only used to move the pitch monitor here from the Worker, which is already done.' : 'The pitch monitor moves here from this Worker on the next start. It signs in with the add-on's api_token.'}</div>${err('worker_url')}</div>`}
+        <div class="help">${onPi() ? 'Only used to move the pitch monitor here from the Worker, which is already done.' : 'The pitch monitor moves here from this Worker on the next start. It signs in with this add-on’s api_token.'}</div>${err('worker_url')}</div>`}
     </div>
 
     <div class="card s-card rise" style="animation-delay:180ms">
