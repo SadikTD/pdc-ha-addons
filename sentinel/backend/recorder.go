@@ -43,6 +43,9 @@ type Recorder struct {
 	status      RecStatus
 	restarts    []time.Time
 	noAudioTill time.Time
+	// How long audio stays off after it was blamed for failures; doubles each time
+	// trying it again fails too, back to nothing once a session with audio holds.
+	noAudioFor time.Duration
 	// The camera sent timestamps the MP4 muxer can't store (big jumps): use arrival time.
 	wallclock bool
 	heartbeat atomic.Int64
@@ -175,7 +178,8 @@ func (r *Recorder) run(ctx context.Context) {
 
 		session := newSession(r.clock.BootTag())
 		r.store.RegisterSession(session, r.clock.Epoch())
-		audio := r.cam.Audio && info.AudioCodec != "" && time.Now().After(r.noAudioTill)
+		wantAudio := r.cam.Audio && info.AudioCodec != ""
+		audio := wantAudio && time.Now().After(r.noAudioTill)
 		args := r.ffmpegArgs(dir, session, info, audio)
 		tail := &tailBuffer{}
 		cmd, err := startProc("ffmpeg", args, []string{"TZ=UTC"}, nil, tail)
@@ -219,6 +223,15 @@ func (r *Recorder) run(ctx context.Context) {
 				r.heartbeat.Store(now.UnixMilli())
 				active := r.store.SyncSession(r.cam.ID, session, false)
 				if active != nil {
+					// Recording without audio after it was blamed for failures: once that
+					// time is up, start over with audio as a new file begins (the
+					// seam then falls between two files anyway).
+					if wantAudio && !audio && lastID != "" && active.ID != lastID && now.After(r.noAudioTill) {
+						reason = "audio retry"
+						r.incidents.Add("info", r.cam.ID, "Turning recording audio back on")
+						stopProc(cmd, exited)
+						break monitor
+					}
 					if active.ID != lastID {
 						lastID, lastSize = active.ID, 0
 					}
@@ -273,6 +286,11 @@ func (r *Recorder) run(ctx context.Context) {
 		r.store.SyncSession(r.cam.ID, session, true)
 
 		ran := time.Since(started)
+		if reason == "audio retry" {
+			bo.reset()
+			quickFails = 0
+			continue
+		}
 		msg := tail.last()
 		if msg == "" {
 			msg = reason
@@ -293,13 +311,23 @@ func (r *Recorder) run(ctx context.Context) {
 		if ran > 2*time.Minute {
 			bo.reset()
 			quickFails = 0
+			if audio {
+				r.noAudioFor = 0
+			}
 		} else {
 			quickFails++
 		}
-		// Audio is a nice-to-have: if the camera keeps failing with it, record without.
+		// Audio is a nice-to-have: if the camera keeps failing with it, record without
+		// for a while (the recording switches back to audio by itself afterwards).
 		if audio && quickFails >= 3 {
-			r.noAudioTill = time.Now().Add(15 * time.Minute)
-			r.incidents.Add("warn", r.cam.ID, "Recording without audio for 15 min after repeated failures")
+			r.noAudioFor = min(max(2*r.noAudioFor, 15*time.Minute), 4*time.Hour)
+			r.noAudioTill = time.Now().Add(r.noAudioFor)
+			r.incidents.Add("warn", r.cam.ID, "Recording without audio for %d min after repeated failures", int(r.noAudioFor.Minutes()))
+		} else if !audio && wantAudio && quickFails >= 5 {
+			// Failing without audio just the same (camera rebooting, router restart):
+			// audio wasn't the problem, so don't leave it off once the camera is back.
+			r.noAudioTill = time.Time{}
+			r.noAudioFor = 0
 		}
 		// The camera may have changed codec (firmware update, settings change).
 		if quickFails > 0 && quickFails%5 == 0 {
