@@ -21,7 +21,9 @@ A dedicated Android app for Sentinel: live cameras, the scrubbing timeline, even
 
 ## PDC WhatsApp Bridge
 
-Self-hosted [Baileys](https://github.com/WhiskeySockets/Baileys) sender used by the Pitch Duplicate Checker Worker.
+Runs the Pitch Duplicate Checker's Trello monitor and sends its alerts through a self-hosted [Baileys](https://github.com/WhiskeySockets/Baileys) WhatsApp session.
+
+- **Pitch monitor (since 3.0.0):** scans the Trello board once a minute, checks each new pitch against recent ones (exact title/source match, then MiMo with Gemini as backup), and sends duplicate alerts straight away. It moved here from the pitch-checker Worker, whose free-plan CPU cap kept killing runs and delayed alerts by up to half an hour. The code in `monitor/` is copied unchanged from the pitch-checker project; a local SQLite file (`/data/monitor.db`) stands in for Cloudflare D1.
 
 - Logs in once with a pairing code shown in the add-on log.
 - Exposes `POST /send` (bearer token, JSON `{to, text, idempotencyKey}`) and `GET /health` on port 8787 inside the Supervisor network only. No host port is published.
@@ -37,9 +39,9 @@ Self-hosted [Baileys](https://github.com/WhiskeySockets/Baileys) sender used by 
   - **Activity:** scan history and a log of connection events, pairing codes and setting changes.
   - **Settings:** the WhatsApp link (pairing code shown in the UI, test message, relink); monitor on/off, live vs dry run, watched lists, which verdicts alert, minimum confidence, quiet hours, health alerts and reference window; and this add-on's options.
 
-Configure `api_token` (32+ random characters), `sender_number` and `recipient_number` in the add-on options before starting. For the dashboard, set `worker_url` to the pitch-checker Worker's address. The dashboard reads the Worker's token-protected `/bridge/*` API with the same `api_token`, so the Worker's `BAILEYS_TOKEN` must equal it (as it already does for sending). Pitch checks and monitor settings live in the Worker's D1 database; message history and the event log stay in this add-on's `/data`.
+Configure `api_token` (32+ random characters), `sender_number` and `recipient_number` in the add-on options before starting, and set `worker_url` to the pitch-checker Worker's address. On first start the add-on asks the Worker to hand the monitor over (`POST /bridge/handover`, signed in with `api_token`, which must equal the Worker's `BAILEYS_TOKEN`): the Worker pauses its monitor, waits for a running check, and returns its history, settings, queued alerts and Trello/AI keys. They are saved in `/data` (keys in `/data/monitor.json`, readable by this add-on only), the add-on confirms, and from then on the Worker refuses to hand them out again and never runs the monitor. Until the move succeeds the Worker keeps monitoring and this add-on keeps collecting its alerts. Message history and the event log stay in `/data` as before.
 
-Tests: `node --test bridge.test.mjs ui.test.mjs` (no dependencies) and, after `npm install`, `node --test auth-state.test.mjs`.
+Tests: `node --test bridge.test.mjs ui.test.mjs local-monitor.test.mjs` (no dependencies; Node 22.13+ for `node:sqlite`) and, after `npm install`, `node --test auth-state.test.mjs`.
 
 ## Net Monitor
 

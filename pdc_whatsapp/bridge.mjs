@@ -139,21 +139,28 @@ export function createHandler({ options, ledger, wa, events }) {
   };
 }
 
-// Collects queued pitch alerts from the Worker (GET /bridge/outbox), sends each
-// through the idempotency ledger, and reports the result (POST /bridge/outbox/ack).
-// A key already in the ledger is re-reported, never re-sent, so a lost ack or a
-// restart can't cause a duplicate. `upstream` is told about each successful poll.
-export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)) }) {
-  let busy = false, failing = false;
-  const call = (path, init = {}) => fetcher(options.workerUrl + path, {
+// Calls the pitch-checker Worker's /bridge/* API, signed in with api_token.
+export function remoteApi(options, fetcher = fetch) {
+  return (path, init = {}) => fetcher(options.workerUrl + path, {
     ...init, redirect: 'manual', signal: AbortSignal.timeout(20000),
     headers: { Authorization: `Bearer ${options.token}`, 'Content-Type': 'application/json' },
   });
+}
+
+// Collects queued pitch alerts (GET /bridge/outbox), sends each through the
+// idempotency ledger, and reports the result (POST /bridge/outbox/ack). `api`
+// answers those routes: the monitor in this add-on (local-monitor.mjs), or the
+// Worker until the monitor has moved here. A key already in the ledger is
+// re-reported, never re-sent, so a lost ack or a restart can't cause a
+// duplicate. `upstream` is told about each successful poll.
+export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, api = null, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)) }) {
+  let busy = false, failing = false;
+  const call = api || remoteApi(options, fetcher);
   const ack = (key, status, extra = {}) => call('/bridge/outbox/ack', { method: 'POST', body: JSON.stringify({ key, status, ...extra }) })
     .then(r => r.ok).catch(() => false);
   return {
     async poll() {
-      if (busy || !options.workerUrl) return;
+      if (busy || (!api && !options.workerUrl)) return;
       busy = true;
       try {
         let messages;

@@ -7,7 +7,8 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtN = n => Number(n || 0).toLocaleString();
 const pct = (a, b) => b ? Math.round((a / b) * 100) : 0;
-const ms = s => (s ? s * 1000 : null); // Worker times are seconds
+const ms = s => (s ? s * 1000 : null); // monitor times are seconds
+const onPi = () => S.status?.monitorHost === 'pi';
 
 async function api(path, { method = 'GET', body } = {}) {
   const res = await fetch(path.replace(/^\//, ''), {
@@ -251,7 +252,7 @@ function renderChrome() {
     pills.push(!s.sending ? `<span class="pill"><span class="dot warn"></span>Dry run</span>`
       : m.quietNow ? `<span class="pill"><span class="dot info"></span>Quiet hours</span>`
       : `<span class="pill"><span class="dot live"></span>Alerts live</span>`);
-  } else if (S.monitorError) pills.push(`<span class="pill"><span class="dot bad"></span>Worker unreachable</span>`);
+  } else if (S.monitorError) pills.push(`<span class="pill"><span class="dot bad"></span>${onPi() ? 'Monitor error' : 'Worker unreachable'}</span>`);
   $('#pills').innerHTML = pills.join('');
 
   const banners = [];
@@ -379,9 +380,9 @@ function renderHealth() {
     else if (b.pairingCode) row('warn', 'WhatsApp link', 'Waiting for pairing code');
     else row('bad', 'WhatsApp link', b.offlineSince ? `Offline ${dur(Date.now() - b.offlineSince)}` : 'Offline');
   }
-  if (S.monitorError) row('bad', 'Pitch-checker Worker', esc(S.monitorError.length > 40 ? 'Unreachable' : S.monitorError));
+  if (S.monitorError) row('bad', onPi() ? 'Pitch monitor' : 'Pitch-checker Worker', esc(S.monitorError.length > 40 ? (onPi() ? 'Error' : 'Unreachable') : S.monitorError));
   if (m) {
-    row('live', 'Pitch-checker Worker', 'Reachable');
+    row('live', onPi() ? 'Pitch monitor' : 'Pitch-checker Worker', onPi() ? 'Running on this Pi' : 'Reachable');
     const last = ms(m.state?.last_ok);
     if (!m.settings.values.enabled) row('', 'Trello scans', 'Paused');
     else if (!last || now - last > 5 * 60000) row('bad', 'Trello scans', esc(m.state?.last_error || `Last ${ago(last, now)}`));
@@ -617,6 +618,8 @@ const EVENT_STYLE = {
   error: ['var(--critical)', 'Error', '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16v.1"/>'],
   upstream_lost: ['var(--critical)', 'Worker can\'t reach the bridge', '<path d="M6 6l12 12M18 6 6 18"/>'],
   upstream_ok: ['var(--good)', 'Worker reaching the bridge again', '<path d="m5 12 5 5 9-10"/>'],
+  monitor_moved: ['var(--good)', 'Pitch monitor moved to this Pi', '<path d="m5 12 5 5 9-10"/>'],
+  monitor_error: ['var(--critical)', 'Pitch monitor problem', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
 };
 function renderActivity() {
   const series = scanSeries();
@@ -674,7 +677,7 @@ function renderSettings(force = false) {
     <div class="card s-card rise" id="s-conn"></div>
 
     <div class="card s-card rise" style="animation-delay:60ms">
-      <div class="s-head"><span class="ico"><svg><use href="#i-layers"/></svg></span><div><h2>Pitch monitor</h2><p>Runs in the pitch-checker Worker. Changes apply on its next minute tick.</p></div></div>
+      <div class="s-head"><span class="ico"><svg><use href="#i-layers"/></svg></span><div><h2>Pitch monitor</h2><p>${onPi() ? 'Runs in this add-on on the Pi. Changes apply on its next scan (within a minute).' : 'Runs in the pitch-checker Worker until it moves to this add-on. Changes apply on its next minute tick.'}</p></div></div>
       ${!m ? `<div class="field col"><div class="muted">${esc(S.monitorError || 'Loading…')}</div></div>` : `
       <div class="field"><div class="fl">Monitoring<small>Scan the Trello board every minute and check new pitches</small></div>${toggle('enabled', d.enabled, 'Monitoring')}</div>
       <div class="field"><div class="fl">Send WhatsApp alerts<small>When off, findings are recorded as a dry run and nothing is sent</small></div>${toggle('sending', d.sending, 'Send WhatsApp alerts')}</div>
@@ -694,12 +697,12 @@ function renderSettings(force = false) {
     <div class="card s-card rise" style="animation-delay:120ms">
       <div class="s-head"><span class="ico"><svg><use href="#i-chat"/></svg></span><div><h2>WhatsApp bridge</h2><p>This add-on's options. Saving restarts the add-on (about 10 seconds).</p></div></div>
       ${!bd ? '<div class="field col"><div class="muted">Loading…</div></div>' : `
-      <div class="field"><label for="f-rcpt">Send alerts to<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Updates the Worker too</small></label><input class="input" id="f-rcpt" name="recipient_number" value="${esc(bd.recipient_number)}" inputmode="tel" autocomplete="off">${err('recipient_number')}</div>
+      <div class="field"><label for="f-rcpt">Send alerts to<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Updates the pitch monitor too</small></label><input class="input" id="f-rcpt" name="recipient_number" value="${esc(bd.recipient_number)}" inputmode="tel" autocomplete="off">${err('recipient_number')}</div>
       <div class="field"><label for="f-sender">Sender number<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Changing it needs a new pairing</small></label><input class="input" id="f-sender" name="sender_number" value="${esc(bd.sender_number)}" inputmode="tel" autocomplete="off">${err('sender_number')}</div>
       <div class="field"><div class="fl">Home Assistant notifications<small>Warn in Home Assistant when WhatsApp is unlinked or offline</small></div>${toggle('ha_notifications', bd.ha_notifications, 'Home Assistant notifications')}</div>
       <div class="field"><label for="f-off">Offline warning after<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Minutes disconnected before warning</small></label><input class="input" id="f-off" type="number" min="1" max="1440" name="offline_notify_minutes" value="${bd.offline_notify_minutes}">${err('offline_notify_minutes')}</div>
       <div class="field col"><label for="f-worker">Pitch-checker Worker address</label><input class="input wide" id="f-worker" name="worker_url" value="${esc(bd.worker_url)}" placeholder="https://name.account.workers.dev" autocomplete="off">
-        <div class="help">Where this dashboard reads pitch checks from. It signs in with the add-on's api_token.</div>${err('worker_url')}</div>`}
+        <div class="help">${onPi() ? 'Only used to move the pitch monitor here from the Worker, which is already done.' : 'The pitch monitor moves here from this Worker on the next start. It signs in with the add-on's api_token.'}</div>${err('worker_url')}</div>`}
     </div>
 
     <div class="card s-card rise" style="animation-delay:180ms">

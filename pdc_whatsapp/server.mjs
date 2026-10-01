@@ -4,9 +4,10 @@ import http from 'node:http';
 import { rm, mkdir, readFile } from 'node:fs/promises';
 import makeWASocket, { DisconnectReason, Browsers, fetchLatestBaileysVersion } from 'baileys';
 import pino from 'pino';
-import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, createOutboxPoller, log } from './bridge.mjs';
+import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, createOutboxPoller, remoteApi, log } from './bridge.mjs';
 import { useAtomicAuthState } from './auth-state.mjs';
 import { createUiHandler } from './ui.mjs';
+import { createLocalMonitor } from './local-monitor.mjs';
 
 const AUTH_DIR = `${DATA}/auth`;
 const PORT = Number(process.env.PORT || 8787);
@@ -228,18 +229,22 @@ const upstream = createUpstreamWatchdog({
   },
 });
 setInterval(() => upstream.tick().catch(e => log('Watchdog failed:', e?.message || e)), 60000).unref();
-// Pitch alerts: collected from the Worker's outbox over outbound HTTPS, so no
-// tunnel or open port is needed.
-const outbox = createOutboxPoller({ options, ledger, wa, events, upstream });
+// The pitch monitor scans Trello once a minute in this add-on (it moves here
+// from the Worker on first start). Its alerts are sent straight after each
+// run; until the move they are collected from the Worker over outbound HTTPS.
+let outbox = null;
+const monitor = createLocalMonitor({ options, events, onRun: () => outbox?.poll().catch(e => log('Outbox poll failed:', e?.message || e)) });
+const alertApi = (path, init) => (monitor.active() ? monitor.api : remoteApi(options))(path, init);
+outbox = createOutboxPoller({ options, ledger, wa, events, upstream, api: alertApi });
 setInterval(() => outbox.poll().catch(e => log('Outbox poll failed:', e?.message || e)), 15000);
-if (!options.workerUrl) log('worker_url is not set, so pitch alerts cannot be collected. Set it in the add-on configuration.');
+monitor.start();
 const server = http.createServer(createHandler({ options, ledger, wa, events }));
 server.requestTimeout = 60000;
 server.listen(PORT, () => log(`Bridge listening on :${PORT}`));
 
 // Sidebar dashboard (Ingress). Only the Supervisor's ingress proxy may connect.
 const ui = http.createServer(createUiHandler({
-  options, ledger, wa, events, version, supervisor,
+  options, ledger, wa, events, version, supervisor, localMonitor: () => (monitor.active() ? monitor.api : null),
   restart: () => setTimeout(() => supervisor('POST', '/addons/self/restart'), 1500),
 }));
 ui.listen(UI_PORT, () => log(`Dashboard listening on :${UI_PORT}`));
@@ -247,7 +252,7 @@ ui.listen(UI_PORT, () => log(`Dashboard listening on :${UI_PORT}`));
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.once(signal, async () => {
     log(`${signal} received; saving session and shutting down`);
-    server.close(); ui.close();
+    server.close(); ui.close(); monitor.stop();
     events.flush();
     const force = setTimeout(() => process.exit(0), 8000);
     await wa.stop();

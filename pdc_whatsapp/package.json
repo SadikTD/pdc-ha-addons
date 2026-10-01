@@ -1,9 +1,9 @@
 {
   "name": "pdc-whatsapp-bridge",
-  "version": "2.3.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22.13" },
   "dependencies": {
     "baileys": "7.0.0-rc14",
     "pino": "^9.6.0"

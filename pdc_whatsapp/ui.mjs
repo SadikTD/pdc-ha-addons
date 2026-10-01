@@ -1,11 +1,12 @@
 // Home Assistant sidebar dashboard (Ingress). Serves www/ and a small JSON API:
 // bridge status, message history and events come from this add-on; pitch checks,
-// verdicts and monitor settings come from the pitch-checker Worker's /bridge/*
-// API, authenticated with the same api_token the Worker uses to send.
+// verdicts and monitor settings come from the /bridge/* API of the pitch monitor,
+// which runs in this add-on (local-monitor.mjs) once it has moved from the
+// Worker; until then from the Worker, signed in with api_token.
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA, log } from './bridge.mjs';
+import { DATA, log, remoteApi } from './bridge.mjs';
 
 const WWW = fileURLToPath(new URL('./www/', import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
@@ -48,18 +49,20 @@ export function validateBridgeSettings(changes) {
   return { clean, errors };
 }
 
-export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, optionsFile = `${DATA}/options.json` }) {
+// `localMonitor()` returns the in-add-on monitor's API, or null before it has moved.
+export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, optionsFile = `${DATA}/options.json` }) {
   let monitorCache = null;
+  const remote = remoteApi(options, fetcher);
 
   const worker = async (path, init = {}) => {
-    if (!options.workerUrl) throw new HttpError(503, 'Set the Worker address in Settings to see pitch checks');
+    const local = localMonitor();
+    if (!local && !options.workerUrl) throw new HttpError(503, 'Set the Worker address in Settings to see pitch checks');
     let res;
-    try {
-      res = await fetcher(options.workerUrl + path, {
-        ...init, redirect: 'manual', signal: AbortSignal.timeout(25000),
-        headers: { Authorization: `Bearer ${options.token}`, 'Content-Type': 'application/json' },
-      });
-    } catch { throw new HttpError(502, "Couldn't reach the pitch-checker Worker"); }
+    try { res = await (local || remote)(path, init); }
+    catch (e) {
+      if (local) { log('Monitor API error:', e?.stack || e); throw new HttpError(500, 'The pitch monitor had an internal error; see the add-on log'); }
+      throw new HttpError(502, "Couldn't reach the pitch-checker Worker");
+    }
     const body = await res.json().catch(() => null);
     if (res.status === 401) throw new HttpError(502, "The Worker didn't accept this add-on's api_token (it must equal the Worker's BAILEYS_TOKEN)");
     if (!res.ok && res.status !== 400 && res.status !== 409) throw new HttpError(502, body?.error || `Worker error (${res.status})`);
@@ -82,7 +85,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
   const status = () => {
     const messages = ledger.list(), day = Date.now() - 86400000;
     return {
-      version, now: Date.now(), bridge: wa.status(), settings: safeOptions(),
+      version, now: Date.now(), bridge: wa.status(), settings: safeOptions(), monitorHost: localMonitor() ? 'pi' : 'worker',
       messages: {
         total: messages.length,
         sent: messages.filter(m => m.state === 'sent').length,
