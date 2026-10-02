@@ -197,3 +197,28 @@ test('watchdog with 0 minutes is off; recovery before any alert is silent', asyn
   w.contact(); await w.tick();
   assert.equal(sent.length, 0);
 });
+
+test('a send into a dead connection (ping failed) stays queued and goes out after the reconnect', async () => {
+  const notSent = () => Object.assign(new Error('WhatsApp connection was dead; reconnecting'), { notSent: true });
+  // Direct /send (Sentinel, netmon): 503 like "offline", and a retry really sends.
+  let dead = true, calls = 0;
+  const s = await serve(online(async () => { calls++; if (dead) throw notSent(); return 'WA9'; }));
+  assert.equal((await s.send(msg)).status, 503);
+  assert.equal(s.ledger.get(msg.idempotencyKey), undefined, 'not marked unknown');
+  dead = false; assert.equal((await s.send(msg)).status, 200); assert.equal(calls, 2);
+  s.close();
+
+  // Pitch alerts from the outbox: no ack, nothing marked unknown; sent on the next poll.
+  const ledger = createLedger(join(mkdtempSync(join(tmpdir(), 'pdc-')), 'sent.json'));
+  const acks = [];
+  const fetcher = async (url, init) => url.endsWith('/bridge/outbox')
+    ? Response.json({ messages: [{ key: 'trello:b:c9', to: '+15550000002', text: 'duplicate found' }] })
+    : (acks.push(JSON.parse(init.body)), Response.json({ ok: true }));
+  let alive = false;
+  const wa = online(async () => { if (!alive) throw notSent(); return 'WA10'; });
+  const p = createOutboxPoller({ options: { ...options, workerUrl: 'https://w.example' }, ledger, wa, fetcher, sleep: async () => {} });
+  await p.poll();
+  assert.deepEqual(acks, []); assert.equal(ledger.get('trello:b:c9'), undefined);
+  alive = true; await p.poll();
+  assert.deepEqual(acks, [{ key: 'trello:b:c9', status: 'sent', id: 'WA10' }]);
+});

@@ -41,6 +41,18 @@ async function haNotify(options, message, id = 'pdc_whatsapp_bridge') {
 // ---------------------------------------------------------------------------
 // Baileys connection with pairing-code login and automatic reconnects.
 // ---------------------------------------------------------------------------
+// Why a linked device drops, in plain words. Measured 2026-09-30..10-02: 5-8
+// drops a day, all back within 2-15 s. 408s line up with the Pi's internet
+// pausing (Trello/Worker calls failed at the same moments, daily ~04:02 BDT);
+// 428/503 come from WhatsApp's servers and happen to every linked device.
+const DROP_REASONS = {
+  408: "The Pi's internet paused for a moment.",
+  428: "WhatsApp's server closed the connection (routine for linked devices).",
+  503: "WhatsApp's server had a brief error.",
+  500: "WhatsApp's server had a brief error.",
+  440: 'Another session replaced this one for a moment.',
+};
+const dropReason = code => DROP_REASONS[code] || `Connection closed (code ${code ?? 'none'}).`;
 export function startWhatsApp(options, events) {
   // Baileys warns about app-state sync (chat mutes, pins) it can't decrypt on a fresh link.
   // Sending doesn't use that data, so only real errors are logged.
@@ -49,7 +61,7 @@ export function startWhatsApp(options, events) {
   let sock = null, auth = null, connected = false, accountOk = false, paired = false;
   let retry = 0, reconnectTimer = null, offlineSince = Date.now(), notified = false, stopping = false;
   let pairingCode = null, pairingAt = null, user = null, connectedSince = null, reconnects = 0, lastDisconnect = null;
-  let groupCache = null;
+  let groupCache = null, drop = null;
 
   const schedule = delay => {
     clearTimeout(reconnectTimer);
@@ -109,7 +121,10 @@ export function startWhatsApp(options, events) {
         user = { number: number ? `+${number}` : null, name: current.user?.name || current.user?.verifiedName || null };
         accountOk = number === options.sender;
         log(accountOk ? `Connected as +${options.sender}` : `WRONG ACCOUNT linked (${current.user?.id}); sends are blocked`);
-        events.add(accountOk ? 'connected' : 'wrong_account', accountOk ? `Connected as +${options.sender}` : `Linked account ${user.number} is not +${options.sender}; sends are blocked`);
+        clearTimeout(drop?.timer);
+        if (accountOk && drop && !drop.reported) events.add('reconnected', `Back after ${Math.max(1, Math.round((Date.now() - drop.at) / 1000))} s. ${dropReason(drop.code)}`);
+        else events.add(accountOk ? 'connected' : 'wrong_account', accountOk ? `Connected as +${options.sender}` : `Linked account ${user.number} is not +${options.sender}; sends are blocked`);
+        drop = null;
         if (accountOk) { if (notified) notify(null); notified = false; }
         else notify(`The linked WhatsApp account is not +${options.sender}, so alerts are blocked. Unlink this device on that phone and pair the correct number.`);
       }
@@ -136,14 +151,34 @@ export function startWhatsApp(options, events) {
           notified = true;
           events.add('forbidden', 'WhatsApp refused the connection (403); the sender number may be restricted');
           notify('WhatsApp refused the connection (403). The sender number may be restricted. Check WhatsApp on that phone.');
-        } else if (code !== DisconnectReason.restartRequired) {
-          events.add('disconnected', `Connection closed (${code ?? 'no code'})`);
+        } else if (code !== DisconnectReason.restartRequired && !drop) {
+          // Short drops are normal (see dropReason); only one that lasts a
+          // minute is logged as a disconnect, the rest as a single "reconnected".
+          const d = drop = { at: Date.now(), code, reported: false };
+          d.timer = setTimeout(() => { d.reported = true; events.add('disconnected', `Offline for over a minute. ${dropReason(code)}`); }, 60000);
+          d.timer.unref?.();
         }
         const delay = code === DisconnectReason.restartRequired ? 500 : Math.min(60000, 2000 * 2 ** retry++);
         log(`Connection closed (${code ?? 'no code'}); reconnecting in ${Math.round(delay / 1000)}s`);
         schedule(delay);
       }
     });
+  }
+
+  // A connection can die without notice: Baileys only notices after ~35 s of
+  // silence, and a message sent into it hangs and may or may not arrive (three
+  // pitch alerts on 2026-10-01 ended up "not delivered" that way). So each send
+  // first pings WhatsApp; if that fails, nothing was sent, the message stays
+  // queued (error.notSent) and the connection is rebuilt right away.
+  async function alive() {
+    const current = sock;
+    if (!current || !connected) throw Object.assign(new Error('WhatsApp is not connected'), { notSent: true });
+    try {
+      await current.query({ tag: 'iq', attrs: { id: current.generateMessageTag(), to: '@s.whatsapp.net', type: 'get', xmlns: 'w:p' }, content: [{ tag: 'ping', attrs: {} }] }, 5000);
+    } catch {
+      if (current === sock) current.end(Object.assign(new Error('Connection was lost'), { output: { statusCode: DisconnectReason.connectionLost } }));
+      throw Object.assign(new Error('WhatsApp connection was dead; reconnecting'), { notSent: true });
+    }
   }
 
   schedule(0);
@@ -153,6 +188,7 @@ export function startWhatsApp(options, events) {
       offlineSince: connected ? null : offlineSince || null, sender: `+${options.sender}`,
     }),
     async send(jid, text) {
+      await alive();
       let timer;
       try {
         const msg = await Promise.race([
@@ -164,6 +200,7 @@ export function startWhatsApp(options, events) {
       } finally { clearTimeout(timer); }
     },
     async sendImage(jid, jpeg, caption) {
+      await alive();
       let timer;
       try {
         const msg = await Promise.race([
@@ -225,7 +262,7 @@ const upstream = createUpstreamWatchdog({
     const key = `watchdog:${Date.now()}`;
     ledger.set(key, { state: 'sending', text, to: options.recipient, sentAt: null, error: null });
     try { ledger.set(key, { state: 'sent', id: await wa.send(`${options.recipient}@s.whatsapp.net`, text), sentAt: Date.now() }); return true; }
-    catch (e) { ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
+    catch (e) { if (e?.notSent) ledger.delete(key); else ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
   },
 });
 setInterval(() => upstream.tick().catch(e => log('Watchdog failed:', e?.message || e)), 60000).unref();
@@ -242,7 +279,7 @@ async function monitorAlert(text, recovered) {
   const key = `monitor-watch:${Date.now()}`;
   ledger.set(key, { state: 'sending', text, to: options.recipient, sentAt: null, error: null });
   try { ledger.set(key, { state: 'sent', id: await wa.send(`${options.recipient}@s.whatsapp.net`, text), sentAt: Date.now() }); log(`sent ${key}`); return true; }
-  catch (e) { ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
+  catch (e) { if (e?.notSent) ledger.delete(key); else ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
 }
 const monitor = createLocalMonitor({
   options, events, onAlert: monitorAlert,

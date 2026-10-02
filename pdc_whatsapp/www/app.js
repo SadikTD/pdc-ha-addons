@@ -616,6 +616,7 @@ const EVENT_STYLE = {
   started: ['var(--accent)', 'Add-on started', '<path d="M5 3l14 9-14 9V3Z"/>'],
   connected: ['var(--good)', 'WhatsApp connected', '<path d="m5 12 5 5 9-10"/>'],
   disconnected: ['var(--warning)', 'WhatsApp disconnected', '<path d="M6 6l12 12M18 6 6 18"/>'],
+  reconnected: ['var(--muted)', 'WhatsApp reconnected', '<path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v4h-4"/>'],
   pairing: ['var(--info)', 'Pairing code issued', '<rect x="4" y="9" width="16" height="11" rx="2"/><path d="M8 9V6a4 4 0 0 1 8 0v3"/>'],
   logged_out: ['var(--critical)', 'Unlinked by WhatsApp', '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l-5-5 5-5M5 12h11"/>'],
   wrong_account: ['var(--critical)', 'Wrong account linked', '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>'],

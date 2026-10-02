@@ -131,6 +131,8 @@ export function createHandler({ options, ledger, wa, events }) {
       log(`sent ${key}`);
       return reply(res, 200, { status: 'sent', id });
     } catch (e) {
+      // Nothing left the Pi: the caller may simply retry later.
+      if (e?.notSent) { ledger.delete(key); return reply(res, 503, { status: 'unavailable', connected: false, paired: true }); }
       ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) });
       log(`send failed for ${key}: ${e?.message || e}`);
       note('send_failed', `${key}: ${e?.message || e}`);
@@ -195,6 +197,7 @@ export function createOutboxPoller({ options, ledger, wa, events, upstream, fetc
             log(`sent ${m.key}`);
             await ack(m.key, 'sent', { id });
           } catch (e) {
+            if (e?.notSent) { ledger.delete(m.key); break; } // stays queued; sent after the reconnect
             const error = String(e?.message || e).slice(0, 200);
             ledger.set(m.key, { state: 'unknown', error });
             log(`send failed for ${m.key}: ${error}`);

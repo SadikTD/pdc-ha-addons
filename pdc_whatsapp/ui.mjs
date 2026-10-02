@@ -138,6 +138,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       events.add('test', 'Test message sent from the dashboard');
       return { ok: true, key, id };
     } catch (e) {
+      if (e?.notSent) { ledger.delete(key); throw new HttpError(409, 'WhatsApp is reconnecting; try again in a few seconds'); }
       ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) });
       throw new HttpError(502, `WhatsApp didn't confirm the test message: ${e?.message || e}`);
     }
