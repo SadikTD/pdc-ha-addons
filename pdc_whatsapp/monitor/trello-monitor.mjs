@@ -400,7 +400,9 @@ export async function checkMonitorHealth(env, dependencies = {}) {
       alert: () => ['⚠️ *Pitch monitor problem*', '',
         `${stuck.n} new pitch${stuck.n === 1 ? '' : 'es'} couldn't be checked for over an hour. The AI service (MiMo/Gemini) may be failing or out of quota.`].join('\n'),
       ok: '✅ *Pitch monitor recovered*\n\nAll waiting pitches have now been checked.' },
-  ];
+  // The HA add-on watches scans from outside the run (a hung run can't report
+  // itself), so this in-run scan check would only send a second message there.
+  ].filter(p => !(p.kind === 'scan' && env.MONITOR_SCAN_WATCHDOG === 'external'));
   for (const p of problems) {
     const prev = await row(p.kind);
     if (p.active && (!prev?.active || t - prev.last_sent >= HEALTH_REPEAT)) {

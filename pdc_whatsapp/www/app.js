@@ -233,6 +233,16 @@ function dailyBuckets(days, pick) {
 }
 
 // ------------------------------------------------------------------ top chrome
+// Why scans are failing right now, in plain words (null while they work).
+function scanTrouble() {
+  const h = S.status?.monitorHealth, m = S.monitor, now = serverNow();
+  if (!h || !m?.settings.values.enabled) return null;
+  const lastOk = ms(m.state?.last_ok) || h.lastOk;
+  if (lastOk && now - lastOk <= 5 * 60000) return null; // a one-off failed scan isn't worth a banner
+  if (h.problem) return h.problem;
+  if (h.running && now - h.running.since > 2 * 60000) return `A scan has been running for ${dur(now - h.running.since)}${h.running.waitingOn ? `, waiting for ${h.running.waitingOn} to answer` : ''}. It will be stopped after 4 minutes.`;
+  return lastOk ? `No scan has finished for ${dur(now - lastOk)}.` : null;
+}
 function renderChrome() {
   const st = S.status, m = S.monitor, now = serverNow();
   const pills = [];
@@ -258,6 +268,8 @@ function renderChrome() {
   const banners = [];
   if (st?.bridge.pairingCode) banners.push(`<div class="banner" style="--c:var(--warning)"><svg viewBox="0 0 16 16"><use href="#v-near_miss"/></svg><div><b>Link WhatsApp:</b> enter code <b class="num">${esc(st.bridge.pairingCode)}</b> on ${esc(st.bridge.sender)} under Linked devices › Link with phone number.</div><a class="btn" href="#settings">Details</a></div>`);
   if (S.monitorError) banners.push(`<div class="banner" style="--c:var(--critical)"><svg viewBox="0 0 16 16"><use href="#v-duplicate"/></svg><div>${esc(S.monitorError)}</div><a class="btn" href="#settings">Open settings</a></div>`);
+  const why = scanTrouble();
+  if (why) banners.push(`<div class="banner" style="--c:var(--critical)"><svg viewBox="0 0 16 16"><use href="#v-duplicate"/></svg><div><b>Scans aren't working.</b> ${esc(why)}</div><a class="btn" href="#activity">Activity</a></div>`);
   if (S.restarting) banners.push(`<div class="banner" style="--c:var(--info)"><svg viewBox="0 0 16 16"><use href="#v-waiting"/></svg><div>Restarting the add-on to apply your settings…</div></div>`);
   $('#banner').innerHTML = banners.join('');
 
@@ -385,7 +397,7 @@ function renderHealth() {
     row('live', onPi() ? 'Pitch monitor' : 'Pitch-checker Worker', onPi() ? 'Running on this Pi' : 'Reachable');
     const last = ms(m.state?.last_ok);
     if (!m.settings.values.enabled) row('', 'Trello scans', 'Paused');
-    else if (!last || now - last > 5 * 60000) row('bad', 'Trello scans', esc(m.state?.last_error || `Last ${ago(last, now)}`));
+    else if (!last || now - last > 5 * 60000) row('bad', 'Trello scans', `<span title="${esc(scanTrouble() || '')}">Last ${ago(last, now)}</span>`);
     else row('live', 'Trello scans', `Last ${ago(last, now)}`);
     const waiting = jobs().filter(j => j.check === 'pending');
     const stuck = waiting.filter(j => now - ms(j.firstSeen) > 3600000).length;
@@ -619,7 +631,10 @@ const EVENT_STYLE = {
   upstream_lost: ['var(--critical)', 'Worker can\'t reach the bridge', '<path d="M6 6l12 12M18 6 6 18"/>'],
   upstream_ok: ['var(--good)', 'Worker reaching the bridge again', '<path d="m5 12 5 5 9-10"/>'],
   monitor_moved: ['var(--good)', 'Pitch monitor moved to this Pi', '<path d="m5 12 5 5 9-10"/>'],
-  monitor_error: ['var(--critical)', 'Pitch monitor problem', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
+  monitor_error: ['var(--critical)', 'Scan failed', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
+  monitor_stuck: ['var(--critical)', 'Scan got stuck', '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'],
+  monitor_ok: ['var(--good)', 'Scans working again', '<path d="m5 12 5 5 9-10"/>'],
+  monitor_alert: ['var(--info)', 'WhatsApp alert about scans', '<path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4 18-7Z"/>'],
 };
 function renderActivity() {
   const series = scanSeries();

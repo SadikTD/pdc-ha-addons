@@ -232,8 +232,24 @@ setInterval(() => upstream.tick().catch(e => log('Watchdog failed:', e?.message 
 // The pitch monitor scans Trello once a minute in this add-on (it moves here
 // from the Worker on first start). Its alerts are sent straight after each
 // run; until the move they are collected from the Worker over outbound HTTPS.
-let outbox = null;
-const monitor = createLocalMonitor({ options, events, onRun: () => outbox?.poll().catch(e => log('Outbox poll failed:', e?.message || e)) });
+let outbox = null, shutdown = null;
+// Sent straight from here, not through the monitor's outbox: the monitor is
+// what's broken when these go out.
+async function monitorAlert(text, recovered) {
+  await haNotify(options, recovered ? null : text.replace(/\*/g, ''), 'pdc_monitor_scans');
+  const s = wa.status();
+  if (!s.connected || !s.accountOk) return false; // retried next minute
+  const key = `monitor-watch:${Date.now()}`;
+  ledger.set(key, { state: 'sending', text, to: options.recipient, sentAt: null, error: null });
+  try { ledger.set(key, { state: 'sent', id: await wa.send(`${options.recipient}@s.whatsapp.net`, text), sentAt: Date.now() }); log(`sent ${key}`); return true; }
+  catch (e) { ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
+}
+const monitor = createLocalMonitor({
+  options, events, onAlert: monitorAlert,
+  onRun: () => outbox?.poll().catch(e => log('Outbox poll failed:', e?.message || e)),
+  // Exit non-zero so the Supervisor watchdog starts the add-on fresh.
+  onStuck: () => shutdown?.('monitor stuck', 1),
+});
 const alertApi = (path, init) => (monitor.active() ? monitor.api : remoteApi(options))(path, init);
 outbox = createOutboxPoller({ options, ledger, wa, events, upstream, api: alertApi });
 setInterval(() => outbox.poll().catch(e => log('Outbox poll failed:', e?.message || e)), 15000);
@@ -245,18 +261,18 @@ server.listen(PORT, () => log(`Bridge listening on :${PORT}`));
 // Sidebar dashboard (Ingress). Only the Supervisor's ingress proxy may connect.
 const ui = http.createServer(createUiHandler({
   options, ledger, wa, events, version, supervisor, localMonitor: () => (monitor.active() ? monitor.api : null),
+  monitorHealth: () => (monitor.active() ? monitor.health() : null),
   restart: () => setTimeout(() => supervisor('POST', '/addons/self/restart'), 1500),
 }));
 ui.listen(UI_PORT, () => log(`Dashboard listening on :${UI_PORT}`));
 
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.once(signal, async () => {
-    log(`${signal} received; saving session and shutting down`);
-    server.close(); ui.close(); monitor.stop();
-    events.flush();
-    const force = setTimeout(() => process.exit(0), 8000);
-    await wa.stop();
-    clearTimeout(force);
-    process.exit(0);
-  });
-}
+shutdown = async (reason, code = 0) => {
+  log(`${reason}; saving session and shutting down`);
+  server.close(); ui.close(); monitor.stop();
+  events.flush();
+  const force = setTimeout(() => process.exit(code), 8000);
+  await wa.stop();
+  clearTimeout(force);
+  process.exit(code);
+};
+for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => shutdown(`${signal} received`));

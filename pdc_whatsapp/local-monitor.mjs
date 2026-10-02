@@ -15,13 +15,48 @@
 // monitoring and this add-on keeps collecting its alerts.
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
-import { runTrelloMonitor, monitorLLM, withMonitorSettings } from './monitor/trello-monitor.mjs';
+import { runTrelloMonitor, monitorLLM, withMonitorSettings, loadMonitorCards, monitorTrelloGet, formatPitchTime } from './monitor/trello-monitor.mjs';
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
 import { monitorEngine } from './monitor/match-engine.mjs';
 import { DATA, log, remoteApi } from './bridge.mjs';
 
 const SCHEMA = new URL('./monitor/monitor-schema.sql', import.meta.url);
 const INTERVAL = 60000;
+// On 2026-10-02 one run hung for 15 hours: every later tick saw it still
+// "running" and quietly skipped, and the self-monitoring that would have
+// raised the alarm runs inside that same run. So: every outside call has a
+// hard deadline (body included), a run past RUN_LIMIT is abandoned (a second
+// one in a row restarts the add-on), and a watchdog OUTSIDE the run alerts
+// when no scan has finished for STALE_ALERT.
+const CALL_LIMIT = 70000; // above the longest per-call timeout (MiMo, 55 s)
+const RUN_LIMIT = 4 * 60000; // a healthy run takes under two minutes
+const STALE_ALERT = 10 * 60000;
+const ALERT_REPEAT = 3 * 3600000;
+const SERVICES = { 'api.trello.com': 'Trello', 'api.xiaomimimo.com': 'the MiMo AI', 'generativelanguage.googleapis.com': 'the Gemini AI' };
+const service = host => SERVICES[host] || host;
+const minutes = ms => `${Math.max(1, Math.round(ms / 60000))} min`;
+
+// fetch with a deadline that also covers reading the body, so no outside call
+// can hold a run forever. Records what is in flight for the stall report.
+export function guardedFetch(fetcher, inFlight, limit = CALL_LIMIT) {
+  return async (url, init = {}) => {
+    const call = { host: new URL(String(url)).host, since: Date.now() };
+    inFlight.add(call);
+    let timer;
+    try {
+      return await Promise.race([
+        (async () => {
+          const res = await fetcher(url, init);
+          const body = await res.arrayBuffer();
+          return new Response([101, 204, 205, 304].includes(res.status) ? null : body, { status: res.status, statusText: res.statusText, headers: res.headers });
+        })(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error(`${service(call.host)} did not answer within ${Math.round(limit / 1000)} s`), { name: 'TimeoutError' })), limit);
+        }),
+      ]);
+    } finally { clearTimeout(timer); inFlight.delete(call); }
+  };
+}
 
 // Cloudflare D1's API (prepare/bind/run/first/all/batch) over node:sqlite.
 export function openD1(file) {
@@ -72,18 +107,29 @@ function writePrivate(file, data) {
   try { chmodSync(file, 0o600); } catch { /* best effort */ }
 }
 
-export function createLocalMonitor({ options, events, onRun = () => {}, fetcher = fetch, engine = { ...monitorEngine, call: monitorLLM }, dependencies = {},
-  file = `${DATA}/monitor.db`, configFile = `${DATA}/monitor.json` }) {
+// `onAlert(text, recovered)` tells the recipient (WhatsApp + Home Assistant)
+// that scans stopped or recovered, resolving true once WhatsApp accepted it.
+// `onStuck(message)` restarts the add-on after hung runs twice in a row.
+export function createLocalMonitor({ options, events, onRun = () => {}, onAlert = async () => false, onStuck = () => {}, fetcher = fetch, engine, dependencies = {},
+  file = `${DATA}/monitor.db`, configFile = `${DATA}/monitor.json`, watchFile = `${DATA}/monitor-watch.json`, clock = Date.now, limits = {} }) {
   const db = openD1(file);
   let config = null;
   try { config = JSON.parse(readFileSync(configFile, 'utf8')); } catch { /* not moved yet */ }
   const remote = remoteApi(options, fetcher);
-  let running = false, lastProblem = null, timer = null;
+  const runLimit = limits.run ?? RUN_LIMIT, staleAlert = limits.stale ?? STALE_ALERT;
+  // Trello and AI calls made by the monitor's defaults go through the guard.
+  const inFlight = new Set(), guarded = guardedFetch(limits.fetch || fetch, inFlight, limits.call ?? CALL_LIMIT);
+  engine ||= { ...monitorEngine, call: (prompt, e, _fetcher, meta) => monitorLLM(prompt, e, guarded, meta) };
+  dependencies = { load: e => loadMonitorCards(e, (path, params, e2) => monitorTrelloGet(path, params, e2, guarded)), ...dependencies };
+  let running = null, stalls = 0, lastProblem = null, problemSince = null, timer = null, watchTimer = null;
+  let alerted = null; // { at, lastOk } while a "scans stopped" alert is out
+  try { alerted = JSON.parse(readFileSync(watchFile, 'utf8')).alerted || null; } catch { /* none yet */ }
 
   const env = () => ({
     DB: db, TRELLO_MONITOR_BOARD_ID: config.board, ...config.secrets,
     BAILEYS_TOKEN: options.token, BAILEYS_RECIPIENT: `+${options.recipient}`,
     TRELLO_MONITOR_ENABLED: 'false', TRELLO_MONITOR_SEND: 'false', // the moved settings decide
+    MONITOR_SCAN_WATCHDOG: 'external', // watch() alerts on stalled scans
   });
   // The Worker's /bridge/* API (dashboard, settings, outbox), answered here.
   const api = (path, init = {}) => handleBridgeApi(new Request(`http://monitor${path}`, {
@@ -91,10 +137,12 @@ export function createLocalMonitor({ options, events, onRun = () => {}, fetcher 
     headers: { Authorization: `Bearer ${options.token}`, 'Content-Type': 'application/json' },
   }), env());
 
-  const problem = message => {
+  const problem = (message, type = 'monitor_error') => {
     if (message === lastProblem) return;
+    if (message && !lastProblem) problemSince = clock();
     lastProblem = message;
-    if (message) { log(message); events.add('monitor_error', message); } else log('Pitch monitor is running normally again');
+    if (message) { log(message); events.add(type, message); }
+    else { problemSince = null; log('Pitch monitor is running normally again'); events.add('monitor_ok', 'Pitch monitor is running normally again'); }
   };
 
   async function takeOver() {
@@ -122,27 +170,83 @@ export function createLocalMonitor({ options, events, onRun = () => {}, fetcher 
     } catch { /* next minute */ }
   }
 
+  const waitingOn = () => {
+    const oldest = [...inFlight].sort((a, b) => a.since - b.since)[0];
+    return oldest ? service(oldest.host) : null;
+  };
+
   async function tick() {
-    if (running) return;
-    running = true;
+    if (running) {
+      const age = clock() - running.since;
+      if (age < runLimit) return;
+      // Abandon the hung run and free its lock so the next scan can start;
+      // its owner-guarded writes can't touch the state once the lock is gone.
+      stalls++;
+      const on = waitingOn();
+      const message = `A scan got stuck for ${minutes(age)}${on ? ` waiting for ${on} to answer` : ''}. ${stalls > 1
+        ? 'That happened twice in a row, so the add-on is restarting itself.' : 'It was stopped and scanning carries on.'}`;
+      problem(message, 'monitor_stuck');
+      running = null;
+      if (config) db.sqlite.prepare('UPDATE trello_monitor_state SET owner=NULL,lease_until=0 WHERE board_id=?').run(config.board);
+      if (stalls > 1) return onStuck(message);
+    }
+    const run = running = { since: clock() };
     try {
       if (!config) await takeOver();
       if (!config) return;
       if (!config.confirmed) await confirm();
       const report = await runTrelloMonitor(await withMonitorSettings(env()), engine, dependencies);
-      problem(null);
+      if (running !== run) return; // abandoned meanwhile
+      stalls = 0;
+      if (!report?.busy) problem(null);
       await onRun(report);
     } catch (e) {
-      problem(`Pitch monitor run failed: ${String(e?.message || e).slice(0, 200)}`);
+      if (running !== run) return;
+      stalls = 0;
+      problem(`Scan failed: ${String(e?.message || e).slice(0, 200)}`);
       await onRun(null);
-    } finally { running = false; }
+    } finally { if (running === run) running = null; }
+  }
+
+  const saveWatch = () => { try { writeFileSync(watchFile, JSON.stringify({ alerted })); } catch { /* best effort */ } };
+  const lastOkMs = () => {
+    const row = config && db.sqlite.prepare('SELECT last_ok FROM trello_monitor_state WHERE board_id=?').get(config.board);
+    return row?.last_ok ? row.last_ok * 1000 : null;
+  };
+  // On its own timer, never inside a scan, so a hung scan can't silence it.
+  async function watch() {
+    if (!config) return;
+    const settings = await withMonitorSettings(env());
+    const lastOk = lastOkMs(), now = clock();
+    const stale = Boolean(settings.TRELLO_MONITOR_ENABLED === 'true' && lastOk && now - lastOk > staleAlert);
+    if (stale && (!alerted || now - alerted.at >= ALERT_REPEAT)) {
+      const on = waitingOn();
+      const reason = lastProblem || (running ? `A scan has been running for ${minutes(now - running.since)}${on ? `, waiting for ${on} to answer` : ''}.` : 'Unknown; see the add-on log.');
+      const text = ['⚠️ *Pitch monitor stopped scanning*', '',
+        `No Trello scan has finished since ${formatPitchTime(new Date(lastOk).toISOString())}, so new pitches aren't being checked.`, '',
+        `Reason: ${reason}`, '',
+        "It keeps retrying every minute, and you'll get a message when it's working again. Details: PDC Monitor in Home Assistant, Activity page."].join('\n');
+      if (await onAlert(text, false)) { alerted = { at: now, lastOk }; saveWatch(); events.add('monitor_alert', 'Sent a WhatsApp alert that scans stopped'); }
+    } else if (!stale && alerted) {
+      const text = '✅ *Pitch monitor working again*\n\nTrello scans are running again. Pitches that came in meanwhile are being checked now.';
+      if (await onAlert(text, true)) { alerted = null; saveWatch(); events.add('monitor_alert', 'Sent a WhatsApp message that scans recovered'); }
+    }
   }
 
   return {
     active: () => Boolean(config),
     api,
     tick,
-    start() { tick(); timer = setInterval(tick, INTERVAL); },
-    stop() { clearInterval(timer); db.sqlite.close(); },
+    watch,
+    // For the dashboard: what is wrong right now, in plain words.
+    health: () => ({
+      problem: lastProblem, problemSince, lastOk: lastOkMs(),
+      running: running ? { since: running.since, waitingOn: waitingOn() } : null,
+    }),
+    start() {
+      tick(); timer = setInterval(tick, INTERVAL);
+      watchTimer = setInterval(() => watch().catch(e => log('Monitor watchdog failed:', e?.message || e)), INTERVAL);
+    },
+    stop() { clearInterval(timer); clearInterval(watchTimer); db.sqlite.close(); },
   };
 }

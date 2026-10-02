@@ -50,7 +50,7 @@ export function validateBridgeSettings(changes) {
 }
 
 // `localMonitor()` returns the in-add-on monitor's API, or null before it has moved.
-export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, optionsFile = `${DATA}/options.json` }) {
+export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, optionsFile = `${DATA}/options.json` }) {
   let monitorCache = null;
   const remote = remoteApi(options, fetcher);
 
@@ -86,6 +86,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     const messages = ledger.list(), day = Date.now() - 86400000;
     return {
       version, now: Date.now(), bridge: wa.status(), settings: safeOptions(), monitorHost: localMonitor() ? 'pi' : 'worker',
+      monitorHealth: monitorHealth(),
       messages: {
         total: messages.length,
         sent: messages.filter(m => m.state === 'sent').length,
