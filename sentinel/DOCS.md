@@ -211,6 +211,40 @@ time), or a "quiet night" card, with a one-line caption such as "Last night (11 
 6 AM): 2 people (Ground Floor 2:14 AM, 2nd Floor 2:16 AM) · 3 cats." It waits until
 every event of the night has been checked. Preview it or send it now from Settings.
 
+## Cat watch (a cat shut outside)
+
+For a cat left outside the door: Settings → **Cat watch** watches the chosen cameras
+(any time of day, or only between set hours) for a cat that stays. When something moves
+there, Sentinel looks at the newest recorded frame about every 1.5–3 s, and keeps
+looking after the motion stops (a cat waiting at the door hardly moves). Once a cat has
+been seen for the chosen time (5 s by default), until it has gone, every 10 s (also
+adjustable):
+
+- **Alexa** says your message ("There's a cat outside") on the chosen Echo, through the
+  Alexa Media Player integration in Home Assistant. The Echo's volume goes up to the
+  chosen level (70%) while the cat is there and back to what it was once it has gone
+  (also after a restart). Alexa doesn't speak with Do Not Disturb on.
+- **WhatsApp**: a picture of the scene to the chosen chat (your own number, a group, or
+  the same chat as night alerts about cats). A **safety cap** slows pictures down after
+  a few minutes (e.g. one a minute after 5 min), since lots of messages in a row can get
+  a WhatsApp number banned; Alexa keeps its pace. When the cat has gone, one last
+  message says so (to a number, not to groups).
+
+The cat counts as gone when it hasn't been seen for 30 s and something moved since
+(leaving makes motion), or after 5 minutes without seeing it. **Test Alexa** and **Send a
+test picture** check each path; Recent cats lists each visit (how long, how many
+announcements and pictures, and any error).
+
+**Looking harder for cats** (on by default for cat watch cameras): from above, cats are
+small and the fast detector misses most of them. Cat watch has the bigger model look at
+each half of the picture (about 1.7× larger than the whole frame), ignoring "cats" that
+are too big to be one or are part of a person (people seen from above are often taken
+for cats). The same looks label these cameras' motion events: a cat counts there when
+seen in two frames (or once, clearly). Tested on three days of a stairwell camera:
+29 of 30 visits with a cat were found (11 before), and every 5-second alert was a cat.
+Each look takes about 3 s of CPU on a Raspberry Pi 5, only while something moves or a
+cat is there.
+
 ## Google Drive backup
 
 Sentinel can upload motion events (10 s before to 10 s after, per camera or all

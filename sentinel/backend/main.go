@@ -68,6 +68,7 @@ func main() {
 	app.drive = newDrive(app)
 	app.clips = newClipStore(filepath.Join(media, "exports"), app)
 	app.alerts = newAlerter(app, filepath.Join(media, "alerts.json"))
+	app.catwatch = newCatWatcher(app, filepath.Join(media, "catwatch.json"))
 	app.objects = newObjectSensors()
 	app.labeler = newLabeler(app)
 	app.faces = newFaces(app)

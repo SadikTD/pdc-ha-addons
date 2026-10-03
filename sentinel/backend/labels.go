@@ -519,6 +519,14 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 	}
 
 	empty, zooms := 0, 0
+	// Cat watch cameras with "look harder": the big model looks at each part of a few
+	// frames for cats the fast one missed (small, from above, sitting still).
+	cw := a.settings.Get().CatWatch
+	hardLooks := 0
+	var hard []Object // cats seen by looking harder, one per frame
+	if !(cw.BetterDetection && contains(cw.Cameras, e.Cam) && slices.Contains(kinds, "cat")) {
+		hardLooks = maxHardLooks
+	}
 	var off time.Duration
 	for i := 0; i < limit && ctx.Err() == nil; i++ {
 		switch {
@@ -575,6 +583,30 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 				}
 			}
 		}
+		// Looking harder (cat watch cameras): the big model's own looks at the parts of the
+		// frame decide. Its zoomed-in closer look doesn't: close up, from above, it often
+		// sees no cat in a clear picture of one.
+		if hardLooks < maxHardLooks && !done["animal"] {
+			hardLooks++
+			if cs, err := a.catDets(ctx, cam, t, Rect{}, false); err == nil {
+				o.log("  looked harder for cats: %s", fmtDets(cs))
+				if len(cs) > 0 {
+					found = true
+					d := cs[0]
+					hard = append(hard, Object{Label: animalLabel(d.Label, kinds), Score: d.Score, Box: d.Box, T: t.UnixMilli()})
+					if len(hard) >= 2 || d.Score >= hardClear {
+						best := hard[0]
+						for _, h := range hard {
+							if h.Score > best.Score {
+								best = h
+							}
+						}
+						done["animal"] = true
+						confirm(best, time.UnixMilli(best.T))
+					}
+				}
+			}
+		}
 		if found {
 			empty = 0
 		} else {
@@ -611,6 +643,24 @@ type zoomLook struct {
 
 // maxZooms: zoomed-in second looks per event (each costs one more detection).
 const maxZooms = 3
+
+// Looking harder for cats (cat watch cameras): the big model looks at the parts of the
+// first maxHardLooks frames (each costs one big-model look per part). A cat counts when
+// seen in two frames, or once at hardClear. On 3 days of the 3rd floor camera this
+// found 16 of 30 events with a cat (11 before; 18 together), with nothing false.
+const (
+	maxHardLooks = 5
+	hardClear    = 0.7
+)
+
+// animalLabel names an animal the detector saw among the animals that live here (with
+// one kind only, any animal is that kind: a cat seen from above is often called a dog).
+func animalLabel(label string, kinds []string) string {
+	if len(kinds) == 1 {
+		return kinds[0]
+	}
+	return label
+}
 
 // needScore is how sure the big model must be: surer for something cut off by the
 // picture's edge, and surer again for a lookalike spot or something that hasn't moved.

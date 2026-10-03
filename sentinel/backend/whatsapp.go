@@ -159,3 +159,9 @@ func (w *WhatsAppClient) SendImage(to string, jpeg []byte, caption, key string) 
 	})
 	return err
 }
+
+// Send sends a text message to the bridge's recipient (the bridge allows text only there).
+func (w *WhatsAppClient) Send(to, text, key string) error {
+	_, err := w.do("POST", "/send", map[string]any{"to": to, "text": text, "idempotencyKey": key})
+	return err
+}

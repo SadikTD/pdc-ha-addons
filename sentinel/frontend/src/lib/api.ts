@@ -47,6 +47,7 @@ export type Settings = {
   face_recognition?: boolean;
   presence?: PresenceSettings;
   animals?: ("cat" | "dog")[];
+  cat_watch?: CatWatchSettings;
   drive: {
     backup_alerts: boolean;
     backup_saved: boolean;
@@ -57,6 +58,39 @@ export type Settings = {
     retention_days: number;
   };
 };
+
+// Cat watch: a cat left outside the door makes Alexa speak and WhatsApp pictures follow.
+export type CatWatchSettings = {
+  enabled: boolean;
+  cameras: string[];
+  min_seconds: number;
+  repeat_seconds: number;
+  hours: string;
+  better_detection: boolean;
+  alexa: boolean;
+  alexa_entity: string;
+  alexa_volume: number;
+  alexa_message: string;
+  whatsapp: boolean;
+  whatsapp_to: string;
+  whatsapp_name: string;
+  slow_after_minutes: number;
+  slow_seconds: number;
+};
+export type CatVisit = {
+  id: string;
+  camera: string;
+  camera_name: string;
+  from: number;
+  to: number;
+  alerted: number;
+  alexa: number;
+  pictures: number;
+  ongoing: boolean;
+  test?: boolean;
+  error?: string;
+};
+export type AlexaDevice = { id: string; name: string; volume?: number };
 
 // Comings and goings: when the people named came home and went out.
 export type PresenceSettings = {
@@ -321,6 +355,9 @@ export const api = {
   alerts: () => request<AlertRecord[]>("GET", "api/alerts"),
   testAlert: (camera: string) => request<{ ok: boolean }>("POST", "api/alerts/test", { camera }),
   whatsapp: () => request<WhatsAppInfo>("GET", "api/whatsapp"),
+  catWatch: () => request<{ checking: string[]; visits: CatVisit[] }>("GET", "api/catwatch"),
+  testCatWatch: (what: "alexa" | "whatsapp") => request<{ ok: boolean }>("POST", "api/catwatch/test", { what }),
+  alexaDevices: () => request<AlexaDevice[]>("GET", "api/alexa/devices"),
   morningReport: () => request<{ caption: string; from: number; to: number; people: number }>("GET", "api/whatsapp/morning-report"),
   testMorningReport: () => request<{ ok: boolean }>("POST", "api/whatsapp/morning-report/test"),
   setWhatsAppToken: (token: string) => request<{ ok: boolean }>("PUT", "api/whatsapp/token", { token }),

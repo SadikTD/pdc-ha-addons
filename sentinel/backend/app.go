@@ -23,6 +23,7 @@ type App struct {
 	clips     *ClipStore
 	secrets   *SecretStore
 	alerts    *Alerter
+	catwatch  *CatWatcher
 	detector  *Detector
 	labeler   *Labeler
 	faces     *Faces
@@ -147,6 +148,7 @@ func (a *App) MotionStart(cam string, score float64) {
 	a.mqtt.Motion(cam, true)
 	go a.captureThumb(cam, e.ID)
 	a.alerts.MotionStart(cam, *e)
+	a.catwatch.Motion(cam)
 	a.labeler.Start(*e)
 	a.drive.MotionStart(cam, e.Start)
 	a.push.Motion(cam, cameraName(a.settings.Get(), cam), time.UnixMilli(e.Start))

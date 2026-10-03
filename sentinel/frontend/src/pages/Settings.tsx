@@ -5,6 +5,7 @@ import { Bell, Camera as CamIcon, CheckCircle2, Eye, EyeOff, HardDrive, Loader2,
 import { Button, Card, Empty, Field, IconButton, PageHeader, SectionTitle, StatePill, Toggle, inputCls, recState } from "../components/ui";
 import { ZoneSummary, rectToZone } from "../components/ZoneEditor";
 import { DriveCard, NightAlertsCard } from "../components/AlertsSettings";
+import { CatWatchCard } from "../components/CatWatch";
 import { AppAccessCard } from "../components/AppAccess";
 import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
@@ -198,6 +199,10 @@ export function SettingsPage() {
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <NightAlertsCard draft={draft} set={set} cameras={saved.cameras} />
         <DriveCard draft={draft} set={set} cameras={saved.cameras} />
+      </div>
+
+      <div className="mt-4">
+        <CatWatchCard draft={draft} set={set} cameras={saved.cameras} />
       </div>
 
       <AppAccessCard cameras={saved.cameras} />

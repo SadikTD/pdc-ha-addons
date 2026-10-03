@@ -441,6 +441,29 @@ func (a *App) Routes(www string) http.Handler {
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
+	mux.HandleFunc("GET /api/catwatch", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, a.catwatch.Status())
+	})
+	mux.HandleFunc("POST /api/catwatch/test", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			What string `json:"what"` // "alexa" or "whatsapp"
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req)
+		var err error
+		if req.What == "alexa" {
+			err = a.catwatch.TestAlexa()
+		} else {
+			err = a.catwatch.TestWhatsApp()
+		}
+		if err != nil {
+			writeErr(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("GET /api/alexa/devices", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, alexaDevices())
+	})
 	mux.HandleFunc("GET /api/whatsapp", func(w http.ResponseWriter, r *http.Request) {
 		out := map[string]any{"token_set": a.secrets.Get().WhatsAppToken != ""}
 		if out["token_set"] == true {

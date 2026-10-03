@@ -83,6 +83,36 @@ type Settings struct {
 	FaceRecognition bool `json:"face_recognition"`
 	// When the people you named come home and go out.
 	Presence Presence `json:"presence"`
+	// A cat seen on a camera where it doesn't belong (shut out at the door): Alexa says
+	// so and WhatsApp pictures follow until it's gone.
+	CatWatch CatWatch `json:"cat_watch"`
+}
+
+// CatWatch watches some cameras for a cat that stays, at any hour, and keeps alerting
+// (Alexa and WhatsApp) every RepeatSeconds until it has gone.
+type CatWatch struct {
+	Enabled bool     `json:"enabled"`
+	Cameras []string `json:"cameras"`
+	// A cat must be seen this long before anyone is alerted.
+	MinSeconds    int `json:"min_seconds"`
+	RepeatSeconds int `json:"repeat_seconds"`
+	// "HH:MM-HH:MM" ("" = all day).
+	Hours string `json:"hours"`
+	// Look harder for cats on these cameras (zoomed-in looks, so small and still cats
+	// are found too). Also used for their motion events' labels.
+	BetterDetection bool `json:"better_detection"`
+
+	Alexa        bool   `json:"alexa"`
+	AlexaEntity  string `json:"alexa_entity"` // media_player of the Echo
+	AlexaVolume  int    `json:"alexa_volume"` // percent while the cat is there; restored after
+	AlexaMessage string `json:"alexa_message"`
+	WhatsApp     bool   `json:"whatsapp"`
+	WhatsAppTo   string `json:"whatsapp_to"`
+	WhatsAppName string `json:"whatsapp_name"`
+	// Safety cap: after SlowAfterMinutes, WhatsApp pictures only every SlowSeconds
+	// (Alexa keeps its pace). 0 = no cap.
+	SlowAfterMinutes int `json:"slow_after_minutes"`
+	SlowSeconds      int `json:"slow_seconds"`
 }
 
 // Presence: a log of when the people you named come home and go out, worked out from
@@ -189,6 +219,9 @@ func defaultSettings() Settings {
 		Presence: Presence{Entrances: []string{}, AwayMinutes: 45, ArriveOn: "any", People: []string{}, Clothing: true,
 			Notify: true, NotifyArrive: true, NotifyLeave: true, NotifyPeople: []string{}, HomeAssistant: true},
 		WhatsApp: WhatsApp{MorningReport: true},
+		CatWatch: CatWatch{Cameras: []string{}, MinSeconds: 5, RepeatSeconds: 10, BetterDetection: true,
+			Alexa: true, AlexaVolume: 70, AlexaMessage: "There's a cat outside", WhatsApp: true,
+			SlowAfterMinutes: 5, SlowSeconds: 60},
 		// On: nothing is recognised until the user names someone.
 		FaceRecognition: true,
 	}
@@ -364,6 +397,37 @@ func (s *Settings) normalize() error {
 	}
 	if w.BridgeURL != "" && !strings.HasPrefix(w.BridgeURL, "http://") && !strings.HasPrefix(w.BridgeURL, "https://") {
 		return fmt.Errorf("bridge address must start with http://")
+	}
+	cw := &s.CatWatch
+	if cw.Cameras == nil {
+		cw.Cameras = []string{}
+	}
+	cw.MinSeconds = min(max(cw.MinSeconds, 1), 600)
+	cw.RepeatSeconds = min(max(cw.RepeatSeconds, 10), 3600)
+	cw.AlexaVolume = min(max(cw.AlexaVolume, 0), 100)
+	cw.AlexaMessage = strings.TrimSpace(cw.AlexaMessage)
+	if cw.AlexaMessage == "" {
+		cw.AlexaMessage = "There's a cat outside"
+	}
+	if len(cw.AlexaMessage) > 300 {
+		return fmt.Errorf("the Alexa message is too long")
+	}
+	cw.AlexaEntity = strings.TrimSpace(cw.AlexaEntity)
+	if cw.AlexaEntity != "" && !strings.HasPrefix(cw.AlexaEntity, "media_player.") {
+		return fmt.Errorf("the Echo must be a media_player entity")
+	}
+	cw.WhatsAppTo = strings.TrimSpace(cw.WhatsAppTo)
+	if cw.WhatsAppTo != "" && !waChatRe.MatchString(cw.WhatsAppTo) {
+		return fmt.Errorf("cat watch WhatsApp chat must be a group or a +international number")
+	}
+	cw.SlowAfterMinutes = min(max(cw.SlowAfterMinutes, 0), 24*60)
+	cw.SlowSeconds = min(max(cw.SlowSeconds, cw.RepeatSeconds), 3600)
+	cw.Hours = strings.ReplaceAll(cw.Hours, " ", "")
+	if cw.Hours != "" && !windowRe.MatchString(cw.Hours) {
+		return fmt.Errorf("cat watch hours must look like 18:00-08:00")
+	}
+	if cw.Enabled && len(cw.Cameras) == 0 {
+		return fmt.Errorf("choose a camera for cat watch")
 	}
 	switch s.Drive.Mode {
 	case "off":
