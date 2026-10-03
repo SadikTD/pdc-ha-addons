@@ -123,21 +123,21 @@ func TestCatBlob(t *testing.T) {
 		t.Fatalf("blobs at the door: %v", before)
 	}
 	// Still at the door.
-	if b, ok := catBlob(before, nil, door, door.W*door.H, 0.3); !ok || overlapOfSmaller(b, door) < 0.5 {
+	if b, ok := catBlob(before, nil, door, door.W*door.H, 0.3, 16.0/9); !ok || overlapOfSmaller(b, door) < 0.5 {
 		t.Errorf("at the door: %v %v", b, ok)
 	}
 	// Walked to the stairs between two looks: the new blob, not the slippers nearby.
 	now := spots(onStairs, floor)
-	b, ok := catBlob(now, before, door, door.W*door.H, 0.8)
+	b, ok := catBlob(now, before, door, door.W*door.H, 0.8, 16.0/9)
 	if !ok || overlapOfSmaller(b, stairs) < 0.5 {
 		t.Errorf("moved to the stairs: %v %v", b, ok)
 	}
 	// Without knowing the look before, only its own spot counts.
-	if b, ok := catBlob(now, nil, door, door.W*door.H, 0.8); ok {
+	if b, ok := catBlob(now, nil, door, door.W*door.H, 0.8, 16.0/9); ok {
 		t.Errorf("no look before: %v", b)
 	}
 	// The stairs blob appeared while someone was in view (it's among the old ones).
-	if b, ok := catBlob(now, append(slices.Clone(before), now...), door, door.W*door.H, 0.8); ok {
+	if b, ok := catBlob(now, append(slices.Clone(before), now...), door, door.W*door.H, 0.8, 16.0/9); ok {
 		t.Errorf("jumped although someone was just in view: %v", b)
 	}
 }
@@ -171,7 +171,25 @@ func TestCatBlobIgnoresSmallLightPatches(t *testing.T) {
 		}
 	}
 	cat := Rect{X: 0.15, Y: 0.26, W: 0.06, H: 0.09}
-	if b, ok := catBlob(spots(g, floor), nil, cat, 0.016, 0.3); ok {
+	if b, ok := catBlob(spots(g, floor), nil, cat, 0.016, 0.3, 16.0/9); ok {
 		t.Errorf("a patch of light kept the cat: %v", b)
+	}
+}
+
+func TestCatBlobNotAStandingPerson(t *testing.T) {
+	floor := make([]byte, patchW*patchH)
+	for i := range floor {
+		floor[i] = 120
+	}
+	g := append([]byte(nil), floor...)
+	person := Rect{X: 0.06, Y: 0.11, W: 0.06, H: 0.30} // someone on the stairs
+	for y := int(person.Y * patchH); y < int((person.Y+person.H)*patchH); y++ {
+		for x := int(person.X * patchW); x < int((person.X+person.W)*patchW); x++ {
+			g[y*patchW+x] = 40
+		}
+	}
+	cat := Rect{X: 0.07, Y: 0.20, W: 0.05, H: 0.10}
+	if b, ok := catBlob(spots(g, floor), nil, cat, 0.016, 0.5, 16.0/9); ok {
+		t.Errorf("a standing person was taken for the cat: %v", b)
 	}
 }

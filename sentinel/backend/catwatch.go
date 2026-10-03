@@ -36,7 +36,10 @@ const (
 	// (leaving makes motion; a cat sitting still that the detector misses for a while
 	// doesn't). Without new motion, gone only after catLostAfter.
 	catGoneAfter = 30 * time.Second
-	catLostAfter = 5 * time.Minute
+	// Following its blob keeps a cat sitting still in view, so a cat not seen at all
+	// for this long has gone even without new motion (on the replay, a visit that
+	// should have ended at 18:31 lasted until the cat came back at 18:34).
+	catLostAfter = 90 * time.Second
 	// Motion with no cat in it stops being watched after this long without motion.
 	catIdleAfter = 15 * time.Second
 	catLogLimit  = 100
@@ -359,7 +362,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
 			if !look.found && time.Since(detected) < catBlobTrust && g != nil {
-				if b, ok := catBlob(cur, oldBlobs, hint, catArea(sizes, hint), reach); ok {
+				if b, ok := catBlob(cur, oldBlobs, hint, catArea(sizes, hint), reach, cw.app.frameAspect(cam)); ok {
 					look = catSighting{found: true, box: b, still: true}
 				}
 			}
@@ -1161,13 +1164,16 @@ func spots(g, bg []byte) []catSpot {
 // it was last seen, and those that appeared while a person was in view, as people move
 // things: a pair of slippers moved by someone going in was taken for the cat), within
 // reach.
-func catBlob(cur, old []catSpot, box Rect, area, reach float64) (Rect, bool) {
+func catBlob(cur, old []catSpot, box Rect, area, reach, aspect float64) (Rect, bool) {
 	// By the points that differ, not the blob's box: a box can take in shadows around a
 	// cat. On the replay the cat lying on the stairs was ~100 points, the cat at the door
 	// ~230; patches of evening light on the stairs 21-29 (a cat's box is about 45% cat).
 	fits := func(b catSpot) bool {
 		r := float64(b.n) / (blobW * blobH) / max(area*0.45, 1e-6)
-		return r >= 0.25 && r <= 4
+		// A standing person is tall and thin (someone on the stairs where the cat had
+		// just been was taken for it).
+		tall := b.box.H/max(b.box.W, 1e-6)/aspect >= 1.5
+		return r >= 0.25 && r <= 4 && !tall
 	}
 	var best Rect
 	bestD := math.Inf(1)
