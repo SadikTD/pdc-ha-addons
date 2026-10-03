@@ -1060,6 +1060,7 @@ const (
 	blobW, blobH  = patchW / 2, patchH / 2 // blobs are found at this size
 	blobLevel     = 22                     // grey levels away from the empty scene
 	blobMinPixels = 15
+	overlayBand   = 0.1 // part of the picture's height along the top with the clock text
 	// A blob alone keeps a cat this long after the detector last saw it.
 	catBlobTrust = time.Hour
 )
@@ -1074,7 +1075,9 @@ type catSpot struct {
 // doesn't count).
 func (a *App) emptyScene(ctx context.Context, cam string, before time.Time) []byte {
 	var frames [][]byte
-	for _, back := range []time.Duration{3 * time.Second, 15 * time.Second, 45 * time.Second, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute} {
+	// Not the last few seconds: the cat is usually around already, and the middle of
+	// seven frames is the empty floor if it's in up to three of them.
+	for _, back := range []time.Duration{10 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 7 * time.Minute, 10 * time.Minute} {
 		if g := a.grayNear(ctx, cam, before.Add(-back)); g != nil {
 			frames = append(frames, g)
 		}
@@ -1146,7 +1149,9 @@ func spots(g, bg []byte) []catSpot {
 				stack = append(stack, j)
 			}
 		}
-		if n >= blobMinPixels {
+		// The camera's clock text (a thin band along the top edge) changes every second:
+		// never a cat (it was followed as one for three minutes on the replay).
+		if n >= blobMinPixels && float64(y1+1)/blobH > overlayBand {
 			out = append(out, catSpot{box: Rect{X: float64(x0) / blobW, Y: float64(y0) / blobH, W: float64(x1-x0+1) / blobW, H: float64(y1-y0+1) / blobH}, n: n})
 		}
 	}

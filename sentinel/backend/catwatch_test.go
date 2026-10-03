@@ -141,3 +141,19 @@ func TestCatBlob(t *testing.T) {
 		t.Errorf("jumped although someone was just in view: %v", b)
 	}
 }
+
+func TestSpotsIgnoreClockText(t *testing.T) {
+	floor := make([]byte, patchW*patchH)
+	for i := range floor {
+		floor[i] = 120
+	}
+	g := append([]byte(nil), floor...)
+	for y := patchH * 3 / 100; y < patchH*8/100; y++ { // clock digits at the top
+		for x := patchW * 20 / 100; x < patchW*30/100; x++ {
+			g[y*patchW+x] = 250
+		}
+	}
+	if got := spots(g, floor); len(got) != 0 {
+		t.Errorf("the clock text is a spot: %v", got)
+	}
+}
