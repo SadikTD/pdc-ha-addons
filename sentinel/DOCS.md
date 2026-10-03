@@ -235,6 +235,11 @@ The cat counts as gone when it hasn't been seen for 30 s and something moved sin
 test picture** check each path; Recent cats lists each visit (how long, how many
 announcements and pictures, and any error).
 
+**Replay** (for testing on a real event): `POST api/catwatch/replay` with
+`{"camera", "from", "to"}` (unix ms, up to an hour) plays that recording through cat
+watch in real time, starting now, with real announcements and pictures (marked as a
+replay; `"dry": true` only logs). `POST api/catwatch/replay/stop` ends it.
+
 **Looking harder for cats** (on by default for cat watch cameras): from above, cats are
 small and the fast detector misses most of them. Cat watch has the bigger model look at
 each half of the picture (about 1.7× larger than the whole frame), ignoring "cats" that

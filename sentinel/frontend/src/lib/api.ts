@@ -88,6 +88,7 @@ export type CatVisit = {
   pictures: number;
   ongoing: boolean;
   test?: boolean;
+  replay?: boolean;
   error?: string;
 };
 export type AlexaDevice = { id: string; name: string; volume?: number };

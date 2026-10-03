@@ -286,6 +286,7 @@ export function CatWatchCard({ draft, set, cameras }: { draft: Settings; set: Se
                   <div className="min-w-0 flex-1">
                     <span className="font-medium text-white">{v.camera_name}</span>
                     {v.test && <span className="ml-1.5 rounded bg-white/10 px-1 text-[10px] text-slate-300">TEST</span>}
+                    {v.replay && <span className="ml-1.5 rounded bg-amber-400/15 px-1 text-[10px] text-amber-200">REPLAY</span>}
                     <span className="ml-2 text-slate-400">
                       {v.test
                         ? ""

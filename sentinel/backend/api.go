@@ -461,6 +461,25 @@ func (a *App) Routes(www string) http.Handler {
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
+	// Plays recorded footage through cat watch as if it were happening now (real alerts).
+	mux.HandleFunc("POST /api/catwatch/replay", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Camera string `json:"camera"`
+			From   int64  `json:"from"` // unix ms
+			To     int64  `json:"to"`
+			Dry    bool   `json:"dry"` // only the log, no Alexa or WhatsApp
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req)
+		if err := a.catwatch.Replay(req.Camera, time.UnixMilli(req.From), time.UnixMilli(req.To), req.Dry); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("POST /api/catwatch/replay/stop", func(w http.ResponseWriter, r *http.Request) {
+		a.catwatch.StopReplay()
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
 	mux.HandleFunc("GET /api/alexa/devices", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, alexaDevices())
 	})
