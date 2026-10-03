@@ -123,10 +123,10 @@ export function CatWatchCard({ draft, set, cameras }: { draft: Settings; set: Se
           </div>
 
           <div className="grid gap-4 rounded-xl border border-white/5 bg-white/[0.02] p-4 sm:grid-cols-2">
-            <Field label="Alert when a cat stays for" hint="Cats just walking past don't count.">
+            <Field label="Alert when a cat stays for" hint={c.min_seconds ? "Cats only walking past don't count." : "Any cat seen alerts at once, even one walking past."}>
               <div className="flex h-10 items-center gap-3">
-                <input type="range" min={1} max={60} value={c.min_seconds} onChange={(e) => setC({ min_seconds: Number(e.target.value) })} className="flex-1" />
-                <span className="w-12 text-right text-sm tabular-nums text-white">{c.min_seconds} s</span>
+                <input type="range" min={0} max={60} value={c.min_seconds} onChange={(e) => setC({ min_seconds: Number(e.target.value) })} className="flex-1" />
+                <span className="w-14 text-right text-sm tabular-nums text-white">{c.min_seconds ? `${c.min_seconds} s` : "at once"}</span>
               </div>
             </Field>
             <Field label="While it's still there, repeat every" hint="Alexa speaks and a WhatsApp picture is sent each time.">

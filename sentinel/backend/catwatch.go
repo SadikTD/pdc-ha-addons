@@ -28,6 +28,10 @@ const (
 	// A cat counts as staying across misses shorter than this (it turns, a person
 	// passes in front of it, the detector misses a frame).
 	catGap = 6 * time.Second
+	// Sightings this close together are one visit (they add up to MinSeconds): near
+	// people, or walking in the shade, a cat can go unrecognised for a few looks (18:30
+	// on the 3rd floor replay: seen at :44-:46 and :58-:02, there all along).
+	catJoin = 15 * time.Second
 	// Gone: no cat for this long, no motion now, and new motion since it was last seen
 	// (leaving makes motion; a cat sitting still that the detector misses for a while
 	// doesn't). Without new motion, gone only after catLostAfter.
@@ -384,7 +388,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		}
 		// Only the detector starts a visit (or a new one after a gap): following a blob
 		// keeps a cat already seen, it never finds one.
-		if look.still && (visit == nil || last.IsZero() || t.Sub(last) > catGap && visit.Alerted == 0) {
+		if look.still && (visit == nil || last.IsZero() || t.Sub(last) > catJoin && visit.Alerted == 0) {
 			look = catSighting{}
 		}
 		if look.found {
@@ -392,7 +396,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				detected = time.Now()
 				tpl = cw.app.catTemplate(ctx, cam, t, look.box)
 			}
-			if last.IsZero() || t.Sub(last) > catGap {
+			if last.IsZero() || t.Sub(last) > catJoin {
 				if visit != nil && visit.Alerted == 0 {
 					cw.update(visit.ID, func(v *CatVisit) { v.Ongoing = false })
 					visit = nil
@@ -421,7 +425,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		switch {
 		case last.IsZero():
 			over = !f.replay && quiet > catIdleAfter && time.Since(started) > catIdleAfter // motion without a cat
-		case t.Sub(last) > catGap && visit != nil && visit.Alerted == 0 && quiet > catIdleAfter && left:
+		case t.Sub(last) > catJoin && visit != nil && visit.Alerted == 0 && quiet > catIdleAfter && left:
 			cw.update(visit.ID, func(v *CatVisit) { v.Ongoing = false })
 			over = true // passed by, didn't stay
 		case t.Sub(last) > catGoneAfter && quiet > catIdleAfter && left:

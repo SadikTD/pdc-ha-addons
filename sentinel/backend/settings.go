@@ -93,7 +93,7 @@ type Settings struct {
 type CatWatch struct {
 	Enabled bool     `json:"enabled"`
 	Cameras []string `json:"cameras"`
-	// A cat must be seen this long before anyone is alerted.
+	// A cat must be seen this long before anyone is alerted (0: at the first sighting).
 	MinSeconds    int `json:"min_seconds"`
 	RepeatSeconds int `json:"repeat_seconds"`
 	// "HH:MM-HH:MM" ("" = all day).
@@ -402,7 +402,7 @@ func (s *Settings) normalize() error {
 	if cw.Cameras == nil {
 		cw.Cameras = []string{}
 	}
-	cw.MinSeconds = min(max(cw.MinSeconds, 1), 600)
+	cw.MinSeconds = min(max(cw.MinSeconds, 0), 600) // 0: at the first sighting
 	cw.RepeatSeconds = min(max(cw.RepeatSeconds, 10), 3600)
 	cw.AlexaVolume = min(max(cw.AlexaVolume, 0), 100)
 	cw.AlexaMessage = strings.TrimSpace(cw.AlexaMessage)
