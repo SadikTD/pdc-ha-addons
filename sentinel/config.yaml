@@ -1,5 +1,5 @@
 name: Sentinel
-version: "1.23.1"
+version: "1.23.2"
 slug: sentinel
 description: Reliable 24/7 camera recorder (NVR) with motion detection and a modern UI
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/sentinel

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -122,21 +123,21 @@ func TestCatBlob(t *testing.T) {
 		t.Fatalf("blobs at the door: %v", before)
 	}
 	// Still at the door.
-	if b, ok := catBlob(before, nil, door, door.W*door.H, 0.3, true); !ok || overlapOfSmaller(b, door) < 0.5 {
+	if b, ok := catBlob(before, nil, door, door.W*door.H, 0.3); !ok || overlapOfSmaller(b, door) < 0.5 {
 		t.Errorf("at the door: %v %v", b, ok)
 	}
 	// Walked to the stairs between two looks: the new blob, not the slippers nearby.
 	now := spots(onStairs, floor)
-	b, ok := catBlob(now, before, door, door.W*door.H, 0.8, true)
+	b, ok := catBlob(now, before, door, door.W*door.H, 0.8)
 	if !ok || overlapOfSmaller(b, stairs) < 0.5 {
 		t.Errorf("moved to the stairs: %v %v", b, ok)
 	}
 	// Without knowing the look before, only its own spot counts.
-	if b, ok := catBlob(now, nil, door, door.W*door.H, 0.8, true); ok {
+	if b, ok := catBlob(now, nil, door, door.W*door.H, 0.8); ok {
 		t.Errorf("no look before: %v", b)
 	}
-	// Someone was just in view: no jumping.
-	if b, ok := catBlob(now, before, door, door.W*door.H, 0.8, false); ok {
+	// The stairs blob appeared while someone was in view (it's among the old ones).
+	if b, ok := catBlob(now, append(slices.Clone(before), now...), door, door.W*door.H, 0.8); ok {
 		t.Errorf("jumped although someone was just in view: %v", b)
 	}
 }
