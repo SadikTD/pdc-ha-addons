@@ -247,6 +247,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		oldBlobs          []catSpot // blobs that aren't the cat moving (see catBlob)
 		sizes             []float64 // the cat's size (part of the picture) when detected
 		personAt          time.Time // when a person was last in view (wall clock)
+		weakCats          []weakCat // weak cat sightings lately (see above)
 		visit             *CatVisit
 		lastAlexa, lastWA time.Time
 		alerting          time.Time
@@ -325,6 +326,28 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		look, weak, err := cw.app.catLook(ctx, cameraConfig(s, cam), t, hint)
 		if look.person {
 			personAt = time.Now()
+		}
+		// Two weak cat sightings in about the same place close together count too: a cat
+		// walking in the shade can score just under catMin on every look (18:30 on the
+		// replay: dog 0.32, then cat 0.30 ten seconds later, there all along).
+		if !look.found && (visit == nil || last.IsZero()) {
+			for _, d := range weak {
+				if d.Label != "cat" && d.Label != "dog" || d.Score < catWeakMin {
+					continue
+				}
+				if slices.ContainsFunc(weakCats, func(w weakCat) bool {
+					return t.Sub(w.t) <= catJoin && math.Hypot(w.box.X+w.box.W/2-d.Box.X-d.Box.W/2, w.box.Y+w.box.H/2-d.Box.Y-d.Box.H/2) <= 0.3
+				}) {
+					look = catSighting{found: true, box: d.Box, score: d.Score}
+					break
+				}
+			}
+			weakCats = slices.DeleteFunc(weakCats, func(w weakCat) bool { return t.Sub(w.t) > catJoin })
+			for _, d := range weak {
+				if (d.Label == "cat" || d.Label == "dog") && d.Score >= catWeakMin {
+					weakCats = append(weakCats, weakCat{t, d.Box})
+				}
+			}
 		}
 		if err != nil {
 			if errs++; errs == 5 {
@@ -780,6 +803,14 @@ const catMin = 0.35
 // catMaxArea: bigger "cats" (part of the picture) were people seen from above (a man in
 // a white cap, someone crouching); the cats there were at most 3.2%.
 const catMaxArea = 0.04
+
+// catWeakMin: a weak cat sighting, for two of them close together starting a visit.
+const catWeakMin = 0.28
+
+type weakCat struct {
+	t   time.Time
+	box Rect
+}
 
 // catPersonMin: an animal that is part of a much bigger person doesn't count (the same
 // box called both a cat and a person is a cat).
