@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -161,7 +162,12 @@ func (g *Go2RTC) Frame(ctx context.Context, src string) ([]byte, error) {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
 		return nil, fmt.Errorf("snapshot failed: %s", strings.TrimSpace(string(b)))
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	// An offline camera gets "200 OK" with no picture at all.
+	if err == nil && (len(b) < 100 || b[0] != 0xff || b[1] != 0xd8) {
+		return nil, errors.New("the camera sent no picture (is it offline?)")
+	}
+	return b, err
 }
 
 func removeQuiet(p string) { _ = os.Remove(p) }
