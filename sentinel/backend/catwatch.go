@@ -359,7 +359,9 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
 			if !look.found && time.Since(detected) < catBlobTrust && g != nil {
-				if b, ok := catBlob(cur, oldBlobs, hint, catArea(sizes, hint), reach); ok {
+				// A blob must also not be the empty scene, only lit differently (evening
+				// light on the stairs: 0.94 like it; the cat there 0.69-0.80).
+				if b, ok := catBlob(cur, oldBlobs, hint, catArea(sizes, hint), reach); ok && catNotEmpty(g, bgGray, b) {
 					look = catSighting{found: true, box: b, still: true}
 				}
 			}
