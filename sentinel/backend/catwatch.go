@@ -235,6 +235,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		hint              Rect      // where the cat was last seen
 		detected          time.Time // when the detector last saw it (wall clock)
 		tpl               []float32 // what its spot looked like then
+		bgGray            []byte    // the scene just before it came (grey)
 		visit             *CatVisit
 		lastAlexa, lastWA time.Time
 		alerting          time.Time
@@ -248,7 +249,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 	}
 	// reset forgets the cat (a replay carries on watching for the next one).
 	reset := func() {
-		first, last, seenAt, hint, visit, alerting = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}
+		first, last, seenAt, hint, visit, alerting, bgGray = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil
 		started = time.Now()
 	}
 	end := func(reason string) {
@@ -324,8 +325,15 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			// A walking cat gets further the longer it's unseen (about a tenth of the
 			// picture a second from the 3rd floor camera).
 			reach := min(0.2+0.08*t.Sub(last).Seconds(), 1.5)
+			if bgGray == nil {
+				bgGray = cw.app.grayNear(ctx, cam, first.Add(-3*time.Second)) // before it came
+			}
+			var g []byte
+			if bgGray != nil {
+				g = cw.app.grayNear(ctx, cam, t)
+			}
 			for _, d := range catNearby(weak, hint, reach) {
-				if cw.app.catNotEmpty(ctx, cam, t, first.Add(-3*time.Second), d.Box) {
+				if g != nil && catNotEmpty(g, bgGray, d.Box) {
 					look = catSighting{found: true, box: d.Box, score: d.Score}
 					break
 				}
@@ -333,7 +341,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			if debugCat.Load() && !look.found {
 				logf("cat watch: reach %.2f from %s, %d weak nearby", reach, fmtBox(hint), len(catNearby(weak, hint, reach)))
 			}
-			if !look.found && time.Since(detected) < catLostAfter && cw.app.catStill(ctx, cam, t, first.Add(-3*time.Second), hint, tpl) {
+			if !look.found && time.Since(detected) < catLostAfter && g != nil && catStill(g, bgGray, hint, tpl) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
 		}
@@ -358,7 +366,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 					visit = nil
 				}
 				if visit == nil {
-					first = t
+					first, bgGray = t, nil
 				}
 			}
 			last, hint, seenAt = t, look.box, time.Now()
@@ -932,18 +940,10 @@ func patchSim(a, b []float32) (sim, diff float64) {
 	return ab / math.Sqrt(aa*bb+1e-6), diff / float64(len(a))
 }
 
-// catStill: does the spot box at t still look like the cat (tpl) rather than the empty
-// scene at bgT?
-func (a *App) catStill(ctx context.Context, cam string, t, bgT time.Time, box Rect, tpl []float32) bool {
+// catStill: does the spot box in the grey frame g still look like the cat (tpl) rather
+// than the empty scene bg?
+func catStill(g, bg []byte, box Rect, tpl []float32) bool {
 	if tpl == nil {
-		return false
-	}
-	g, err := a.decodeGray(ctx, cam, t, patchW, patchH)
-	if err != nil {
-		return false
-	}
-	bg, err := a.decodeGray(ctx, cam, bgT, patchW, patchH)
-	if err != nil {
 		return false
 	}
 	cur, empty := catPatch(g, box), catPatch(bg, box)
@@ -952,46 +952,48 @@ func (a *App) catStill(ctx context.Context, cam string, t, bgT time.Time, box Re
 	}
 	simEmpty, diffEmpty := patchSim(cur, empty)
 	simCat, _ := patchSim(cur, tpl)
+	if debugCat.Load() {
+		logf("cat watch: its spot %s: like the empty scene %.2f (difference %.1f), like the cat %.2f", fmtBox(box), simEmpty, diffEmpty, simCat)
+	}
 	return simEmpty < stillMaxEmptySim && diffEmpty >= stillMinDiff && simCat > simEmpty
 }
 
-// catNotEmpty: does the spot box at t look different from the empty scene at bgT
-// (something is there that wasn't)? A weak sighting must pass this, so the shoes or the
-// shoe rack, seen weakly as a "person", never keep a cat that has gone.
-func (a *App) catNotEmpty(ctx context.Context, cam string, t, bgT time.Time, box Rect) bool {
-	g, err := a.decodeGray(ctx, cam, t, patchW, patchH)
-	if err != nil {
-		if debugCat.Load() {
-			logf("cat watch: no grey frame at %s: %v", t.In(time.Local).Format("15:04:05.0"), err)
-		}
-		return false
-	}
-	bg, err := a.decodeGray(ctx, cam, bgT, patchW, patchH)
-	if err != nil {
-		if debugCat.Load() {
-			logf("cat watch: no grey frame of the empty scene at %s: %v", bgT.In(time.Local).Format("15:04:05.0"), err)
-		}
-		return false
-	}
+// catNotEmpty: does the spot box in the grey frame g look different from the empty scene
+// bg (something is there that wasn't)? A weak sighting must pass this, so the shoes or
+// the shoe rack, seen weakly as a "person", never keep a cat that has gone.
+func catNotEmpty(g, bg []byte, box Rect) bool {
 	cur, empty := catPatch(g, box), catPatch(bg, box)
 	if cur == nil || empty == nil {
 		return false
 	}
 	sim, diff := patchSim(cur, empty)
 	if debugCat.Load() {
-		logf("cat watch: spot %s at %s vs empty %s: similarity %.2f, difference %.1f", fmtBox(box), t.In(time.Local).Format("15:04:05.0"), bgT.In(time.Local).Format("15:04:05.0"), sim, diff)
+		logf("cat watch: weak sighting %s: like the empty scene %.2f (difference %.1f)", fmtBox(box), sim, diff)
 	}
 	return sim < stillMaxEmptySim && diff >= stillMinDiff
 }
 
-// debugCat logs how the spots of cats compare (set while a replay runs).
-var debugCat atomic.Bool
+// grayNear is the grey frame (patchW×patchH) at t, or a little before when that one
+// can't be decoded (it happens at the odd frame).
+func (a *App) grayNear(ctx context.Context, cam string, t time.Time) []byte {
+	for _, back := range []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 7 * time.Second} {
+		if g, err := a.decodeGray(ctx, cam, t.Add(-back), patchW, patchH); err == nil {
+			return g
+		}
+	}
+	if debugCat.Load() {
+		logf("cat watch: no grey frame near %s", t.In(time.Local).Format("15:04:05.0"))
+	}
+	return nil
+}
 
 // catTemplate is the grey picture of the cat at box in the frame at t.
 func (a *App) catTemplate(ctx context.Context, cam string, t time.Time, box Rect) []float32 {
-	g, err := a.decodeGray(ctx, cam, t, patchW, patchH)
-	if err != nil {
-		return nil
+	if g := a.grayNear(ctx, cam, t); g != nil {
+		return catPatch(g, box)
 	}
-	return catPatch(g, box)
+	return nil
 }
+
+// debugCat logs how the spots of cats compare (set while a replay runs).
+var debugCat atomic.Bool
