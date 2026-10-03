@@ -157,3 +157,21 @@ func TestSpotsIgnoreClockText(t *testing.T) {
 		t.Errorf("the clock text is a spot: %v", got)
 	}
 }
+
+func TestCatBlobIgnoresSmallLightPatches(t *testing.T) {
+	floor := make([]byte, patchW*patchH)
+	for i := range floor {
+		floor[i] = 120
+	}
+	g := append([]byte(nil), floor...)
+	// A small patch of evening light where the cat was (about 25 points at blob size).
+	for y := patchH * 28 / 100; y < patchH*28/100+10; y++ {
+		for x := patchW * 17 / 100; x < patchW*17/100+10; x++ {
+			g[y*patchW+x] = 160
+		}
+	}
+	cat := Rect{X: 0.15, Y: 0.26, W: 0.06, H: 0.09}
+	if b, ok := catBlob(spots(g, floor), nil, cat, 0.016, 0.3); ok {
+		t.Errorf("a patch of light kept the cat: %v", b)
+	}
+}

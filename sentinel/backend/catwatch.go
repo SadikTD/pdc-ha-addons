@@ -359,9 +359,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
 			if !look.found && time.Since(detected) < catBlobTrust && g != nil {
-				// A blob must also not be the empty scene, only lit differently (evening
-				// light on the stairs: 0.94 like it; the cat there 0.69-0.80).
-				if b, ok := catBlob(cur, oldBlobs, hint, catArea(sizes, hint), reach); ok && catNotEmpty(g, bgGray, b) {
+				if b, ok := catBlob(cur, oldBlobs, hint, catArea(sizes, hint), reach); ok {
 					look = catSighting{found: true, box: b, still: true}
 				}
 			}
@@ -1164,8 +1162,11 @@ func spots(g, bg []byte) []catSpot {
 // things: a pair of slippers moved by someone going in was taken for the cat), within
 // reach.
 func catBlob(cur, old []catSpot, box Rect, area, reach float64) (Rect, bool) {
+	// By the points that differ, not the blob's box: a box can take in shadows around a
+	// cat. On the replay the cat lying on the stairs was ~100 points, the cat at the door
+	// ~230; patches of evening light on the stairs 21-29 (a cat's box is about 45% cat).
 	fits := func(b catSpot) bool {
-		r := b.box.W * b.box.H / max(area, 1e-6)
+		r := float64(b.n) / (blobW * blobH) / max(area*0.45, 1e-6)
 		return r >= 0.25 && r <= 4
 	}
 	var best Rect
