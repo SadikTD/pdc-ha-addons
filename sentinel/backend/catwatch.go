@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -231,6 +232,8 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		first, last, prev time.Time // frame times
 		seenAt            time.Time // when the cat was last seen (wall clock)
 		hint              Rect      // where the cat was last seen
+		detected          time.Time // when the detector last saw it (wall clock)
+		tpl               []float32 // what its spot looked like then
 		visit             *CatVisit
 		lastAlexa, lastWA time.Time
 		alerting          time.Time
@@ -299,7 +302,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		}
 		prev = t
 		tick := time.Now()
-		look, err := cw.app.catLook(ctx, cameraConfig(s, cam), t, hint)
+		look, weak, err := cw.app.catLook(ctx, cameraConfig(s, cam), t, hint)
 		if err != nil {
 			if errs++; errs == 5 {
 				cw.app.incidents.Add("warn", cam, "Cat watch can't check frames: %v", err)
@@ -307,7 +310,20 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		} else {
 			errs = 0
 		}
+		// A cat already seen, only weakly seen now, or not seen but its spot still looks
+		// like it: still there.
+		if !look.found && visit != nil && !last.IsZero() {
+			if d, ok := catNear(weak, hint); ok {
+				look = catSighting{found: true, box: d.Box, score: d.Score}
+			} else if time.Since(detected) < catLostAfter && cw.app.catStill(ctx, cam, t, first.Add(-3*time.Second), hint, tpl) {
+				look = catSighting{found: true, box: hint, still: true}
+			}
+		}
 		if look.found {
+			if !look.still {
+				detected = time.Now()
+				tpl = cw.app.catTemplate(ctx, cam, t, look.box)
+			}
 			if last.IsZero() || t.Sub(last) > catGap {
 				if visit != nil && visit.Alerted == 0 {
 					cw.update(visit.ID, func(v *CatVisit) { v.Ongoing = false })
@@ -713,13 +729,14 @@ type catSighting struct {
 	found bool
 	box   Rect
 	score float64
+	still bool // not seen by the detector: its spot still looks like the cat
 }
 
 // catDets runs the big model over the parts of the frame at t (the part named by hint
 // first; with stopEarly, the rest only while no cat is found). People seen from above
 // (crouching, a white cap) are often taken for a cat or dog: an animal on a person
 // doesn't count. Ignored areas don't either.
-func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, stopEarly bool) ([]Detection, error) {
+func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, stopEarly bool) ([]Detection, []Detection, error) {
 	regions := catRegions(a.frameAspect(cam.ID))
 	if hint != (Rect{}) && len(regions) > 1 {
 		cx := hint.X + hint.W/2
@@ -731,7 +748,7 @@ func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, s
 		}
 	}
 	mask := maskGrid(cam, shotW, shotH)
-	var out []Detection
+	var out, weak []Detection
 	var lastErr error
 	looked := 0
 	for _, r := range regions {
@@ -742,6 +759,12 @@ func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, s
 		}
 		looked++
 		for _, d := range dets {
+			if ar := d.Box.W * d.Box.H; ar <= catMaxArea && ar >= minBoxArea {
+				wx, wy := int((d.Box.X+d.Box.W/2)*shotW), int((d.Box.Y+d.Box.H/2)*shotH)
+				if !mask[min(max(wy, 0), shotH-1)*shotW+min(max(wx, 0), shotW-1)] {
+					weak = append(weak, d) // anything cat-sized, for following a cat already seen
+				}
+			}
 			if d.Label != "cat" && d.Label != "dog" || d.Score < catMin || d.Box.W*d.Box.H < minBoxArea || d.Box.W*d.Box.H > catMaxArea {
 				continue
 			}
@@ -766,16 +789,138 @@ func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, s
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	if looked == 0 {
-		return nil, lastErr
+		return nil, nil, lastErr
 	}
-	return out, nil
+	return out, weak, nil
 }
 
-// catLook: is there a cat in the frame at t (for cat watch)?
-func (a *App) catLook(ctx context.Context, cam Camera, t time.Time, hint Rect) (catSighting, error) {
-	dets, err := a.catDets(ctx, cam, t, hint, true)
+// catLook: is there a cat in the frame at t (for cat watch)? weak is everything
+// cat-sized the model saw, sure or not.
+func (a *App) catLook(ctx context.Context, cam Camera, t time.Time, hint Rect) (catSighting, []Detection, error) {
+	dets, weak, err := a.catDets(ctx, cam, t, hint, true)
 	if len(dets) > 0 {
-		return catSighting{found: true, box: dets[0].Box, score: dets[0].Score}, nil
+		return catSighting{found: true, box: dets[0].Box, score: dets[0].Score}, weak, nil
 	}
-	return catSighting{}, err
+	return catSighting{}, weak, err
+}
+
+// Following a cat already seen. Sitting still and seen from above (facing the camera,
+// curled up), a cat is often only a weak "cat", "dog" or even "person" to the model, or
+// nothing: on the 3rd floor replay the cat sat by the door for 75 s with only weak or no
+// detections. So once a cat has been seen clearly, it counts as still there when
+//   - something cat-sized is seen weakly near where it was (catNear), or
+//   - its spot still looks like the cat, not like the empty scene from before it came
+//     (catStill: there, similarity to the empty floor fell from 1.00 to about 0.77 while
+//     the cat sat, and came back to 1.00 seconds after it left).
+// The look of the spot alone keeps a cat for at most catLostAfter.
+
+// catNear is the weak sighting most likely to be the cat last seen at box.
+func catNear(weak []Detection, box Rect) (Detection, bool) {
+	var best Detection
+	bestD := 1.0
+	area := box.W * box.H
+	for _, d := range weak {
+		r := d.Box.W * d.Box.H / max(area, 1e-6)
+		if r < 0.33 || r > 3 {
+			continue
+		}
+		dx := (d.Box.X + d.Box.W/2) - (box.X + box.W/2)
+		dy := (d.Box.Y + d.Box.H/2) - (box.Y + box.H/2)
+		if dist := dx*dx + dy*dy; dist < 0.2*0.2 && dist < bestD {
+			best, bestD = d, dist
+		}
+	}
+	return best, bestD < 1
+}
+
+const (
+	patchSize        = 24
+	patchW, patchH   = 480, 270 // the grey frame patches are cut from
+	stillMaxEmptySim = 0.9      // the spot must look this little like the empty scene
+	stillMinDiff     = 4.0      // and differ from it this much (mean grey level)
+)
+
+// catPatch is the grey picture of box (plus a little around it) in a patchW×patchH frame.
+func catPatch(g []byte, box Rect) []float32 {
+	x0 := int((box.X - box.W*0.15) * patchW)
+	y0 := int((box.Y - box.H*0.15) * patchH)
+	x1 := int((box.X + box.W*1.15) * patchW)
+	y1 := int((box.Y + box.H*1.15) * patchH)
+	x0, y0 = max(x0, 0), max(y0, 0)
+	x1, y1 = min(x1, patchW), min(y1, patchH)
+	if x1-x0 < 4 || y1-y0 < 4 || len(g) != patchW*patchH {
+		return nil
+	}
+	out := make([]float32, patchSize*patchSize)
+	for py := 0; py < patchSize; py++ {
+		for px := 0; px < patchSize; px++ {
+			ya, yb := y0+py*(y1-y0)/patchSize, y0+(py+1)*(y1-y0)/patchSize
+			xa, xb := x0+px*(x1-x0)/patchSize, x0+(px+1)*(x1-x0)/patchSize
+			sum, n := 0, 0
+			for y := ya; y < max(yb, ya+1); y++ {
+				for x := xa; x < max(xb, xa+1); x++ {
+					sum += int(g[y*patchW+x])
+					n++
+				}
+			}
+			out[py*patchSize+px] = float32(sum) / float32(n)
+		}
+	}
+	return out
+}
+
+// patchSim is the normalised correlation of two patches (1 = the same picture, up to
+// brightness and contrast) and their mean difference in grey levels.
+func patchSim(a, b []float32) (sim, diff float64) {
+	if len(a) != len(b) || len(a) == 0 {
+		return 1, 0
+	}
+	var ma, mb float64
+	for i := range a {
+		ma += float64(a[i])
+		mb += float64(b[i])
+	}
+	ma /= float64(len(a))
+	mb /= float64(len(b))
+	var ab, aa, bb float64
+	for i := range a {
+		x, y := float64(a[i])-ma, float64(b[i])-mb
+		ab += x * y
+		aa += x * x
+		bb += y * y
+		diff += math.Abs(float64(a[i]) - float64(b[i]))
+	}
+	return ab / math.Sqrt(aa*bb+1e-6), diff / float64(len(a))
+}
+
+// catStill: does the spot box at t still look like the cat (tpl) rather than the empty
+// scene at bgT?
+func (a *App) catStill(ctx context.Context, cam string, t, bgT time.Time, box Rect, tpl []float32) bool {
+	if tpl == nil {
+		return false
+	}
+	g, err := a.decodeGray(ctx, cam, t, patchW, patchH)
+	if err != nil {
+		return false
+	}
+	bg, err := a.decodeGray(ctx, cam, bgT, patchW, patchH)
+	if err != nil {
+		return false
+	}
+	cur, empty := catPatch(g, box), catPatch(bg, box)
+	if cur == nil || empty == nil {
+		return false
+	}
+	simEmpty, diffEmpty := patchSim(cur, empty)
+	simCat, _ := patchSim(cur, tpl)
+	return simEmpty < stillMaxEmptySim && diffEmpty >= stillMinDiff && simCat > simEmpty
+}
+
+// catTemplate is the grey picture of the cat at box in the frame at t.
+func (a *App) catTemplate(ctx context.Context, cam string, t time.Time, box Rect) []float32 {
+	g, err := a.decodeGray(ctx, cam, t, patchW, patchH)
+	if err != nil {
+		return nil
+	}
+	return catPatch(g, box)
 }

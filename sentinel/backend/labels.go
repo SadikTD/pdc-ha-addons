@@ -588,7 +588,7 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 		// sees no cat in a clear picture of one.
 		if hardLooks < maxHardLooks && !done["animal"] {
 			hardLooks++
-			if cs, err := a.catDets(ctx, cam, t, Rect{}, false); err == nil {
+			if cs, _, err := a.catDets(ctx, cam, t, Rect{}, false); err == nil {
 				o.log("  looked harder for cats: %s", fmtDets(cs))
 				if len(cs) > 0 {
 					found = true

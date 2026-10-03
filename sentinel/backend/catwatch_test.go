@@ -59,3 +59,40 @@ func TestCatWatchSettings(t *testing.T) {
 		t.Error("a non-media_player Echo should be refused")
 	}
 }
+
+func TestCatNear(t *testing.T) {
+	cat := Rect{X: 0.36, Y: 0.79, W: 0.09, H: 0.18}
+	weak := []Detection{
+		{Label: "person", Score: 0.4, Box: Rect{X: 0.3, Y: 0.4, W: 0.25, H: 0.5}},    // a person: too big
+		{Label: "person", Score: 0.3, Box: Rect{X: 0.37, Y: 0.79, W: 0.09, H: 0.18}}, // the cat, called a person
+		{Label: "cat", Score: 0.3, Box: Rect{X: 0.8, Y: 0.1, W: 0.09, H: 0.18}},      // too far
+	}
+	d, ok := catNear(weak, cat)
+	if !ok || d.Box.X != 0.37 {
+		t.Fatalf("catNear = %v %v", d, ok)
+	}
+	if _, ok := catNear(weak[2:], cat); ok {
+		t.Error("a far one isn't the same cat")
+	}
+}
+
+func TestCatPatch(t *testing.T) {
+	floor := make([]byte, patchW*patchH)
+	for i := range floor {
+		floor[i] = byte(100 + i%7*10) // tiles
+	}
+	withCat := append([]byte(nil), floor...)
+	box := Rect{X: 0.4, Y: 0.5, W: 0.1, H: 0.2}
+	for y := patchH * 55 / 100; y < patchH*65/100; y++ {
+		for x := patchW * 42 / 100; x < patchW*48/100; x++ {
+			withCat[y*patchW+x] = 240
+		}
+	}
+	empty, cat := catPatch(floor, box), catPatch(withCat, box)
+	if sim, diff := patchSim(empty, empty); sim < 0.99 || diff != 0 {
+		t.Errorf("same patch: %.2f %.1f", sim, diff)
+	}
+	if sim, diff := patchSim(cat, empty); sim >= stillMaxEmptySim || diff < stillMinDiff {
+		t.Errorf("cat vs empty floor: %.2f %.1f", sim, diff)
+	}
+}
