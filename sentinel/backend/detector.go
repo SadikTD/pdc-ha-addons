@@ -377,7 +377,15 @@ func (p *prioLock) Lock() { p.lock(true) }
 // LockFor takes it as background work when ctx says so (see lowPriority).
 func (p *prioLock) LockFor(ctx context.Context) { p.lock(ctx.Value(lowPriorityKey) == nil) }
 
+// detectorHeld counts cat watches running: background work (labels, faces, catching
+// up) waits meanwhile, so a cat at the door is looked at every 2-3 s. On the replay,
+// with the labeler catching up, one look took 19 s and missed the cat walking past.
+var detectorHeld atomic.Int32
+
 func (p *prioLock) lock(urgent bool) {
+	for !urgent && detectorHeld.Load() > 0 {
+		time.Sleep(250 * time.Millisecond)
+	}
 	p.mu.Lock()
 	if !p.held {
 		p.held = true

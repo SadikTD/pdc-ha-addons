@@ -228,6 +228,8 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 	if f.replay {
 		key = "replay:" + cam
 	}
+	detectorHeld.Add(1) // the detector is cat watch's first
+	defer detectorHeld.Add(-1)
 	defer func() {
 		if p := recover(); p != nil {
 			cw.app.incidents.Add("error", cam, "cat watch crashed: %v", p)
