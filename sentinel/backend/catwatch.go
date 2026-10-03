@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -235,7 +236,8 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		hint              Rect      // where the cat was last seen
 		detected          time.Time // when the detector last saw it (wall clock)
 		tpl               []float32 // what its spot looked like then
-		bgGray            []byte    // the scene just before it came (grey)
+		bgGray            []byte    // the empty scene from before it came (grey)
+		prevBlobs         []catSpot // the blobs at the look before
 		visit             *CatVisit
 		lastAlexa, lastWA time.Time
 		alerting          time.Time
@@ -249,7 +251,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 	}
 	// reset forgets the cat (a replay carries on watching for the next one).
 	reset := func() {
-		first, last, seenAt, hint, visit, alerting, bgGray = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil
+		first, last, seenAt, hint, visit, alerting, bgGray, prevBlobs = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil, nil
 		started = time.Now()
 	}
 	end := func(reason string) {
@@ -321,35 +323,51 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		}
 		// A cat already seen, only weakly seen now, or not seen but its spot still looks
 		// like it: still there.
+		// While a cat is being followed: the picture's blobs (patches unlike the empty
+		// scene from before it came), for following it where the detector can't see it.
+		var g []byte
+		var cur []catSpot
+		if visit != nil && !last.IsZero() {
+			if bgGray == nil {
+				bgGray = cw.app.emptyScene(ctx, cam, first)
+			}
+			if bgGray != nil {
+				g = cw.app.grayNear(ctx, cam, t)
+				cur = spots(g, bgGray)
+			}
+		}
 		if !look.found && visit != nil && !last.IsZero() {
 			// A walking cat gets further the longer it's unseen (about a tenth of the
 			// picture a second from the 3rd floor camera).
 			reach := min(0.2+0.08*t.Sub(last).Seconds(), 1.5)
-			if bgGray == nil {
-				bgGray = cw.app.grayNear(ctx, cam, first.Add(-3*time.Second)) // before it came
-			}
-			var g []byte
-			if bgGray != nil {
-				g = cw.app.grayNear(ctx, cam, t)
-			}
 			for _, d := range catNearby(weak, hint, reach) {
 				if g != nil && catNotEmpty(g, bgGray, d.Box) {
 					look = catSighting{found: true, box: d.Box, score: d.Score}
 					break
 				}
 			}
-			if debugCat.Load() && !look.found {
-				logf("cat watch: reach %.2f from %s, %d weak nearby", reach, fmtBox(hint), len(catNearby(weak, hint, reach)))
-			}
 			if !look.found && time.Since(detected) < catLostAfter && g != nil && catStill(g, bgGray, hint, tpl) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
+			if !look.found && time.Since(detected) < catBlobTrust && g != nil {
+				if b, ok := catBlob(cur, prevBlobs, hint, reach); ok {
+					look = catSighting{found: true, box: b, still: true}
+				}
+			}
+			if debugCat.Load() {
+				bs := []string{}
+				for _, b := range cur {
+					bs = append(bs, fmt.Sprintf("%s %dpx", fmtBox(b.box), b.n))
+				}
+				logf("cat watch: reach %.2f from %s, %d weak nearby; blobs: %s", reach, fmtBox(hint), len(catNearby(weak, hint, reach)), strings.Join(bs, "; "))
+			}
 		}
+		prevBlobs = cur
 		if f.replay {
 			how := "nothing"
 			switch {
 			case look.still:
-				how = "still there (its spot)"
+				how = "still there (unseen by the detector) " + fmtBox(look.box)
 			case look.found:
 				how = fmt.Sprintf("cat %.2f %s", look.score, fmtBox(look.box))
 			}
@@ -366,7 +384,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 					visit = nil
 				}
 				if visit == nil {
-					first, bgGray = t, nil
+					first, bgGray, prevBlobs = t, nil, nil
 				}
 			}
 			last, hint, seenAt = t, look.box, time.Now()
@@ -997,3 +1015,139 @@ func (a *App) catTemplate(ctx context.Context, cam string, t time.Time, box Rect
 
 // debugCat logs how the spots of cats compare (set while a replay runs).
 var debugCat atomic.Bool
+
+// ---- Following a cat the detector can't see (blobs)
+//
+// Lying flat in the shade of the stairs, or half cut off by the picture's edge, a cat
+// can be invisible to the detector (scores of 0.05-0.27 on the 3rd floor replay, where
+// she lay on the landing for over 5 minutes) while plainly there to the eye. Once a cat
+// has been clearly detected, cat watch also follows the cat-sized patch of the picture
+// that differs from the empty scene (a blob): the one where it was, or, if it moved
+// between two looks, one that wasn't there at the look before (a pair of slippers moved
+// earlier, or the camera's clock text, was there before and never counts).
+
+const (
+	blobW, blobH  = patchW / 2, patchH / 2 // blobs are found at this size
+	blobLevel     = 22                     // grey levels away from the empty scene
+	blobMinPixels = 15
+	// A blob alone keeps a cat this long after the detector last saw it.
+	catBlobTrust = time.Hour
+)
+
+type catSpot struct {
+	box Rect
+	n   int // pixels
+}
+
+// emptyScene is the scene without the cat: for each point, the middle value of grey
+// frames from the minutes before it came (a cat or a person in one or two of them
+// doesn't count).
+func (a *App) emptyScene(ctx context.Context, cam string, before time.Time) []byte {
+	var frames [][]byte
+	for _, back := range []time.Duration{3 * time.Second, 15 * time.Second, 45 * time.Second, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute} {
+		if g := a.grayNear(ctx, cam, before.Add(-back)); g != nil {
+			frames = append(frames, g)
+		}
+	}
+	if len(frames) == 0 {
+		return nil
+	}
+	out := make([]byte, len(frames[0]))
+	vals := make([]byte, len(frames))
+	for i := range out {
+		for j, f := range frames {
+			vals[j] = f[i]
+		}
+		slices.Sort(vals)
+		out[i] = vals[len(vals)/2]
+	}
+	return out
+}
+
+// blobs finds the patches of g (patchW×patchH grey) that differ from the empty scene bg.
+func spots(g, bg []byte) []catSpot {
+	if len(g) != patchW*patchH || len(bg) != len(g) {
+		return nil
+	}
+	// Half size, then points far from the empty scene, grown by one so a patchy cat is
+	// one blob.
+	diff := make([]bool, blobW*blobH)
+	for y := 0; y < blobH; y++ {
+		for x := 0; x < blobW; x++ {
+			s := 0
+			for _, o := range [4]int{0, 1, patchW, patchW + 1} {
+				i := (2*y)*patchW + 2*x + o
+				s += int(g[i]) - int(bg[i])
+			}
+			if s < 0 {
+				s = -s
+			}
+			diff[y*blobW+x] = s/4 > blobLevel
+		}
+	}
+	grown := make([]bool, len(diff))
+	for y := 0; y < blobH; y++ {
+		for x := 0; x < blobW; x++ {
+			i := y*blobW + x
+			grown[i] = diff[i] || x > 0 && diff[i-1] || x < blobW-1 && diff[i+1] || y > 0 && diff[i-blobW] || y < blobH-1 && diff[i+blobW]
+		}
+	}
+	seen := make([]bool, len(grown))
+	var out []catSpot
+	stack := []int{}
+	for start := range grown {
+		if !grown[start] || seen[start] {
+			continue
+		}
+		seen[start] = true
+		stack = append(stack[:0], start)
+		n, x0, y0, x1, y1 := 0, blobW, blobH, 0, 0
+		for len(stack) > 0 {
+			i := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			x, y := i%blobW, i/blobW
+			n++
+			x0, y0, x1, y1 = min(x0, x), min(y0, y), max(x1, x), max(y1, y)
+			for _, j := range [4]int{i - 1, i + 1, i - blobW, i + blobW} {
+				if j < 0 || j >= len(grown) || (j == i-1 && x == 0) || (j == i+1 && x == blobW-1) || !grown[j] || seen[j] {
+					continue
+				}
+				seen[j] = true
+				stack = append(stack, j)
+			}
+		}
+		if n >= blobMinPixels {
+			out = append(out, catSpot{box: Rect{X: float64(x0) / blobW, Y: float64(y0) / blobH, W: float64(x1-x0+1) / blobW, H: float64(y1-y0+1) / blobH}, n: n})
+		}
+	}
+	return out
+}
+
+// catBlob picks the blob that is the cat last seen at box: about its size, and either
+// on its spot, or new since the look before (prev) and within reach.
+func catBlob(cur, prev []catSpot, box Rect, reach float64) (Rect, bool) {
+	area := box.W * box.H
+	fits := func(b catSpot) bool {
+		r := b.box.W * b.box.H / max(area, 1e-6)
+		return r >= 0.25 && r <= 4
+	}
+	var best Rect
+	bestD := math.Inf(1)
+	for _, b := range cur {
+		if !fits(b) {
+			continue
+		}
+		if overlapOfSmaller(b.box, box) >= 0.3 {
+			return b.box, true // where it was
+		}
+		if prev == nil || slices.ContainsFunc(prev, func(p catSpot) bool { return overlapOfSmaller(p.box, b.box) >= 0.3 }) {
+			continue // was already there: not the cat moving
+		}
+		dx := (b.box.X + b.box.W/2) - (box.X + box.W/2)
+		dy := (b.box.Y + b.box.H/2) - (box.Y + box.H/2)
+		if d := math.Sqrt(dx*dx + dy*dy); d <= reach && d < bestD {
+			best, bestD = b.box, d
+		}
+	}
+	return best, !math.IsInf(bestD, 1)
+}

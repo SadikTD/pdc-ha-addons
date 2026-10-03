@@ -94,3 +94,45 @@ func TestCatPatch(t *testing.T) {
 		t.Errorf("cat vs empty floor: %.2f %.1f", sim, diff)
 	}
 }
+
+func TestCatBlob(t *testing.T) {
+	floor := make([]byte, patchW*patchH)
+	for i := range floor {
+		floor[i] = byte(120 + i%5*4)
+	}
+	put := func(g []byte, r Rect, v byte) {
+		for y := int(r.Y * patchH); y < int((r.Y+r.H)*patchH); y++ {
+			for x := int(r.X * patchW); x < int((r.X+r.W)*patchW); x++ {
+				g[y*patchW+x] = v
+			}
+		}
+	}
+	slippers := Rect{X: 0.47, Y: 0.84, W: 0.06, H: 0.05}
+	door := Rect{X: 0.36, Y: 0.79, W: 0.07, H: 0.18}
+	stairs := Rect{X: 0.14, Y: 0.36, W: 0.08, H: 0.07}
+	atDoor := append([]byte(nil), floor...)
+	put(atDoor, slippers, 30)
+	put(atDoor, door, 240)
+	onStairs := append([]byte(nil), floor...)
+	put(onStairs, slippers, 30)
+	put(onStairs, stairs, 40)
+
+	before := spots(atDoor, floor)
+	if len(before) != 2 {
+		t.Fatalf("blobs at the door: %v", before)
+	}
+	// Still at the door.
+	if b, ok := catBlob(before, nil, door, 0.3); !ok || overlapOfSmaller(b, door) < 0.5 {
+		t.Errorf("at the door: %v %v", b, ok)
+	}
+	// Walked to the stairs between two looks: the new blob, not the slippers nearby.
+	now := spots(onStairs, floor)
+	b, ok := catBlob(now, before, door, 0.8)
+	if !ok || overlapOfSmaller(b, stairs) < 0.5 {
+		t.Errorf("moved to the stairs: %v %v", b, ok)
+	}
+	// Without knowing the look before, only its own spot counts.
+	if b, ok := catBlob(now, nil, door, 0.8); ok {
+		t.Errorf("no look before: %v", b)
+	}
+}
