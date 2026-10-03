@@ -269,7 +269,14 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			<-waBusy
 			name := cameraName(s, cam)
 			msg := fmt.Sprintf("✅ *The cat has gone · %s*\nSeen from %s to %s (%s).%s%s", name, catClock(first), catClock(last), fmtStay(last.Sub(first)), reason, note)
-			if err := cw.app.alerts.wa.Send(to, msg, "sentinel:cat:"+visit.ID+":end"); err != nil {
+			// The bridge sometimes times out on a send: try again (a new key, or it refuses).
+			var err error
+			for try := 1; try <= 3; try++ {
+				if err = cw.app.alerts.wa.Send(to, msg, fmt.Sprintf("sentinel:cat:%s:end:%d", visit.ID, try)); err == nil || !sleepCtx(cw.app.ctx, 5*time.Second) {
+					break
+				}
+			}
+			if err != nil {
 				cw.app.incidents.Add("warn", cam, "Cat watch: the 'cat has gone' message failed: %v", err)
 			}
 		}
@@ -318,6 +325,16 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			} else if time.Since(detected) < catLostAfter && cw.app.catStill(ctx, cam, t, first.Add(-3*time.Second), hint, tpl) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
+		}
+		if f.replay {
+			how := "nothing"
+			switch {
+			case look.still:
+				how = "still there (its spot)"
+			case look.found:
+				how = fmt.Sprintf("cat %.2f %s", look.score, fmtBox(look.box))
+			}
+			logf("cat watch replay %s: %s; weak: %s", t.In(time.Local).Format("15:04:05.0"), how, fmtDets(weak))
 		}
 		if look.found {
 			if !look.still {
