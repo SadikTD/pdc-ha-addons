@@ -60,19 +60,17 @@ func TestCatWatchSettings(t *testing.T) {
 	}
 }
 
-func TestCatNear(t *testing.T) {
-	cat := Rect{X: 0.36, Y: 0.79, W: 0.09, H: 0.18}
+func TestCatNearby(t *testing.T) {
+	cat := Rect{X: 0.25, Y: 0.42, W: 0.07, H: 0.1} // last seen walking
 	weak := []Detection{
 		{Label: "person", Score: 0.4, Box: Rect{X: 0.3, Y: 0.4, W: 0.25, H: 0.5}},    // a person: too big
-		{Label: "person", Score: 0.3, Box: Rect{X: 0.37, Y: 0.79, W: 0.09, H: 0.18}}, // the cat, called a person
-		{Label: "cat", Score: 0.3, Box: Rect{X: 0.8, Y: 0.1, W: 0.09, H: 0.18}},      // too far
+		{Label: "person", Score: 0.4, Box: Rect{X: 0.37, Y: 0.79, W: 0.09, H: 0.17}}, // the cat by the door, called a person
 	}
-	d, ok := catNear(weak, cat)
-	if !ok || d.Box.X != 0.37 {
-		t.Fatalf("catNear = %v %v", d, ok)
+	if got := catNearby(weak, cat, 0.2); len(got) != 0 {
+		t.Errorf("just after, the door is out of reach: %v", got)
 	}
-	if _, ok := catNear(weak[2:], cat); ok {
-		t.Error("a far one isn't the same cat")
+	if got := catNearby(weak, cat, 0.2+0.08*10); len(got) != 1 || got[0].Box.X != 0.37 {
+		t.Errorf("10 s later it's in reach: %v", got)
 	}
 }
 

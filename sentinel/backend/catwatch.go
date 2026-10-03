@@ -320,9 +320,16 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		// A cat already seen, only weakly seen now, or not seen but its spot still looks
 		// like it: still there.
 		if !look.found && visit != nil && !last.IsZero() {
-			if d, ok := catNear(weak, hint); ok {
-				look = catSighting{found: true, box: d.Box, score: d.Score}
-			} else if time.Since(detected) < catLostAfter && cw.app.catStill(ctx, cam, t, first.Add(-3*time.Second), hint, tpl) {
+			// A walking cat gets further the longer it's unseen (about a tenth of the
+			// picture a second from the 3rd floor camera).
+			reach := min(0.2+0.08*t.Sub(last).Seconds(), 1.5)
+			for _, d := range catNearby(weak, hint, reach) {
+				if cw.app.catNotEmpty(ctx, cam, t, first.Add(-3*time.Second), d.Box) {
+					look = catSighting{found: true, box: d.Box, score: d.Score}
+					break
+				}
+			}
+			if !look.found && time.Since(detected) < catLostAfter && cw.app.catStill(ctx, cam, t, first.Add(-3*time.Second), hint, tpl) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
 		}
@@ -831,10 +838,14 @@ func (a *App) catLook(ctx context.Context, cam Camera, t time.Time, hint Rect) (
 //     the cat sat, and came back to 1.00 seconds after it left).
 // The look of the spot alone keeps a cat for at most catLostAfter.
 
-// catNear is the weak sighting most likely to be the cat last seen at box.
-func catNear(weak []Detection, box Rect) (Detection, bool) {
-	var best Detection
-	bestD := 1.0
+// catNearby lists the weak sightings that could be the cat last seen at box: about its
+// size, within reach (part of the picture; a walking cat goes further), nearest first.
+func catNearby(weak []Detection, box Rect, reach float64) []Detection {
+	type cand struct {
+		d    Detection
+		dist float64
+	}
+	var cs []cand
 	area := box.W * box.H
 	for _, d := range weak {
 		r := d.Box.W * d.Box.H / max(area, 1e-6)
@@ -843,11 +854,16 @@ func catNear(weak []Detection, box Rect) (Detection, bool) {
 		}
 		dx := (d.Box.X + d.Box.W/2) - (box.X + box.W/2)
 		dy := (d.Box.Y + d.Box.H/2) - (box.Y + box.H/2)
-		if dist := dx*dx + dy*dy; dist < 0.2*0.2 && dist < bestD {
-			best, bestD = d, dist
+		if dist := math.Sqrt(dx*dx + dy*dy); dist <= reach {
+			cs = append(cs, cand{d, dist})
 		}
 	}
-	return best, bestD < 1
+	sort.Slice(cs, func(i, j int) bool { return cs[i].dist < cs[j].dist })
+	out := make([]Detection, len(cs))
+	for i, c := range cs {
+		out[i] = c.d
+	}
+	return out
 }
 
 const (
@@ -931,6 +947,26 @@ func (a *App) catStill(ctx context.Context, cam string, t, bgT time.Time, box Re
 	simEmpty, diffEmpty := patchSim(cur, empty)
 	simCat, _ := patchSim(cur, tpl)
 	return simEmpty < stillMaxEmptySim && diffEmpty >= stillMinDiff && simCat > simEmpty
+}
+
+// catNotEmpty: does the spot box at t look different from the empty scene at bgT
+// (something is there that wasn't)? A weak sighting must pass this, so the shoes or the
+// shoe rack, seen weakly as a "person", never keep a cat that has gone.
+func (a *App) catNotEmpty(ctx context.Context, cam string, t, bgT time.Time, box Rect) bool {
+	g, err := a.decodeGray(ctx, cam, t, patchW, patchH)
+	if err != nil {
+		return false
+	}
+	bg, err := a.decodeGray(ctx, cam, bgT, patchW, patchH)
+	if err != nil {
+		return false
+	}
+	cur, empty := catPatch(g, box), catPatch(bg, box)
+	if cur == nil || empty == nil {
+		return false
+	}
+	sim, diff := patchSim(cur, empty)
+	return sim < stillMaxEmptySim && diff >= stillMinDiff
 }
 
 // catTemplate is the grey picture of the cat at box in the frame at t.
