@@ -238,6 +238,8 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		tpl               []float32 // what its spot looked like then
 		bgGray            []byte    // the empty scene from before it came (grey)
 		prevBlobs         []catSpot // the blobs at the look before
+		sizes             []float64 // the cat's size (part of the picture) when detected
+		personAt          time.Time // when a person was last in view (wall clock)
 		visit             *CatVisit
 		lastAlexa, lastWA time.Time
 		alerting          time.Time
@@ -251,7 +253,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 	}
 	// reset forgets the cat (a replay carries on watching for the next one).
 	reset := func() {
-		first, last, seenAt, hint, visit, alerting, bgGray, prevBlobs = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil, nil
+		first, last, seenAt, hint, visit, alerting, bgGray, prevBlobs, sizes = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil, nil, nil
 		started = time.Now()
 	}
 	end := func(reason string) {
@@ -314,6 +316,9 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		prev = t
 		tick := time.Now()
 		look, weak, err := cw.app.catLook(ctx, cameraConfig(s, cam), t, hint)
+		if look.person {
+			personAt = time.Now()
+		}
 		if err != nil {
 			if errs++; errs == 5 {
 				cw.app.incidents.Add("warn", cam, "Cat watch can't check frames: %v", err)
@@ -340,7 +345,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			// A walking cat gets further the longer it's unseen (about a tenth of the
 			// picture a second from the 3rd floor camera).
 			reach := min(0.2+0.08*t.Sub(last).Seconds(), 1.5)
-			for _, d := range catNearby(weak, hint, reach) {
+			for _, d := range catNearby(weak, hint, catArea(sizes, hint), reach) {
 				if g != nil && catNotEmpty(g, bgGray, d.Box) {
 					look = catSighting{found: true, box: d.Box, score: d.Score}
 					break
@@ -350,7 +355,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
 			if !look.found && time.Since(detected) < catBlobTrust && g != nil {
-				if b, ok := catBlob(cur, prevBlobs, hint, reach); ok {
+				if b, ok := catBlob(cur, prevBlobs, hint, catArea(sizes, hint), reach, time.Since(personAt) > 15*time.Second); ok {
 					look = catSighting{found: true, box: b, still: true}
 				}
 			}
@@ -359,7 +364,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				for _, b := range cur {
 					bs = append(bs, fmt.Sprintf("%s %dpx", fmtBox(b.box), b.n))
 				}
-				logf("cat watch: reach %.2f from %s, %d weak nearby; blobs: %s", reach, fmtBox(hint), len(catNearby(weak, hint, reach)), strings.Join(bs, "; "))
+				logf("cat watch: reach %.2f from %s, %d weak nearby; blobs: %s", reach, fmtBox(hint), len(catNearby(weak, hint, catArea(sizes, hint), reach)), strings.Join(bs, "; "))
 			}
 		}
 		prevBlobs = cur
@@ -373,6 +378,11 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			}
 			logf("cat watch replay %s: %s; weak: %s", t.In(time.Local).Format("15:04:05.0"), how, fmtDets(weak))
 		}
+		// Only the detector starts a visit (or a new one after a gap): following a blob
+		// keeps a cat already seen, it never finds one.
+		if look.still && (visit == nil || last.IsZero() || t.Sub(last) > catGap && visit.Alerted == 0) {
+			look = catSighting{}
+		}
 		if look.found {
 			if !look.still {
 				detected = time.Now()
@@ -384,10 +394,13 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 					visit = nil
 				}
 				if visit == nil {
-					first, bgGray, prevBlobs = t, nil, nil
+					first, bgGray, prevBlobs, sizes = t, nil, nil, nil
 				}
 			}
 			last, hint, seenAt = t, look.box, time.Now()
+			if !look.still {
+				sizes = append(sizes, look.box.W*look.box.H)
+			}
 			if visit == nil {
 				v := CatVisit{ID: fmt.Sprintf("%s%s-%d", f.tag, cam, first.UnixMilli()), Camera: cam, CameraName: cameraName(s, cam), From: first.UnixMilli(), To: t.UnixMilli(), Ongoing: true, Replay: f.replay}
 				cw.put(v)
@@ -782,17 +795,18 @@ func catRegions(aspect float64) []Rect {
 }
 
 type catSighting struct {
-	found bool
-	box   Rect
-	score float64
-	still bool // not seen by the detector: its spot still looks like the cat
+	found  bool
+	box    Rect
+	score  float64
+	still  bool // not seen by the detector: its spot still looks like the cat
+	person bool // someone is in view too
 }
 
 // catDets runs the big model over the parts of the frame at t (the part named by hint
 // first; with stopEarly, the rest only while no cat is found). People seen from above
 // (crouching, a white cap) are often taken for a cat or dog: an animal on a person
 // doesn't count. Ignored areas don't either.
-func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, stopEarly bool) ([]Detection, []Detection, error) {
+func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, stopEarly bool) (cats, weak []Detection, person bool, err error) {
 	regions := catRegions(a.frameAspect(cam.ID))
 	if hint != (Rect{}) && len(regions) > 1 {
 		cx := hint.X + hint.W/2
@@ -804,7 +818,7 @@ func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, s
 		}
 	}
 	mask := maskGrid(cam, shotW, shotH)
-	var out, weak []Detection
+	var out []Detection
 	var lastErr error
 	looked := 0
 	for _, r := range regions {
@@ -815,6 +829,9 @@ func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, s
 		}
 		looked++
 		for _, d := range dets {
+			if d.Label == "person" && d.Score >= 0.5 && d.Box.W*d.Box.H > catMaxArea {
+				person = true
+			}
 			if ar := d.Box.W * d.Box.H; ar <= catMaxArea && ar >= minBoxArea {
 				wx, wy := int((d.Box.X+d.Box.W/2)*shotW), int((d.Box.Y+d.Box.H/2)*shotH)
 				if !mask[min(max(wy, 0), shotH-1)*shotW+min(max(wx, 0), shotW-1)] {
@@ -845,19 +862,19 @@ func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, s
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	if looked == 0 {
-		return nil, nil, lastErr
+		return nil, nil, false, lastErr
 	}
-	return out, weak, nil
+	return out, weak, person, nil
 }
 
 // catLook: is there a cat in the frame at t (for cat watch)? weak is everything
 // cat-sized the model saw, sure or not.
 func (a *App) catLook(ctx context.Context, cam Camera, t time.Time, hint Rect) (catSighting, []Detection, error) {
-	dets, weak, err := a.catDets(ctx, cam, t, hint, true)
+	dets, weak, person, err := a.catDets(ctx, cam, t, hint, true)
 	if len(dets) > 0 {
-		return catSighting{found: true, box: dets[0].Box, score: dets[0].Score}, weak, nil
+		return catSighting{found: true, box: dets[0].Box, score: dets[0].Score, person: person}, weak, nil
 	}
-	return catSighting{}, weak, err
+	return catSighting{person: person}, weak, err
 }
 
 // Following a cat already seen. Sitting still and seen from above (facing the camera,
@@ -871,14 +888,14 @@ func (a *App) catLook(ctx context.Context, cam Camera, t time.Time, hint Rect) (
 // The look of the spot alone keeps a cat for at most catLostAfter.
 
 // catNearby lists the weak sightings that could be the cat last seen at box: about its
-// size, within reach (part of the picture; a walking cat goes further), nearest first.
-func catNearby(weak []Detection, box Rect, reach float64) []Detection {
+// usual size (area), within reach (part of the picture; a walking cat goes further),
+// nearest first.
+func catNearby(weak []Detection, box Rect, area, reach float64) []Detection {
 	type cand struct {
 		d    Detection
 		dist float64
 	}
 	var cs []cand
-	area := box.W * box.H
 	for _, d := range weak {
 		r := d.Box.W * d.Box.H / max(area, 1e-6)
 		if r < 0.33 || r > 3 {
@@ -1123,10 +1140,11 @@ func spots(g, bg []byte) []catSpot {
 	return out
 }
 
-// catBlob picks the blob that is the cat last seen at box: about its size, and either
-// on its spot, or new since the look before (prev) and within reach.
-func catBlob(cur, prev []catSpot, box Rect, reach float64) (Rect, bool) {
-	area := box.W * box.H
+// catBlob picks the blob that is the cat last seen at box: about its usual size (area),
+// and either on its spot, or (when jump) new since the look before (prev) and within
+// reach. Jumps aren't allowed just after a person was in view: people move things (a
+// pair of slippers moved by someone going in was taken for the cat).
+func catBlob(cur, prev []catSpot, box Rect, area, reach float64, jump bool) (Rect, bool) {
 	fits := func(b catSpot) bool {
 		r := b.box.W * b.box.H / max(area, 1e-6)
 		return r >= 0.25 && r <= 4
@@ -1140,7 +1158,7 @@ func catBlob(cur, prev []catSpot, box Rect, reach float64) (Rect, bool) {
 		if overlapOfSmaller(b.box, box) >= 0.3 {
 			return b.box, true // where it was
 		}
-		if prev == nil || slices.ContainsFunc(prev, func(p catSpot) bool { return overlapOfSmaller(p.box, b.box) >= 0.3 }) {
+		if !jump || prev == nil || slices.ContainsFunc(prev, func(p catSpot) bool { return overlapOfSmaller(p.box, b.box) >= 0.3 }) {
 			continue // was already there: not the cat moving
 		}
 		dx := (b.box.X + b.box.W/2) - (box.X + box.W/2)
@@ -1150,4 +1168,16 @@ func catBlob(cur, prev []catSpot, box Rect, reach float64) (Rect, bool) {
 		}
 	}
 	return best, !math.IsInf(bestD, 1)
+}
+
+// catArea is the cat's usual size in this visit (the middle of the sizes it was detected
+// at); box's while there are none. A walking cat's blob is often bigger (blur, shadow)
+// and a cat lying down smaller, so they aren't compared with each other.
+func catArea(sizes []float64, box Rect) float64 {
+	if len(sizes) == 0 {
+		return box.W * box.H
+	}
+	s := slices.Clone(sizes)
+	slices.Sort(s)
+	return s[len(s)/2]
 }

@@ -66,10 +66,10 @@ func TestCatNearby(t *testing.T) {
 		{Label: "person", Score: 0.4, Box: Rect{X: 0.3, Y: 0.4, W: 0.25, H: 0.5}},    // a person: too big
 		{Label: "person", Score: 0.4, Box: Rect{X: 0.37, Y: 0.79, W: 0.09, H: 0.17}}, // the cat by the door, called a person
 	}
-	if got := catNearby(weak, cat, 0.2); len(got) != 0 {
+	if got := catNearby(weak, cat, cat.W*cat.H, 0.2); len(got) != 0 {
 		t.Errorf("just after, the door is out of reach: %v", got)
 	}
-	if got := catNearby(weak, cat, 0.2+0.08*10); len(got) != 1 || got[0].Box.X != 0.37 {
+	if got := catNearby(weak, cat, cat.W*cat.H, 0.2+0.08*10); len(got) != 1 || got[0].Box.X != 0.37 {
 		t.Errorf("10 s later it's in reach: %v", got)
 	}
 }
@@ -122,17 +122,21 @@ func TestCatBlob(t *testing.T) {
 		t.Fatalf("blobs at the door: %v", before)
 	}
 	// Still at the door.
-	if b, ok := catBlob(before, nil, door, 0.3); !ok || overlapOfSmaller(b, door) < 0.5 {
+	if b, ok := catBlob(before, nil, door, door.W*door.H, 0.3, true); !ok || overlapOfSmaller(b, door) < 0.5 {
 		t.Errorf("at the door: %v %v", b, ok)
 	}
 	// Walked to the stairs between two looks: the new blob, not the slippers nearby.
 	now := spots(onStairs, floor)
-	b, ok := catBlob(now, before, door, 0.8)
+	b, ok := catBlob(now, before, door, door.W*door.H, 0.8, true)
 	if !ok || overlapOfSmaller(b, stairs) < 0.5 {
 		t.Errorf("moved to the stairs: %v %v", b, ok)
 	}
 	// Without knowing the look before, only its own spot counts.
-	if b, ok := catBlob(now, nil, door, 0.8); ok {
+	if b, ok := catBlob(now, nil, door, door.W*door.H, 0.8, true); ok {
 		t.Errorf("no look before: %v", b)
+	}
+	// Someone was just in view: no jumping.
+	if b, ok := catBlob(now, before, door, door.W*door.H, 0.8, false); ok {
+		t.Errorf("jumped although someone was just in view: %v", b)
 	}
 }
