@@ -250,6 +250,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		sizes             []float64 // the cat's size (part of the picture) when detected
 		personAt          time.Time // when a person was last in view (wall clock)
 		weakCats          []weakCat // weak cat sightings lately (see above)
+		missFrom          time.Time // the first look since the cat was last seen that saw nothing
 		visit             *CatVisit
 		lastAlexa, lastWA time.Time
 		alerting          time.Time
@@ -263,7 +264,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 	}
 	// reset forgets the cat (a replay carries on watching for the next one).
 	reset := func() {
-		first, last, seenAt, hint, visit, alerting, bgGray, oldBlobs, sizes = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil, nil, nil
+		first, last, seenAt, hint, visit, alerting, bgGray, oldBlobs, sizes, missFrom = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil, nil, nil, time.Time{}
 		started = time.Now()
 	}
 	end := func(reason string) {
@@ -416,7 +417,17 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		}
 		// Only the detector starts a visit (or a new one after a gap): following a blob
 		// keeps a cat already seen, it never finds one.
-		if look.still && (visit == nil || last.IsZero() || t.Sub(last) > catJoin && visit.Alerted == 0) {
+		// How long the cat has been looked for and not seen: only looks that saw nothing
+		// count, not a stall between two looks (a look can take 20 s while the disk is
+		// busy; that split one visit into short ones that never alerted).
+		if !look.found && missFrom.IsZero() && !last.IsZero() {
+			missFrom = t
+		}
+		apart := time.Duration(0)
+		if !missFrom.IsZero() {
+			apart = t.Sub(missFrom)
+		}
+		if look.still && (visit == nil || last.IsZero() || apart > catJoin && visit.Alerted == 0) {
 			look = catSighting{}
 		}
 		if look.found {
@@ -424,7 +435,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				detected = time.Now()
 				tpl = cw.app.catTemplate(ctx, cam, t, look.box)
 			}
-			if last.IsZero() || t.Sub(last) > catJoin {
+			if last.IsZero() || apart > catJoin {
 				if visit != nil && visit.Alerted == 0 {
 					cw.update(visit.ID, func(v *CatVisit) { v.Ongoing = false })
 					visit = nil
@@ -433,7 +444,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 					first, bgGray, oldBlobs, sizes = t, nil, nil, nil
 				}
 			}
-			last, hint, seenAt = t, look.box, time.Now()
+			last, hint, seenAt, missFrom = t, look.box, time.Now(), time.Time{}
 			if !look.still {
 				sizes = append(sizes, look.box.W*look.box.H)
 			}
@@ -453,7 +464,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		switch {
 		case last.IsZero():
 			over = !f.replay && quiet > catIdleAfter && time.Since(started) > catIdleAfter // motion without a cat
-		case t.Sub(last) > catJoin && visit != nil && visit.Alerted == 0 && quiet > catIdleAfter && left:
+		case apart > catJoin && visit != nil && visit.Alerted == 0 && quiet > catIdleAfter && left:
 			cw.update(visit.ID, func(v *CatVisit) { v.Ongoing = false })
 			over = true // passed by, didn't stay
 		case t.Sub(last) > catGoneAfter && quiet > catIdleAfter && left:
