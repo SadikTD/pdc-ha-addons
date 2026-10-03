@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -329,6 +330,9 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 					break
 				}
 			}
+			if debugCat.Load() && !look.found {
+				logf("cat watch: reach %.2f from %s, %d weak nearby", reach, fmtBox(hint), len(catNearby(weak, hint, reach)))
+			}
 			if !look.found && time.Since(detected) < catLostAfter && cw.app.catStill(ctx, cam, t, first.Add(-3*time.Second), hint, tpl) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
@@ -480,8 +484,10 @@ func (cw *CatWatcher) Replay(cam string, from, to time.Time, dry bool) error {
 	cw.active["replay:"+cam] = true
 	f := catFeed{replay: true, offset: cw.app.clock.Now().Sub(from), until: to, dry: dry, tag: fmt.Sprintf("replay%d-", time.Now().Unix())}
 	cw.app.incidents.Add("info", cam, "Cat watch: replaying %s–%s as if it were now", from.In(time.Local).Format("15:04:05"), to.In(time.Local).Format("15:04:05"))
+	debugCat.Store(true)
 	go func() {
 		defer func() {
+			debugCat.Store(false)
 			cancel()
 			cw.mu.Lock()
 			cw.replayStop, cw.replayInfo = nil, nil
@@ -955,10 +961,16 @@ func (a *App) catStill(ctx context.Context, cam string, t, bgT time.Time, box Re
 func (a *App) catNotEmpty(ctx context.Context, cam string, t, bgT time.Time, box Rect) bool {
 	g, err := a.decodeGray(ctx, cam, t, patchW, patchH)
 	if err != nil {
+		if debugCat.Load() {
+			logf("cat watch: no grey frame at %s: %v", t.In(time.Local).Format("15:04:05.0"), err)
+		}
 		return false
 	}
 	bg, err := a.decodeGray(ctx, cam, bgT, patchW, patchH)
 	if err != nil {
+		if debugCat.Load() {
+			logf("cat watch: no grey frame of the empty scene at %s: %v", bgT.In(time.Local).Format("15:04:05.0"), err)
+		}
 		return false
 	}
 	cur, empty := catPatch(g, box), catPatch(bg, box)
@@ -966,8 +978,14 @@ func (a *App) catNotEmpty(ctx context.Context, cam string, t, bgT time.Time, box
 		return false
 	}
 	sim, diff := patchSim(cur, empty)
+	if debugCat.Load() {
+		logf("cat watch: spot %s at %s vs empty %s: similarity %.2f, difference %.1f", fmtBox(box), t.In(time.Local).Format("15:04:05.0"), bgT.In(time.Local).Format("15:04:05.0"), sim, diff)
+	}
 	return sim < stillMaxEmptySim && diff >= stillMinDiff
 }
+
+// debugCat logs how the spots of cats compare (set while a replay runs).
+var debugCat atomic.Bool
 
 // catTemplate is the grey picture of the cat at box in the frame at t.
 func (a *App) catTemplate(ctx context.Context, cam string, t time.Time, box Rect) []float32 {
