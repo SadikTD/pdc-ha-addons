@@ -70,6 +70,7 @@ export type CatWatchSettings = {
   alexa: boolean;
   alexa_entity: string;
   alexa_volume: number;
+  alexa_repeat_seconds: number;
   alexa_message: string;
   whatsapp: boolean;
   whatsapp_to: string;

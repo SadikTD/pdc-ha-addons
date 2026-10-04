@@ -102,13 +102,16 @@ type CatWatch struct {
 	// are found too). Also used for their motion events' labels.
 	BetterDetection bool `json:"better_detection"`
 
-	Alexa        bool   `json:"alexa"`
-	AlexaEntity  string `json:"alexa_entity"` // media_player of the Echo
-	AlexaVolume  int    `json:"alexa_volume"` // percent while the cat is there; restored after
-	AlexaMessage string `json:"alexa_message"`
-	WhatsApp     bool   `json:"whatsapp"`
-	WhatsAppTo   string `json:"whatsapp_to"`
-	WhatsAppName string `json:"whatsapp_name"`
+	Alexa       bool   `json:"alexa"`
+	AlexaEntity string `json:"alexa_entity"` // media_player of the Echo
+	AlexaVolume int    `json:"alexa_volume"` // percent while the cat is there; restored after
+	// Alexa speaks this often while the cat is there. Amazon drops the speech (only the
+	// chime plays) when announcements come too often: 36 in 7 min at 10 s did.
+	AlexaRepeatSeconds int    `json:"alexa_repeat_seconds"`
+	AlexaMessage       string `json:"alexa_message"`
+	WhatsApp           bool   `json:"whatsapp"`
+	WhatsAppTo         string `json:"whatsapp_to"`
+	WhatsAppName       string `json:"whatsapp_name"`
 	// Safety cap: after SlowAfterMinutes, WhatsApp pictures only every SlowSeconds
 	// (Alexa keeps its pace). 0 = no cap.
 	SlowAfterMinutes int `json:"slow_after_minutes"`
@@ -220,7 +223,7 @@ func defaultSettings() Settings {
 			Notify: true, NotifyArrive: true, NotifyLeave: true, NotifyPeople: []string{}, HomeAssistant: true},
 		WhatsApp: WhatsApp{MorningReport: true},
 		CatWatch: CatWatch{Cameras: []string{}, MinSeconds: 5, RepeatSeconds: 10, BetterDetection: true,
-			Alexa: true, AlexaVolume: 70, AlexaMessage: "There's a cat outside", WhatsApp: true,
+			Alexa: true, AlexaVolume: 70, AlexaRepeatSeconds: 30, AlexaMessage: "There's a cat outside", WhatsApp: true,
 			SlowAfterMinutes: 5, SlowSeconds: 60},
 		// On: nothing is recognised until the user names someone.
 		FaceRecognition: true,
@@ -405,6 +408,10 @@ func (s *Settings) normalize() error {
 	cw.MinSeconds = min(max(cw.MinSeconds, 0), 600) // 0: at the first sighting
 	cw.RepeatSeconds = min(max(cw.RepeatSeconds, 10), 3600)
 	cw.AlexaVolume = min(max(cw.AlexaVolume, 0), 100)
+	if cw.AlexaRepeatSeconds == 0 {
+		cw.AlexaRepeatSeconds = 30
+	}
+	cw.AlexaRepeatSeconds = min(max(cw.AlexaRepeatSeconds, 15), 3600)
 	cw.AlexaMessage = strings.TrimSpace(cw.AlexaMessage)
 	if cw.AlexaMessage == "" {
 		cw.AlexaMessage = "There's a cat outside"

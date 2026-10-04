@@ -76,6 +76,7 @@ type CatWatcher struct {
 	// restart too: it's saved with the log).
 	alexaMu    sync.Mutex
 	alexaSaved map[string]float64
+	alexaUp    map[string]bool // Echos raised to the cat watch volume (set once a visit)
 	// The replay running now, if any.
 	replayStop context.CancelFunc
 	replayInfo map[string]any
@@ -87,7 +88,7 @@ type catWatchFile struct {
 }
 
 func newCatWatcher(app *App, path string) *CatWatcher {
-	cw := &CatWatcher{app: app, path: path, active: map[string]bool{}, moved: map[string]time.Time{}, stirred: map[string]int{}, alexaSaved: map[string]float64{}}
+	cw := &CatWatcher{app: app, path: path, active: map[string]bool{}, moved: map[string]time.Time{}, stirred: map[string]int{}, alexaSaved: map[string]float64{}, alexaUp: map[string]bool{}}
 	var f catWatchFile
 	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &f) == nil {
 		cw.log = f.Visits
@@ -513,7 +514,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		}
 		if !alerting.IsZero() && t.Sub(last) <= catGap {
 			repeat := time.Duration(c.RepeatSeconds) * time.Second
-			if c.Alexa && !f.dry && time.Since(lastAlexa) >= repeat-time.Second {
+			if c.Alexa && !f.dry && time.Since(lastAlexa) >= time.Duration(c.AlexaRepeatSeconds)*time.Second-time.Second {
 				select {
 				case alexaBusy <- struct{}{}:
 					lastAlexa = time.Now()
@@ -688,8 +689,18 @@ func (cw *CatWatcher) alexaSay(c CatWatch) error {
 			logf("cat watch: can't read %s's volume (it won't be put back): %v", e, err)
 		}
 	}
-	if err := alexaSetVolume(e, want); err != nil {
-		return err
+	// The volume is set once a visit: the Echo beeps at every volume change, and a
+	// volume change every round was most of what was heard when the speech was dropped.
+	cw.alexaMu.Lock()
+	up := cw.alexaUp[e]
+	cw.alexaMu.Unlock()
+	if !up {
+		if err := alexaSetVolume(e, want); err != nil {
+			return err
+		}
+		cw.alexaMu.Lock()
+		cw.alexaUp[e] = true
+		cw.alexaMu.Unlock()
 	}
 	return callService("notify.alexa_media", map[string]any{"target": []string{e}, "message": c.AlexaMessage, "data": map[string]any{"type": "announce"}})
 }
@@ -699,6 +710,7 @@ func (cw *CatWatcher) alexaRestore() {
 	cw.alexaMu.Lock()
 	saved := cw.alexaSaved
 	cw.alexaSaved = map[string]float64{}
+	cw.alexaUp = map[string]bool{}
 	cw.alexaMu.Unlock()
 	for e, v := range saved {
 		// Let the last announcement finish first, or it's cut to the old volume.

@@ -18,6 +18,7 @@ const DEFAULTS: CatWatchSettings = {
   alexa: true,
   alexa_entity: "",
   alexa_volume: 70,
+  alexa_repeat_seconds: 30,
   alexa_message: "There's a cat outside",
   whatsapp: true,
   whatsapp_to: "",
@@ -129,7 +130,7 @@ export function CatWatchCard({ draft, set, cameras }: { draft: Settings; set: Se
                 <span className="w-14 text-right text-sm tabular-nums text-white">{c.min_seconds ? `${c.min_seconds} s` : "at once"}</span>
               </div>
             </Field>
-            <Field label="While it's still there, repeat every" hint="Alexa speaks and a WhatsApp picture is sent each time.">
+            <Field label="While it's still there, repeat every" hint="A WhatsApp picture each time (Alexa has its own pace, below).">
               <select value={c.repeat_seconds} onChange={(e) => setC({ repeat_seconds: Number(e.target.value) })} className={inputCls}>
                 {[...new Set([10, 15, 20, 30, 60, 120, 300, c.repeat_seconds])].sort((a, b) => a - b).map((v) => (
                   <option key={v} value={v}>
@@ -197,6 +198,15 @@ export function CatWatchCard({ draft, set, cameras }: { draft: Settings; set: Se
                     <input type="range" min={10} max={100} step={5} value={c.alexa_volume} onChange={(e) => setC({ alexa_volume: Number(e.target.value) })} className="flex-1" />
                     <span className="w-12 text-right text-sm tabular-nums text-white">{c.alexa_volume}%</span>
                   </div>
+                </Field>
+                <Field label="Alexa speaks every" hint="Amazon drops the words (only the chime plays) when announcements come too often.">
+                  <select value={c.alexa_repeat_seconds} onChange={(e) => setC({ alexa_repeat_seconds: Number(e.target.value) })} className={inputCls}>
+                    {[...new Set([15, 20, 30, 45, 60, 120, 300, c.alexa_repeat_seconds])].sort((a, b) => a - b).map((v) => (
+                      <option key={v} value={v}>
+                        {secs(v)}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
                 <div className="sm:col-span-2">
                   <Field label="Alexa says">
