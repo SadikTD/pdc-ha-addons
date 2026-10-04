@@ -127,6 +127,7 @@ func (a *App) Apply(s Settings) {
 }
 
 func (a *App) startMotion(c Camera) {
+	a.catwatch.thresholds.Store(c.ID, threshold(c.MotionSensitivity))
 	m := newMotionDetector(c, a, a.incidents)
 	a.motion[c.ID] = m
 	m.Start(a.ctx)
@@ -168,6 +169,7 @@ func (a *App) Activity(cam string, score float64, box Rect) {
 	now := a.clock.Now()
 	a.activity.Record(cam, now, score)
 	a.alerts.Sample(cam, now, score, box)
+	a.catwatch.Activity(cam, score)
 }
 
 func (a *App) Preview(cam string, jpeg []byte) { a.previews.Add(cam, a.clock.Now(), jpeg) }

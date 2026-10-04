@@ -62,13 +62,16 @@ type CatVisit struct {
 }
 
 type CatWatcher struct {
-	app    *App
-	path   string
-	mu     sync.Mutex
-	active map[string]bool      // camera -> being watched now
-	moved  map[string]time.Time // camera -> when motion last started
-	log    []CatVisit           // newest last
-	fileMu sync.Mutex
+	app     *App
+	path    string
+	mu      sync.Mutex
+	active  map[string]bool      // camera -> being watched now
+	moved   map[string]time.Time // camera -> when motion last started
+	stirred map[string]int       // camera -> frames in a row with a little change
+	// camera -> its motion threshold (set when its motion detection starts)
+	thresholds sync.Map
+	log        []CatVisit // newest last
+	fileMu     sync.Mutex
 	// The Echo's volume before cat watch raised it, while raised (restored after a
 	// restart too: it's saved with the log).
 	alexaMu    sync.Mutex
@@ -84,7 +87,7 @@ type catWatchFile struct {
 }
 
 func newCatWatcher(app *App, path string) *CatWatcher {
-	cw := &CatWatcher{app: app, path: path, active: map[string]bool{}, moved: map[string]time.Time{}, alexaSaved: map[string]float64{}}
+	cw := &CatWatcher{app: app, path: path, active: map[string]bool{}, moved: map[string]time.Time{}, stirred: map[string]int{}, alexaSaved: map[string]float64{}}
 	var f catWatchFile
 	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &f) == nil {
 		cw.log = f.Visits
@@ -122,11 +125,18 @@ func (cw *CatWatcher) watching(s Settings, cam string) bool {
 // Motion: something moved on cam; start looking for a cat if cat watch covers it.
 func (cw *CatWatcher) Motion(cam string) {
 	cw.mu.Lock()
-	defer cw.mu.Unlock()
 	cw.moved[cam] = time.Now()
+	cw.mu.Unlock()
+	cw.start(cam)
+}
+
+// start starts looking for a cat on cam, if cat watch covers it and isn't already.
+func (cw *CatWatcher) start(cam string) {
 	if !cw.watching(cw.app.settings.Get(), cam) {
 		return
 	}
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
 	if cw.active[cam] {
 		return
 	}
@@ -251,6 +261,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		personAt          time.Time // when a person was last in view (wall clock)
 		weakCats          []weakCat // weak cat sightings lately (see above)
 		missFrom          time.Time // the first look since the cat was last seen that saw nothing
+		lookBack          = []time.Duration{8 * time.Second, 4 * time.Second}
 		visit             *CatVisit
 		lastAlexa, lastWA time.Time
 		alerting          time.Time
@@ -306,6 +317,16 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			return
 		}
 		t, ok, done := cw.frame(cam, f)
+		// The first looks go a little back: watching starts once something moved enough,
+		// which for a small cat can be after it has been there for a while.
+		if !f.replay && ok && len(lookBack) > 0 {
+			if tb := t.Add(-lookBack[0]); tb.After(prev) {
+				if _, err := cw.app.fragmentRefAt(cam, tb, true); err == nil {
+					t = tb
+				}
+			}
+			lookBack = lookBack[1:]
+		}
 		if done {
 			end("\n_The replay has ended._")
 			return
@@ -1250,4 +1271,31 @@ func catArea(sizes []float64, box Rect) float64 {
 	s := slices.Clone(sizes)
 	slices.Sort(s)
 	return s[len(s)/2]
+}
+
+// Waking cat watch: a small cat on a bright floor can stay under the motion threshold
+// for seconds (on the 3rd floor, motion started 11 s after the cat came into view).
+// Cat watch starts looking after two frames in a row with a third of that much change.
+const catWakeShare = 0.33
+
+// Activity: the motion detector's score for a frame of cam (part of the picture that
+// changed, in %), and its threshold for motion.
+func (cw *CatWatcher) Activity(cam string, score float64) {
+	// Called for every frame: no settings or app locks here.
+	v, ok := cw.thresholds.Load(cam)
+	if !ok {
+		return
+	}
+	thr := v.(float64)
+	cw.mu.Lock()
+	if score >= thr*catWakeShare && score > 0 {
+		cw.stirred[cam]++
+	} else {
+		cw.stirred[cam] = 0
+	}
+	wake := cw.stirred[cam] == 2
+	cw.mu.Unlock()
+	if wake {
+		cw.start(cam)
+	}
 }

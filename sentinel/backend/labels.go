@@ -527,6 +527,56 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 	if !(cw.BetterDetection && contains(cw.Cameras, e.Cam) && slices.Contains(kinds, "cat")) {
 		hardLooks = maxHardLooks
 	}
+	// hardLook looks harder for a cat at t. A cat counts when seen in two frames, once
+	// at hardClear, or once at hardSure where the picture differs from the empty scene
+	// from before the motion (a cat walking past on a sunny floor was seen once at 0.56).
+	var emptyBg []byte
+	hardLook := func(t time.Time) bool {
+		cs, _, _, err := a.catDets(ctx, cam, t, Rect{}, false)
+		if err != nil {
+			return false
+		}
+		o.log("  looked harder for cats at %+.1fs: %s", t.Sub(start).Seconds(), fmtDets(cs))
+		if len(cs) == 0 {
+			return false
+		}
+		d := cs[0]
+		hard = append(hard, Object{Label: animalLabel(d.Label, kinds), Score: d.Score, Box: d.Box, T: t.UnixMilli()})
+		sure := len(hard) >= 2 || d.Score >= hardClear
+		if !sure && d.Score >= hardSure {
+			if emptyBg == nil {
+				emptyBg = a.emptyScene(ctx, e.Cam, start.Add(-5*time.Second))
+			}
+			if g := a.grayNear(ctx, e.Cam, t); g != nil && emptyBg != nil && catNotEmpty(g, emptyBg, d.Box) {
+				sure = true
+				o.log("  its spot differs from the empty scene")
+			}
+		}
+		if sure {
+			best := hard[0]
+			for _, h := range hard {
+				if h.Score > best.Score {
+					best = h
+				}
+			}
+			done["animal"] = true
+			confirm(best, time.UnixMilli(best.T))
+		}
+		return true
+	}
+	// Motion can start late for a small cat (it crossed the 3rd floor for ~11 s before
+	// motion started on a sunny morning): look back a little first.
+	if hardLooks < maxHardLooks {
+		for _, back := range []time.Duration{6 * time.Second, 3 * time.Second} {
+			if done["animal"] || ctx.Err() != nil {
+				break
+			}
+			if o.live && !l.waitFootage(ctx, e.Cam, start.Add(-back)) {
+				continue
+			}
+			hardLook(start.Add(-back))
+		}
+	}
 	var off time.Duration
 	for i := 0; i < limit && ctx.Err() == nil; i++ {
 		switch {
@@ -588,23 +638,8 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 		// sees no cat in a clear picture of one.
 		if hardLooks < maxHardLooks && !done["animal"] {
 			hardLooks++
-			if cs, _, _, err := a.catDets(ctx, cam, t, Rect{}, false); err == nil {
-				o.log("  looked harder for cats: %s", fmtDets(cs))
-				if len(cs) > 0 {
-					found = true
-					d := cs[0]
-					hard = append(hard, Object{Label: animalLabel(d.Label, kinds), Score: d.Score, Box: d.Box, T: t.UnixMilli()})
-					if len(hard) >= 2 || d.Score >= hardClear {
-						best := hard[0]
-						for _, h := range hard {
-							if h.Score > best.Score {
-								best = h
-							}
-						}
-						done["animal"] = true
-						confirm(best, time.UnixMilli(best.T))
-					}
-				}
+			if hardLook(t) {
+				found = true
 			}
 		}
 		if found {
@@ -651,6 +686,7 @@ const maxZooms = 3
 const (
 	maxHardLooks = 5
 	hardClear    = 0.7
+	hardSure     = 0.5
 )
 
 // animalLabel names an animal the detector saw among the animals that live here (with
