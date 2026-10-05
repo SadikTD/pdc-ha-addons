@@ -30,7 +30,16 @@ func main() {
 	listen := env("SENTINEL_LISTEN", ":8099")
 	logf("Sentinel %s starting (config %s, media %s)", version, configDir, media)
 
-	for _, d := range []string{configDir, filepath.Join(media, "recordings"), filepath.Join(media, "events"), filepath.Join(media, "activity"), filepath.Join(media, "previews")} {
+	// Recordings and timeline previews go on their own disk when one is labelled for it.
+	recDisk := newRecDisk(env("SENTINEL_REC_LABEL", "SENTINEL"), env("SENTINEL_REC_MOUNT", "/recdisk"), media)
+	if recDisk.Mount() {
+		logf("recordings disk %s mounted at %s", recDisk.Status()["device"], recDisk.Base())
+	} else {
+		logf("no recordings disk (%s): recording to %s, keeping %d GB free", recDisk.Status()["error"], media, fallbackMinFreeGB)
+	}
+	recBase := recDisk.Base()
+
+	for _, d := range []string{configDir, filepath.Join(recBase, "recordings"), filepath.Join(media, "events"), filepath.Join(media, "activity"), filepath.Join(recBase, "previews")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			logf("cannot create %s: %v", d, err)
 		}
@@ -45,18 +54,20 @@ func main() {
 
 	incidents := openIncidentLog(filepath.Join(media, "incidents.jsonl"))
 	clock := newClock()
-	store := newStore(filepath.Join(media, "recordings"), clock, incidents)
+	store := newStore(filepath.Join(recBase, "recordings"), clock, incidents)
 	store.Load()
 
 	app := &App{
 		ctx:       ctx,
 		media:     media,
+		recDisk:   recDisk,
+		recBase:   recBase,
 		settings:  settings,
 		clock:     clock,
 		store:     store,
 		events:    newEventStore(filepath.Join(media, "events")),
 		activity:  newActivityStore(filepath.Join(media, "activity")),
-		previews:  newPreviewStore(filepath.Join(media, "previews")),
+		previews:  newPreviewStore(filepath.Join(recBase, "previews")),
 		incidents: incidents,
 		detector:  newDetector(),
 		go2rtc:    newGo2RTC(filepath.Join(os.TempDir(), "go2rtc.yaml"), incidents),
@@ -75,6 +86,21 @@ func main() {
 	app.mqtt.SetPeople(app.faces.People())
 	app.faces.seedLastSeen()
 	app.Init()
+	if !recDisk.Mounted() {
+		app.incidents.Add("warn", "", "No recordings disk: recording to Home Assistant's disk, keeping %d GB free", fallbackMinFreeGB)
+		notifyHA("", "Sentinel: recordings disk not found", "Sentinel is recording to Home Assistant's own disk (oldest footage removed to keep 60 GB free). Plug in the disk labelled SENTINEL and restart Sentinel.", "recdisk", false)
+	} else {
+		notifyHA("", "", "", "recdisk", true)
+	}
+	go recDisk.Watch(ctx.Done(), func(ok bool, msg string) {
+		if ok {
+			app.incidents.Add("info", "", "%s", msg)
+			notifyHA("", "", "", "recdisk", true)
+		} else {
+			app.incidents.Add("error", "", "%s", msg)
+			notifyHA(settings.Get().NotifyService, "Sentinel: "+msg, "The recordings disk is not responding, so cameras can't record. Check the card reader.", "recdisk", false)
+		}
+	})
 	go app.clips.Run(ctx)
 	go app.labeler.Run(ctx)
 	go app.faces.Run(ctx)

@@ -14,6 +14,8 @@ import (
 type App struct {
 	ctx       context.Context
 	media     string
+	recDisk   *RecDisk
+	recBase   string // recordings/ and previews/ (the recordings disk, or media)
 	settings  *SettingsStore
 	clock     *Clock
 	store     *Store
@@ -375,7 +377,7 @@ func (a *App) cleanup() {
 	s := a.settings.Get()
 	// Events not checked for people yet count as having one until they are.
 	people := a.events.Spans(motionPad, func(e *Event) bool { return e.Scan == "" || e.Has("person") })
-	a.store.Cleanup(pol, def, s.MinFreeGB, a.events.Spans(motionPad, nil), people)
+	a.store.Cleanup(pol, def, a.recDisk.MinFreeGB(s.MinFreeGB), a.events.Spans(motionPad, nil), people)
 	// Events are kept as long as their footage; the heatmap as long as any footage is;
 	// timeline previews only as long as the 24/7 footage (older moments are previewed from
 	// the recording itself).
@@ -447,7 +449,11 @@ func (a *App) measureSizes() {
 		sizes["recordings"] += cs.Bytes
 	}
 	for _, d := range []string{"previews", "events", "activity", "exports"} {
-		_ = filepath.WalkDir(filepath.Join(a.media, d), func(_ string, e os.DirEntry, err error) error {
+		base := a.media
+		if d == "previews" {
+			base = a.recBase
+		}
+		_ = filepath.WalkDir(filepath.Join(base, d), func(_ string, e os.DirEntry, err error) error {
 			if err == nil && !e.IsDir() {
 				if info, err := e.Info(); err == nil {
 					sizes[d] += info.Size()

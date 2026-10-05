@@ -1,5 +1,5 @@
 name: Sentinel
-version: "1.24.1"
+version: "1.25.0"
 slug: sentinel
 description: Reliable 24/7 camera recorder (NVR) with motion detection and a modern UI
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/sentinel
@@ -21,6 +21,13 @@ panel_title: Sentinel
 # only app users can log in); Docker's NAT in between would break NAT hole punching.
 # The panel port 8099 only answers Home Assistant (see panelOnly).
 host_network: true
+# Recordings go on their own disk (an ext4 partition labelled SENTINEL, e.g. a memory
+# card in a USB reader), mounted inside this container only, so Home Assistant's disk
+# never waits behind 24/7 video writes. Mounting needs these permissions.
+full_access: true
+privileged:
+  - SYS_ADMIN
+apparmor: false
 # Motion/recording sensors and snapshot cameras via the Mosquitto add-on (optional).
 services:
   - mqtt:want
@@ -31,7 +38,7 @@ map:
   # Settings (sentinel.json) live in /addon_configs/<slug>/ and are included in backups.
   - type: addon_config
     read_only: false
-  # Recordings go to /media/sentinel, which backups skip.
+  # Faces, events and (without a recordings disk) recordings: /media/sentinel, which backups skip.
   - type: media
     read_only: false
   # Only to install the dashboard card as /config/www/sentinel/sentinel-card.js.
