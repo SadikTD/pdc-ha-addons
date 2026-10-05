@@ -191,7 +191,7 @@ func (w *Workload) sample() map[string]any {
 	apps := w.apps()
 
 	// One effort score (0-100) for graphs: whichever limit is closest to being hit.
-	effort := max(cpu, cpuWait*2.5, ioWait*2.5, (100-memFree-20)*1.25, (temp-40)*2.5)
+	effort := max(cpu, cpuWait*2.5, ioWait*2.5, (100-memFree-20)*1.25, (temp-55)*4)
 	effort = math.Round(min(100, max(0, effort)))
 
 	lvl := 0
