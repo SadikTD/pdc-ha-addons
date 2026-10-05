@@ -297,7 +297,7 @@ func (h *DiskHealth) readSmart() {
 	// Life left: NVMe reports it; SATA drives differ by vendor. Average erase count
 	// against the NAND's rated cycles (attributes 167/168, Silicon Motion-based drives
 	// such as Transcend) is the most direct; otherwise common "life left" attributes.
-	life := -1.0
+	life, known := 0.0, true
 	switch {
 	case r.NVMe != nil:
 		life = 100 - r.NVMe.Used
@@ -309,8 +309,10 @@ func (h *DiskHealth) readSmart() {
 		life = float64(norm[233])
 	case norm[177] > 0:
 		life = float64(norm[177])
+	default:
+		known = false
 	}
-	if life > -1 {
+	if known {
 		sm["life"] = round1(max(0, life))
 	}
 	if raw[167] > 0 && raw[168] > 0 {
