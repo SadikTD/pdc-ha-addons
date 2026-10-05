@@ -422,6 +422,7 @@ var diskSensors = []diskSensor{
 	{key: "ha_write", name: "SSD write speed", unit: "MB/s", class: "data_rate", icon: "mdi:upload"},
 	{key: "ha_read", name: "SSD read speed", unit: "MB/s", class: "data_rate", icon: "mdi:download"},
 	{key: "ha_latency", name: "SSD write latency", unit: "ms", class: "duration", icon: "mdi:timer-outline"},
+	{key: "ha_latency_peak", name: "SSD worst write", unit: "ms", class: "duration", icon: "mdi:timer-alert-outline"},
 	{key: "ha_stalls_1h", name: "SSD stalls (1 h)", unit: "s", class: "duration", icon: "mdi:alert-octagon-outline"},
 	{key: "ha_size_gb", name: "SSD size", unit: "GB", class: "data_size", icon: "mdi:harddisk"},
 	{key: "ssd_temp", name: "SSD temperature", unit: "°C", class: "temperature", icon: "mdi:thermometer"},

@@ -19,6 +19,8 @@ import (
 // of the Pi each app (Home Assistant, Sentinel, the other add-ons) is using. App shares
 // come from the Supervisor's container stats (needs hassio_role: manager).
 type Workload struct {
+	disks *DiskHealth // per-disk delays: the card stalling must not read as "Pi overloaded"
+
 	mu    sync.Mutex
 	state map[string]any
 
@@ -38,8 +40,8 @@ type appUse struct {
 	MemM float64 `json:"mem"` // MB
 }
 
-func newWorkload() *Workload {
-	return &Workload{lastApps: map[string]appSample{}, names: map[string]string{}}
+func newWorkload(disks *DiskHealth) *Workload {
+	return &Workload{disks: disks, lastApps: map[string]appSample{}, names: map[string]string{}}
 }
 
 func (w *Workload) State() map[string]any {
@@ -184,23 +186,29 @@ func (w *Workload) sample() map[string]any {
 	}
 	w.lastCPU = c
 	cpuWait, _ := pressure60("cpu")
-	ioWait, ioStall := pressure60("io")
+	ioWait, _ := pressure60("io")
+	// The system-wide "waiting on disk" figure also counts Sentinel waiting on the
+	// recordings card, which slows nothing else. Judge the disk by Home Assistant's own:
+	// its worst write delay in the last minute.
+	num := func(st map[string]any, k string) float64 { v, _ := st[k].(float64); return v }
+	dh := w.disks.State()
+	haPeak, cardPeak := num(dh, "ha_latency_peak"), num(dh, "rec_latency_peak")
 	memFree := memAvailablePct()
 	temp := cpuTemp()
 	l1, l5 := loadAvg()
 	apps := w.apps()
 
 	// One effort score (0-100) for graphs: whichever limit is closest to being hit.
-	effort := max(cpu, cpuWait*2.5, ioWait*2.5, (100-memFree-20)*1.25, (temp-55)*4)
+	effort := max(cpu, cpuWait*2.5, haPeak/5, (100-memFree-20)*1.25, (temp-55)*4)
 	effort = math.Round(min(100, max(0, effort)))
 
 	lvl := 0
 	switch {
-	case cpuWait >= 40 || ioStall >= 30 || memFree < 5 || temp >= 80:
+	case cpuWait >= 40 || haPeak >= 1000 || memFree < 5 || temp >= 80:
 		lvl = 4
-	case cpuWait >= 20 || cpu >= 85 || ioWait >= 15 || memFree < 12 || temp >= 75:
+	case cpuWait >= 20 || cpu >= 85 || haPeak >= 300 || memFree < 12 || temp >= 75:
 		lvl = 3
-	case cpu >= 55 || cpuWait >= 8 || ioWait >= 5 || temp >= 68:
+	case cpu >= 55 || cpuWait >= 8 || haPeak >= 100 || temp >= 68:
 		lvl = 2
 	case cpu >= 15:
 		lvl = 1
@@ -211,8 +219,8 @@ func (w *Workload) sample() map[string]any {
 	if cpuWait >= 8 {
 		why = append(why, fmt.Sprintf("jobs are queuing for the processor %.0f%% of the time", cpuWait))
 	}
-	if ioWait >= 5 {
-		why = append(why, fmt.Sprintf("waiting on the disk %.0f%% of the time", ioWait))
+	if haPeak >= 100 {
+		why = append(why, fmt.Sprintf("Home Assistant's disk is slow (writes up to %.1f s)", haPeak/1000))
 	}
 	if memFree < 12 {
 		why = append(why, fmt.Sprintf("only %.0f%% memory left", memFree))
@@ -241,13 +249,17 @@ func (w *Workload) sample() map[string]any {
 		summary = fmt.Sprintf("Using %.0f%% of its power. %s", cpu, headroom(cpu))
 	}
 
+	if cardPeak >= 500 {
+		summary += " The recordings card is catching up (writes up to " + fmt.Sprintf("%.1f", cardPeak/1000) + " s) — that only delays saving video, not Home Assistant."
+	}
+
 	appsOut := apps
 	if len(appsOut) > 8 {
 		appsOut = appsOut[:8]
 	}
 	return map[string]any{
 		"level": lvl, "verdict": workLevels[lvl], "summary": summary, "effort": effort,
-		"cpu": round1(cpu), "cpu_wait": round1(cpuWait), "io_wait": round1(ioWait), "mem_free": round1(memFree),
+		"cpu": round1(cpu), "cpu_wait": round1(cpuWait), "io_wait": round1(ioWait), "ha_peak": round1(haPeak), "card_peak": round1(cardPeak), "mem_free": round1(memFree),
 		"temp": round1(temp), "load1": l1, "load5": l5, "cores": runtime.NumCPU(), "top": top, "apps": appsOut,
 	}
 }

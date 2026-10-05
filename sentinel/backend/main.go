@@ -103,7 +103,7 @@ func main() {
 	})
 	app.disks = newDiskHealth(recDisk)
 	go app.disks.Run(ctx, app.mqtt.SystemHealth)
-	app.workload = newWorkload()
+	app.workload = newWorkload(app.disks)
 	go app.workload.Run(ctx, app.mqtt.Workload)
 	go app.clips.Run(ctx)
 	go app.labeler.Run(ctx)
