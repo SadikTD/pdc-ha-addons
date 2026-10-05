@@ -1,5 +1,5 @@
 name: Sentinel
-version: "1.25.0"
+version: "1.26.0"
 slug: sentinel
 description: Reliable 24/7 camera recorder (NVR) with motion detection and a modern UI
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/sentinel
@@ -23,10 +23,12 @@ panel_title: Sentinel
 host_network: true
 # Recordings go on their own disk (an ext4 partition labelled SENTINEL, e.g. a memory
 # card in a USB reader), mounted inside this container only, so Home Assistant's disk
-# never waits behind 24/7 video writes. Mounting needs these permissions.
+# never waits behind 24/7 video writes. Mounting needs these permissions; SYS_RAWIO
+# lets it read the SSD's SMART health for the System dashboard.
 full_access: true
 privileged:
   - SYS_ADMIN
+  - SYS_RAWIO
 apparmor: false
 # Motion/recording sensors and snapshot cameras via the Mosquitto add-on (optional).
 services:

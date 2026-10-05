@@ -299,6 +299,26 @@ func (m *MQTT) announce() {
 	hub := map[string]any{"identifiers": []string{"sentinel_nvr"}, "name": "Sentinel NVR", "manufacturer": "Sentinel", "model": "Sentinel NVR"}
 	pub("sensor", "storage_free", map[string]any{"name": "Storage free", "state_topic": "sentinel/storage/free_gb", "unit_of_measurement": "GB", "device_class": "data_size", "icon": "mdi:harddisk", "device": hub})
 	pub("sensor", "storage_used", map[string]any{"name": "Recordings size", "state_topic": "sentinel/storage/used_gb", "unit_of_measurement": "GB", "device_class": "data_size", "icon": "mdi:filmstrip-box-multiple", "device": hub})
+	// Disks and load (diskhealth.go), for the System dashboard.
+	disks := map[string]any{"identifiers": []string{"sentinel_disks"}, "name": "Pi Storage", "manufacturer": "Sentinel", "model": "Disk health", "via_device": "sentinel_nvr"}
+	for _, d := range diskSensors {
+		cfg := map[string]any{"name": d.name, "state_topic": "sentinel/system/state", "value_template": "{{ value_json." + d.key + " | default(none) }}",
+			"icon": d.icon, "device": disks}
+		if d.unit != "" {
+			cfg["unit_of_measurement"] = d.unit
+			cfg["state_class"] = "measurement"
+		}
+		if d.class != "" {
+			cfg["device_class"] = d.class
+		}
+		comp := "sensor"
+		if d.binary {
+			comp = "binary_sensor"
+			cfg["value_template"] = "{{ 'ON' if value_json." + d.key + " " + d.on + " else 'OFF' }}"
+			delete(cfg, "state_class")
+		}
+		pub(comp, "sys_"+d.key, cfg)
+	}
 	pub("binary_sensor", "clock_problem", map[string]any{"name": "Clock problem", "state_topic": "sentinel/clock/problem", "device_class": "problem", "device": hub})
 	detecting := false
 	for _, c := range cams {
@@ -379,6 +399,46 @@ func (m *MQTT) Storage(freeGB, usedGB float64) {
 	m.publish("sentinel/storage/free_gb", true, fmt.Sprintf("%.1f", freeGB))
 	m.publish("sentinel/storage/used_gb", true, fmt.Sprintf("%.1f", usedGB))
 }
+func (m *MQTT) SystemHealth(st map[string]any) {
+	b, _ := json.Marshal(st)
+	m.publish("sentinel/system/state", true, b)
+}
+
+type diskSensor struct {
+	key, name, unit, class, icon string
+	binary                       bool
+	on                           string // binary: condition on the value
+}
+
+var diskSensors = []diskSensor{
+	{key: "io_wait", name: "Disk waiting", unit: "%", icon: "mdi:timer-sand"},
+	{key: "io_stall", name: "Disk stalled", unit: "%", icon: "mdi:timer-alert-outline"},
+	{key: "cpu_wait", name: "CPU waiting", unit: "%", icon: "mdi:cpu-64-bit"},
+	{key: "ha_busy", name: "SSD busy", unit: "%", icon: "mdi:harddisk"},
+	{key: "ha_write", name: "SSD write speed", unit: "MB/s", class: "data_rate", icon: "mdi:upload"},
+	{key: "ha_read", name: "SSD read speed", unit: "MB/s", class: "data_rate", icon: "mdi:download"},
+	{key: "ha_latency", name: "SSD write latency", unit: "ms", class: "duration", icon: "mdi:timer-outline"},
+	{key: "ha_stalls_1h", name: "SSD stalls (1 h)", unit: "s", class: "duration", icon: "mdi:alert-octagon-outline"},
+	{key: "ha_size_gb", name: "SSD size", unit: "GB", class: "data_size", icon: "mdi:harddisk"},
+	{key: "ssd_temp", name: "SSD temperature", unit: "°C", class: "temperature", icon: "mdi:thermometer"},
+	{key: "ssd_life", name: "SSD life left", unit: "%", icon: "mdi:heart-pulse"},
+	{key: "ssd_wear_pct", name: "SSD wear", unit: "%", icon: "mdi:progress-wrench"},
+	{key: "ssd_hours", name: "SSD power-on hours", unit: "h", class: "duration", icon: "mdi:clock-outline"},
+	{key: "ssd_crc_errors", name: "SSD cable errors", icon: "mdi:cable-data"},
+	{key: "ssd_bad_blocks", name: "SSD bad blocks", icon: "mdi:grid-off"},
+	{key: "ssd_model", name: "SSD model", icon: "mdi:information-outline"},
+	{key: "ssd_healthy", name: "SSD health problem", binary: true, on: "== false", class: "problem", icon: "mdi:harddisk-remove"},
+	{key: "rec_busy", name: "Card busy", unit: "%", icon: "mdi:sd"},
+	{key: "rec_write", name: "Card write speed", unit: "MB/s", class: "data_rate", icon: "mdi:upload"},
+	{key: "rec_latency", name: "Card write latency", unit: "ms", class: "duration", icon: "mdi:timer-outline"},
+	{key: "rec_latency_peak", name: "Card worst write", unit: "ms", class: "duration", icon: "mdi:timer-alert-outline"},
+	{key: "rec_stalls_1h", name: "Card stalls (1 h)", unit: "s", class: "duration", icon: "mdi:alert-octagon-outline"},
+	{key: "rec_size_gb", name: "Card size", unit: "GB", class: "data_size", icon: "mdi:sd"},
+	{key: "rec_free_gb", name: "Card free", unit: "GB", class: "data_size", icon: "mdi:sd"},
+	{key: "rec_used_pct", name: "Card used", unit: "%", icon: "mdi:chart-donut"},
+	{key: "rec_mounted", name: "Recordings card", binary: true, on: "== true", class: "connectivity", icon: "mdi:sd"},
+}
+
 func (m *MQTT) ClockProblem(p bool) { m.publish("sentinel/clock/problem", true, onOff(p)) }
 
 var (

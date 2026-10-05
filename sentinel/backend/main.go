@@ -101,6 +101,8 @@ func main() {
 			notifyHA(settings.Get().NotifyService, "Sentinel: "+msg, "The recordings disk is not responding, so cameras can't record. Check the card reader.", "recdisk", false)
 		}
 	})
+	app.disks = newDiskHealth(recDisk)
+	go app.disks.Run(ctx, app.mqtt.SystemHealth)
 	go app.clips.Run(ctx)
 	go app.labeler.Run(ctx)
 	go app.faces.Run(ctx)

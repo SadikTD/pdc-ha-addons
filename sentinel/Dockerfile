@@ -15,6 +15,8 @@ ARG BUILD_ARCH=aarch64
 
 # python3 + onnxruntime: the object detector (a separate, low-priority worker process).
 RUN apk add --no-cache ffmpeg tzdata ca-certificates python3 py3-numpy py3-onnxruntime
+# SMART health of Home Assistant's disk (System dashboard).
+RUN apk add --no-cache smartmontools
 
 # go2rtc (live view only; recording never depends on it), pinned by checksum.
 RUN set -eux; \
