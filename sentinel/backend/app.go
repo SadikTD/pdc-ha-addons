@@ -17,6 +17,7 @@ type App struct {
 	recDisk   *RecDisk
 	recBase   string // recordings/ and previews/ (the recordings disk, or media)
 	disks     *DiskHealth
+	workload  *Workload
 	settings  *SettingsStore
 	clock     *Clock
 	store     *Store

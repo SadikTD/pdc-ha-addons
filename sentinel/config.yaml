@@ -1,5 +1,5 @@
 name: Sentinel
-version: "1.26.1"
+version: "1.27.0"
 slug: sentinel
 description: Reliable 24/7 camera recorder (NVR) with motion detection and a modern UI
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/sentinel
@@ -36,6 +36,8 @@ services:
 # Outage alerts through notify.* and persistent notifications.
 homeassistant_api: true
 hassio_api: true
+# Manager: read every app's CPU/memory use for the System dashboard's workload section.
+hassio_role: manager
 map:
   # Settings (sentinel.json) live in /addon_configs/<slug>/ and are included in backups.
   - type: addon_config

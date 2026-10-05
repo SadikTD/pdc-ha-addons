@@ -319,6 +319,10 @@ func (m *MQTT) announce() {
 		}
 		pub(comp, "sys_"+d.key, cfg)
 	}
+	pub("sensor", "workload", map[string]any{"name": "Pi workload", "state_topic": "sentinel/system/workload", "value_template": "{{ value_json.verdict }}",
+		"json_attributes_topic": "sentinel/system/workload", "icon": "mdi:speedometer", "device": disks})
+	pub("sensor", "effort", map[string]any{"name": "Pi effort", "state_topic": "sentinel/system/workload", "value_template": "{{ value_json.effort }}",
+		"unit_of_measurement": "%", "state_class": "measurement", "icon": "mdi:gauge", "device": disks})
 	pub("binary_sensor", "clock_problem", map[string]any{"name": "Clock problem", "state_topic": "sentinel/clock/problem", "device_class": "problem", "device": hub})
 	detecting := false
 	for _, c := range cams {
@@ -437,6 +441,11 @@ var diskSensors = []diskSensor{
 	{key: "rec_free_gb", name: "Card free", unit: "GB", class: "data_size", icon: "mdi:sd"},
 	{key: "rec_used_pct", name: "Card used", unit: "%", icon: "mdi:chart-donut"},
 	{key: "rec_mounted", name: "Recordings card", binary: true, on: "== true", class: "connectivity", icon: "mdi:sd"},
+}
+
+func (m *MQTT) Workload(st map[string]any) {
+	b, _ := json.Marshal(st)
+	m.publish("sentinel/system/workload", true, b)
 }
 
 func (m *MQTT) ClockProblem(p bool) { m.publish("sentinel/clock/problem", true, onOff(p)) }
