@@ -350,6 +350,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		prev = t
 		tick := time.Now()
 		look, weak, err := cw.app.catLook(ctx, cameraConfig(s, cam), t, hint)
+		trained := cw.app.catModel(cam) != modelVerify
 		if look.person {
 			personAt = time.Now()
 		}
@@ -423,7 +424,10 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			if !look.found && time.Since(detected) < catLostAfter && g != nil && catStill(g, bgGray, hint, tpl) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
-			if !look.found && time.Since(detected) < catBlobTrust && g != nil {
+			// Not with a model trained on this camera: it sees the cat on almost every
+			// look, so a blob only ever kept cats that had left (20:48 on 2026-10-07: the
+			// cat walked out past the door at :52, its "blob" was kept until 20:55).
+			if !look.found && !trained && time.Since(detected) < catBlobTrust && g != nil {
 				// It may have walked to another blob only since the look before; once lost,
 				// only its own spot counts (a lost cat's reach grew to the whole picture and
 				// any new patch of light or moved shoe became the cat).
