@@ -942,11 +942,12 @@ func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, s
 		}
 	}
 	mask := maskGrid(cam, shotW, shotH)
+	model := a.catModel(cam.ID)
 	var out []Detection
 	var lastErr error
 	looked := 0
 	for _, r := range regions {
-		dets, err := a.detectAt(ctx, cam.ID, t, r, modelVerify)
+		dets, err := a.detectAt(ctx, cam.ID, t, r, model)
 		if err != nil {
 			lastErr = err
 			continue
@@ -991,6 +992,17 @@ func (a *App) catDets(ctx context.Context, cam Camera, t time.Time, hint Rect, s
 		return nil, nil, false, lastErr
 	}
 	return out, weak, person, nil
+}
+
+// catModel is the model cat watch looks with on cam: one trained on that camera's own
+// footage if there is one (/config/models/cat_<camera>.onnx), else the big general one.
+// On the 3rd floor the general one found 20% of the cat pictures of an evening (2 of 33
+// in night mode, none of a white cat waiting at the stairs); the trained one 92% (32/33).
+func (a *App) catModel(cam string) string {
+	if m := "cat_" + cam; a.detector.HasModel(m) {
+		return m
+	}
+	return modelVerify
 }
 
 // catLook: is there a cat in the frame at t (for cat watch)? weak is everything

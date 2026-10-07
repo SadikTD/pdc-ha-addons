@@ -190,6 +190,13 @@ def main():
         models["verify"] = Model(VERIFY_MODEL)
     if os.path.exists(FACE_MODEL) and os.path.exists(EMBED_MODEL):
         models["faces"] = Faces(FACE_MODEL, EMBED_MODEL)
+    # Models trained on one camera's own footage (cat watch): /config/models/<name>.onnx,
+    # same YOLOX layout as the others. Kept with the settings, not in the image.
+    custom = os.environ.get("SENTINEL_CUSTOM_MODELS", "/config/models")
+    if os.path.isdir(custom):
+        for f in sorted(os.listdir(custom)):
+            if f.endswith(".onnx"):
+                models[f[:-5]] = Model(os.path.join(custom, f))
     out = sys.stdout
     out.write(json.dumps({"ready": True, "size": models["scan"].size,
                           "models": {k: m.size for k, m in models.items()}}) + "\n")
