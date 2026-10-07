@@ -104,9 +104,11 @@ func newStore(root string, clock *Clock, inc *IncidentLog) *Store {
 
 func (st *Store) camDir(cam string) string { return filepath.Join(st.root, cam) }
 
-// Load indexes everything on disk. Called once at startup, before any recorder runs,
-// so any unfinalized file is left over from a crash or power cut and is finalized now.
-func (st *Store) Load() {
+// Load indexes everything on disk. At startup (before any recorder runs) any
+// unfinalized file is left over from a crash or power cut and is finalized now. With
+// reload (the recordings disk came back while running), files still being written by
+// a recorder (changed in the last 30 s) are left to it.
+func (st *Store) Load(reload bool) {
 	_ = os.MkdirAll(st.root, 0o755)
 	cams, _ := os.ReadDir(st.root)
 	total := 0
@@ -127,6 +129,9 @@ func (st *Store) Load() {
 			}
 			if info, err := e.Info(); err == nil {
 				s.Size, s.mtime = info.Size(), info.ModTime()
+			}
+			if s.Active && reload && time.Since(s.mtime) < 30*time.Second {
+				continue
 			}
 			if s.Active {
 				st.finalize(s, -1)

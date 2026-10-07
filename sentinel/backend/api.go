@@ -625,7 +625,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// How many days of footage the disk could hold at the current rate.
 	capacityDays := 0.0
 	if rate > 0 {
-		usable := float64(du.Free) + float64(used) - a.recDisk.MinFreeGB(s.MinFreeGB)*1e9
+		usable := float64(du.Free) + float64(used) - s.MinFreeGB*1e9
 		capacityDays = math.Max(0, usable/float64(rate)/24)
 	}
 	writeJSON(w, 200, map[string]any{
@@ -635,7 +635,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"cameras":   cams,
 		"storage": map[string]any{
 			"disk": du, "used": used, "rate_bph": rate, "capacity_days": capacityDays,
-			"min_free_gb": a.recDisk.MinFreeGB(s.MinFreeGB), "rec_disk": a.recDisk.Status(), "health": a.disks.State(), "workload": a.workload.State(), "orphans": orphans, "breakdown": a.breakdown.Load(), "clips": a.clips.Bytes(),
+			"min_free_gb": s.MinFreeGB, "rec_disk": a.recDisk.Status(), "health": a.disks.State(), "workload": a.workload.State(), "orphans": orphans, "breakdown": a.breakdown.Load(), "clips": a.clips.Bytes(),
 		},
 		"alerts":    map[string]any{"enabled": s.NightAlerts.Enabled && s.WhatsApp.To != "", "active": a.alerts.Active() && s.WhatsApp.To != ""},
 		"drive":     map[string]any{"connected": a.drive.Connected(), "mode": s.Drive.Mode},

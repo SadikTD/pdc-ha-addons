@@ -116,6 +116,7 @@ type Faces struct {
 	dirty  map[string]bool    // days to save
 	whoQ   map[EventKey][]Who // who was in events, to store on them
 	flushC chan struct{}
+	laterC chan struct{}
 	status FaceStatus
 	// version counts changes; the faces to name are grouped again only after one
 	// (grouping every face is heavy, and the page asks every 30 s and after each action).
@@ -135,7 +136,7 @@ type FaceStatus struct {
 }
 
 func newFaces(app *App) *Faces {
-	f := &Faces{app: app, root: filepath.Join(app.media, "faces"), wake: make(chan struct{}, 1), seen: map[string]*Seen{}, dirty: map[string]bool{}, whoQ: map[EventKey][]Who{}, flushC: make(chan struct{}, 1)}
+	f := &Faces{app: app, root: filepath.Join(app.media, "faces"), wake: make(chan struct{}, 1), seen: map[string]*Seen{}, dirty: map[string]bool{}, whoQ: map[EventKey][]Who{}, flushC: make(chan struct{}, 1), laterC: make(chan struct{}, 1)}
 	_ = os.MkdirAll(filepath.Join(f.root, "img"), 0o755)
 	_ = os.MkdirAll(filepath.Join(f.root, "seen"), 0o755)
 	if b, err := os.ReadFile(filepath.Join(f.root, "people.json")); err == nil {
@@ -184,20 +185,51 @@ func (f *Faces) saveLocked() {
 	}
 }
 
-// writer writes changes shortly after they happen; a burst of them (naming several
-// people in a row) is written once.
-func (f *Faces) writer() {
-	for range f.flushC {
-		time.Sleep(400 * time.Millisecond)
-		f.flush()
+// saveLaterLocked: background work (looking at events, clean-up) is written at most
+// once a minute. A day's file is rewritten whole (over a megabyte), and rewriting it
+// after every person seen was most of what faces wrote to Home Assistant's SSD.
+func (f *Faces) saveLaterLocked() {
+	select {
+	case f.laterC <- struct{}{}:
+	default:
 	}
+}
+
+// writer writes what the user changed shortly after (a burst of them, naming several
+// people in a row, is written once), and background changes within a minute.
+func (f *Faces) writer() {
+	var later <-chan time.Time
+	for {
+		select {
+		case <-f.flushC:
+			time.Sleep(400 * time.Millisecond)
+			f.flush()
+			later = nil // written with it
+		case <-f.laterC:
+			if later == nil {
+				later = time.After(time.Minute)
+			}
+		case <-later:
+			later = nil
+			f.flush()
+		}
+	}
+}
+
+// applyWho stores who was in the events that changed (in memory at once: Home
+// Assistant and the pages see it immediately; the events' files are written by them).
+func (f *Faces) applyWho() {
+	f.mu.Lock()
+	who := f.whoQ
+	f.whoQ = map[EventKey][]Who{}
+	f.mu.Unlock()
+	f.app.events.SetWhoMany(who)
 }
 
 // flush writes the changed days' sightings and stores who was in the events that changed.
 func (f *Faces) flush() {
+	f.applyWho()
 	f.mu.Lock()
-	who := f.whoQ
-	f.whoQ = map[EventKey][]Who{}
 	files := map[string][]byte{} // path -> contents (nil: remove)
 	if len(f.dirty) > 0 {
 		byDay := map[string][]*Seen{}
@@ -219,7 +251,6 @@ func (f *Faces) flush() {
 		f.dirty = map[string]bool{}
 	}
 	f.mu.Unlock()
-	f.app.events.SetWhoMany(who)
 	for p, b := range files {
 		if b == nil {
 			_ = os.Remove(p)
@@ -305,7 +336,7 @@ func (f *Faces) Cleanup() {
 			f.touchLocked(s)
 		}
 	}
-	f.saveLocked()
+	f.saveLaterLocked()
 }
 
 // ---- recognition ----
@@ -685,8 +716,9 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 	}
 	f.matchLocked(found)
 	f.whoLocked(map[string]bool{dayOf(e.Start): true})
+	f.saveLaterLocked()
 	f.mu.Unlock()
-	f.flush()
+	f.applyWho()
 	a.events.SetFacesDone(e.Cam, e.ID)
 	if cur, ok := a.events.Get(e.Cam, e.ID); ok {
 		for _, w := range cur.Who {

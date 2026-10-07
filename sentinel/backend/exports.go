@@ -230,6 +230,7 @@ func (cs *ClipStore) render(ctx context.Context, id string) {
 		return
 	}
 	cs.update(id, func(c *Clip) { c.Status = "saving" })
+	_ = os.MkdirAll(cs.dirOf(&job), 0o755) // the recordings disk may have been missing at start
 
 	// Concatenate the 1-minute files without re-encoding, trimmed to the range.
 	var list strings.Builder

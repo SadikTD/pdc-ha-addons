@@ -17,46 +17,37 @@ import (
 // only. Home Assistant's own disk then never waits behind 24/7 video writes.
 //
 // Sentinel never formats anything: a partition is used only if it already carries the
-// label. Without one, recordings fall back to /media/sentinel with a much higher
-// free-space floor, so they can't crowd Home Assistant off its disk.
+// label. Without one (missing at start, or dropped out), nothing is recorded: the mount
+// point is blocked so video never lands on Home Assistant's SSD, and the user is alerted
+// until the disk is back, which is picked up by itself.
 type RecDisk struct {
-	label    string
-	mnt      string
-	fallback string
+	label string
+	mnt   string
 
 	mu      sync.Mutex
 	dev     string // e.g. sdb1, "" when not mounted
 	mounted bool
-	// The disk dropped out while recording to it and couldn't be mounted again. A
+	// The disk is missing (at start, or dropped out and couldn't be mounted again). A
 	// read-only placeholder then covers the mount point, so nothing is written onto Home
 	// Assistant's own disk in its place: recording stops (and says so) until it's back.
 	lost    bool
 	lastErr string
 }
 
-// Lost: the recordings disk dropped out and recording is stopped until it's back.
+// Lost: the recordings disk is missing and recording is stopped until it's back.
 func (d *RecDisk) Lost() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.lost
 }
 
-// fallbackMinFreeGB is the free space kept on Home Assistant's disk while recording there.
-const fallbackMinFreeGB = 60
-
-func newRecDisk(label, mnt, fallback string) *RecDisk {
-	return &RecDisk{label: label, mnt: mnt, fallback: fallback}
+func newRecDisk(label, mnt string) *RecDisk {
+	return &RecDisk{label: label, mnt: mnt}
 }
 
-// Base is where recordings/ and previews/ live: the mounted disk, or the fallback.
-func (d *RecDisk) Base() string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.mounted {
-		return d.mnt
-	}
-	return d.fallback
-}
+// Base is where recordings/ and previews/ live: the recordings disk's mount point
+// (blocked while the disk is missing, see block).
+func (d *RecDisk) Base() string { return d.mnt }
 
 func (d *RecDisk) Mounted() bool {
 	d.mu.Lock()
@@ -68,14 +59,6 @@ func (d *RecDisk) Status() map[string]any {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return map[string]any{"label": d.label, "mounted": d.mounted, "lost": d.lost, "device": d.dev, "error": d.lastErr}
-}
-
-// MinFreeGB is the free-space floor for the recordings disk.
-func (d *RecDisk) MinFreeGB(configured float64) float64 {
-	if d.Mounted() {
-		return configured
-	}
-	return max(configured, fallbackMinFreeGB)
 }
 
 // Mount finds the labelled partition and mounts it. Safe to call again.
@@ -120,6 +103,9 @@ func (d *RecDisk) Watch(stop <-chan struct{}, onChange func(mounted bool, msg st
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	var reminded time.Time
+	if d.Lost() {
+		reminded = time.Now() // missing at start: that alert was just sent
+	}
 	for {
 		select {
 		case <-stop:
@@ -153,8 +139,6 @@ func (d *RecDisk) Watch(stop <-chan struct{}, onChange func(mounted bool, msg st
 				onChange(false, "Recordings disk is still missing")
 			}
 		}
-		// Plugged in after start without one: recordings switch over on the next restart
-		// only, so files don't end up split across two places mid-run.
 	}
 }
 

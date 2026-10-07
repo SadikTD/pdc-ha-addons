@@ -32,11 +32,13 @@ func main() {
 	logf("Sentinel %s starting (config %s, media %s)", version, configDir, media)
 
 	// Recordings and timeline previews go on their own disk when one is labelled for it.
-	recDisk := newRecDisk(env("SENTINEL_REC_LABEL", "SENTINEL"), env("SENTINEL_REC_MOUNT", "/recdisk"), media)
+	recDisk := newRecDisk(env("SENTINEL_REC_LABEL", "SENTINEL"), env("SENTINEL_REC_MOUNT", "/recdisk"))
 	if recDisk.Mount() {
 		logf("recordings disk %s mounted at %s", recDisk.Status()["device"], recDisk.Base())
 	} else {
-		logf("no recordings disk (%s): recording to %s, keeping %d GB free", recDisk.Status()["error"], media, fallbackMinFreeGB)
+		// Never onto Home Assistant's SSD: nothing is recorded until the disk is back.
+		recDisk.block()
+		logf("no recordings disk (%s): NOT recording until it's plugged in", recDisk.Status()["error"])
 	}
 	recBase := recDisk.Base()
 
@@ -56,7 +58,7 @@ func main() {
 	incidents := openIncidentLog(filepath.Join(media, "incidents.jsonl"))
 	clock := newClock()
 	store := newStore(filepath.Join(recBase, "recordings"), clock, incidents)
-	store.Load()
+	store.Load(false)
 
 	app := &App{
 		ctx:       ctx,
@@ -87,20 +89,25 @@ func main() {
 	app.mqtt.SetPeople(app.faces.People())
 	app.faces.seedLastSeen()
 	app.Init()
-	if !recDisk.Mounted() {
-		app.incidents.Add("warn", "", "No recordings disk: recording to Home Assistant's disk, keeping %d GB free", fallbackMinFreeGB)
-		notifyHA("", "Sentinel: recordings disk not found", "Sentinel is recording to Home Assistant's own disk (oldest footage removed to keep 60 GB free). Plug in the disk labelled SENTINEL and restart Sentinel.", "recdisk", false)
+	diskAlert := func(msg string) {
+		app.incidents.Add("error", "", "%s: recording is stopped until it's back", msg)
+		notifyHA(settings.Get().NotifyService, "Sentinel: "+msg, "Cameras are NOT recording: the recordings card can't be found. Check the card and its reader (unplug and plug it back in). Recording starts again by itself when the card is back. This reminder repeats twice a day.", "recdisk", false)
+	}
+	if recDisk.Lost() {
+		diskAlert("Recordings disk not found")
 	} else {
 		notifyHA("", "", "", "recdisk", true)
 	}
 	go recDisk.Watch(ctx.Done(), func(ok bool, msg string) {
-		if ok {
-			app.incidents.Add("info", "", "%s", msg)
-			notifyHA("", "", "", "recdisk", true)
-		} else {
-			app.incidents.Add("error", "", "%s: recording is stopped until it's back", msg)
-			notifyHA(settings.Get().NotifyService, "Sentinel: "+msg, "Cameras are NOT recording: the recordings card can't be found. Check the card and its reader (unplug and plug it back in). Recording starts again by itself when the card is back. This reminder repeats twice a day.", "recdisk", false)
+		if !ok {
+			diskAlert(msg)
+			return
 		}
+		// Index what's on it (none of it was there while it was missing, e.g. at start).
+		store.Load(true)
+		store.loadIndexFile()
+		app.incidents.Add("info", "", "%s", msg)
+		notifyHA("", "", "", "recdisk", true)
 	})
 	app.disks = newDiskHealth(recDisk)
 	go app.disks.Run(ctx, app.mqtt.SystemHealth)

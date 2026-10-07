@@ -381,7 +381,7 @@ func (a *App) cleanup() {
 	people := a.events.Spans(motionPad, func(e *Event) bool { return e.Scan == "" || e.Has("person") })
 	// Without the recordings disk its files only look missing: leave the index alone.
 	if !a.recDisk.Lost() {
-		a.store.Cleanup(pol, def, a.recDisk.MinFreeGB(s.MinFreeGB), a.events.Spans(motionPad, nil), people)
+		a.store.Cleanup(pol, def, s.MinFreeGB, a.events.Spans(motionPad, nil), people)
 	}
 	// Events are kept as long as their footage; the heatmap as long as any footage is;
 	// timeline previews only as long as the 24/7 footage (older moments are previewed from
