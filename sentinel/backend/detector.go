@@ -196,7 +196,9 @@ func (d *Detector) ask(ctx context.Context, model string, rgb []byte, w, h int) 
 	if _, err := fmt.Fprintf(d.in, "%d %d %s\n", w, h, model); err == nil {
 		_, err = d.in.Write(rgb)
 	}
-	line, err := d.readLocked(ctx, 20*time.Second)
+	// The answer is waited for even if the asker gave up (a page closed): stopping now
+	// would mean restarting the worker and loading every model again.
+	line, err := d.readLocked(context.Background(), 20*time.Second)
 	if err != nil {
 		d.stopLocked() // don't leave a half-read answer behind
 		return "", err
@@ -239,7 +241,9 @@ func (d *Detector) Detect(ctx context.Context, model string, rgb []byte, w, h in
 	if _, err := fmt.Fprintf(d.in, "%d %d %s\n", w, h, model); err == nil {
 		_, err = d.in.Write(rgb)
 	}
-	line, err := d.readLocked(ctx, 20*time.Second)
+	// The answer is waited for even if the asker gave up (a page closed): stopping now
+	// would mean restarting the worker and loading every model again.
+	line, err := d.readLocked(context.Background(), 20*time.Second)
 	if err != nil {
 		d.stopLocked() // don't leave a half-read answer behind
 		return nil, err

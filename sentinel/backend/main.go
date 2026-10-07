@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -97,8 +98,8 @@ func main() {
 			app.incidents.Add("info", "", "%s", msg)
 			notifyHA("", "", "", "recdisk", true)
 		} else {
-			app.incidents.Add("error", "", "%s", msg)
-			notifyHA(settings.Get().NotifyService, "Sentinel: "+msg, "The recordings disk is not responding, so cameras can't record. Check the card reader.", "recdisk", false)
+			app.incidents.Add("error", "", "%s: recording is stopped until it's back", msg)
+			notifyHA(settings.Get().NotifyService, "Sentinel: "+msg, "Cameras are NOT recording: the recordings card can't be found. Check the card and its reader (unplug and plug it back in). Recording starts again by itself when the card is back. This reminder repeats twice a day.", "recdisk", false)
 		}
 	})
 	app.disks = newDiskHealth(recDisk)
@@ -117,9 +118,7 @@ func main() {
 	go clock.Run(ctx)
 	go app.go2rtc.Run(ctx)
 	s := settings.Get()
-	if s.MQTTEnabled {
-		go app.mqtt.Run(ctx)
-	}
+	app.mqtt.SetEnabled(ctx, s.MQTTEnabled)
 	app.Apply(s)
 	incidents.Add("info", "", "Sentinel %s started with %d camera(s)", version, len(s.Cameras))
 	go app.Background()
@@ -140,14 +139,18 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	// All at once: each closes its own file, and a camera that hangs mustn't use up the
+	// Supervisor's stop timeout for the others.
+	var wg sync.WaitGroup
 	app.mu.Lock()
 	for _, r := range app.recorders {
-		r.Stop()
+		wg.Go(r.Stop)
 	}
 	for _, m := range app.motion {
-		m.Stop()
+		wg.Go(m.Stop)
 	}
 	app.mu.Unlock()
+	wg.Wait()
 	app.activity.Flush()
 	app.events.Flush()
 	store.SaveIndexFile()

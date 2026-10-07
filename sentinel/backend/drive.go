@@ -928,8 +928,9 @@ func (d *Drive) prune(need int64) error {
 	}
 	d.mu.Unlock()
 	if removed > 0 {
-		logf("drive: removed %d old backups (%.1f GB)", removed, float64(freed)/1e9)
-		d.app.incidents.Add("info", "", "Removed %d oldest backups (%.1f GB) from Google Drive to stay within limits", removed, float64(freed)/1e9)
+		// Routine once the space limit is reached (every upload): the add-on log only, or
+		// it would push real problems off the System page.
+		logf("drive: removed %d old backups (%.1f GB) to stay within limits", removed, float64(freed)/1e9)
 	}
 	if quota > 0 && need > quota {
 		return fmt.Errorf("this clip (%.1f GB) is bigger than the Drive space limit", float64(need)/1e9)

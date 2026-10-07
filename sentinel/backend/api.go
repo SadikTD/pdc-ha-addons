@@ -674,6 +674,7 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	saved := a.settings.Get()
 	a.Apply(saved)
+	a.mqtt.SetEnabled(a.ctx, saved.MQTTEnabled)
 	a.incidents.Add("info", "", "Settings saved")
 	writeJSON(w, 200, saved)
 }

@@ -27,7 +27,18 @@ type RecDisk struct {
 	mu      sync.Mutex
 	dev     string // e.g. sdb1, "" when not mounted
 	mounted bool
+	// The disk dropped out while recording to it and couldn't be mounted again. A
+	// read-only placeholder then covers the mount point, so nothing is written onto Home
+	// Assistant's own disk in its place: recording stops (and says so) until it's back.
+	lost    bool
 	lastErr string
+}
+
+// Lost: the recordings disk dropped out and recording is stopped until it's back.
+func (d *RecDisk) Lost() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lost
 }
 
 // fallbackMinFreeGB is the free space kept on Home Assistant's disk while recording there.
@@ -56,7 +67,7 @@ func (d *RecDisk) Mounted() bool {
 func (d *RecDisk) Status() map[string]any {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return map[string]any{"label": d.label, "mounted": d.mounted, "device": d.dev, "error": d.lastErr}
+	return map[string]any{"label": d.label, "mounted": d.mounted, "lost": d.lost, "device": d.dev, "error": d.lastErr}
 }
 
 // MinFreeGB is the free-space floor for the recordings disk.
@@ -92,18 +103,23 @@ func (d *RecDisk) Mount() bool {
 	_ = syscall.Unmount(d.mnt, syscall.MNT_DETACH)
 	if err := syscall.Mount(node, d.mnt, "ext4", syscall.MS_NOATIME, ""); err != nil {
 		d.lastErr = "mount " + dev + ": " + err.Error()
+		if d.lost {
+			d.blockLocked() // still gone: keep recordings off the disk underneath
+		}
 		return false
 	}
-	d.dev, d.mounted, d.lastErr = dev, true, ""
+	d.dev, d.mounted, d.lost, d.lastErr = dev, true, false, ""
 	return true
 }
 
 // Watch remounts the disk if its device disappears (a USB reader resetting comes back
 // under a new name). Recorders open a new file per segment, so they continue on the
-// new mount by themselves.
+// new mount by themselves. If it can't be mounted again, recording stops (see lost),
+// onChange(false) repeats every lostRemind, and the disk is looked for every 30 s.
 func (d *RecDisk) Watch(stop <-chan struct{}, onChange func(mounted bool, msg string)) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
+	var reminded time.Time
 	for {
 		select {
 		case <-stop:
@@ -111,9 +127,10 @@ func (d *RecDisk) Watch(stop <-chan struct{}, onChange func(mounted bool, msg st
 		case <-t.C:
 		}
 		d.mu.Lock()
-		dev, mounted := d.dev, d.mounted
+		dev, mounted, lost := d.dev, d.mounted, d.lost
 		d.mu.Unlock()
-		if mounted {
+		switch {
+		case mounted:
 			if _, err := os.Stat("/sys/class/block/" + dev); err == nil {
 				continue
 			}
@@ -123,13 +140,39 @@ func (d *RecDisk) Watch(stop <-chan struct{}, onChange func(mounted bool, msg st
 			_ = syscall.Unmount(d.mnt, syscall.MNT_DETACH)
 			if d.Mount() {
 				onChange(true, "Recordings disk reconnected")
-			} else {
-				onChange(false, "Recordings disk disappeared")
+				continue
 			}
-			continue
+			d.block()
+			reminded = time.Now()
+			onChange(false, "Recordings disk disappeared")
+		case lost:
+			if d.Mount() {
+				onChange(true, "Recordings disk is back: recording again")
+			} else if time.Since(reminded) >= lostRemind {
+				reminded = time.Now()
+				onChange(false, "Recordings disk is still missing")
+			}
 		}
-		// Plugged in after start: recordings switch over on the next restart only, so
-		// files don't end up split across two places mid-run.
+		// Plugged in after start without one: recordings switch over on the next restart
+		// only, so files don't end up split across two places mid-run.
+	}
+}
+
+// lostRemind: how often the alert repeats while the recordings disk is missing.
+const lostRemind = 12 * time.Hour
+
+// block covers the mount point with an empty read-only filesystem, so recordings can't
+// land on the disk underneath (Home Assistant's) while the recordings disk is gone.
+func (d *RecDisk) block() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.lost = true
+	d.blockLocked()
+}
+
+func (d *RecDisk) blockLocked() {
+	if err := syscall.Mount("sentinel-no-disk", d.mnt, "tmpfs", syscall.MS_RDONLY, "size=64k"); err != nil {
+		logf("recordings disk: can't block %s: %v", d.mnt, err)
 	}
 }
 

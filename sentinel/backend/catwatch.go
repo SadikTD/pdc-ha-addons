@@ -641,6 +641,8 @@ func fmtStay(d time.Duration) string {
 
 // ---- Alexa (through the Alexa Media Player integration in Home Assistant)
 
+var errEchoUnavailable = errors.New("the Echo is unavailable (switched off?)")
+
 func alexaVolume(entity string) (float64, error) {
 	data, err := supervisorRequest("GET", "/core/api/states/"+entity, nil)
 	if err != nil {
@@ -655,8 +657,8 @@ func alexaVolume(entity string) (float64, error) {
 	if err := json.Unmarshal(data, &st); err != nil {
 		return 0, err
 	}
-	if st.State == "unavailable" {
-		return 0, errors.New("the Echo is unavailable")
+	if st.State == "unavailable" || st.State == "off" {
+		return 0, errEchoUnavailable
 	}
 	if st.Attributes.Volume == nil {
 		return 0, errors.New("the Echo doesn't report its volume")
@@ -676,27 +678,34 @@ func (cw *CatWatcher) alexaSay(c CatWatch) error {
 		return errors.New("choose the Echo in Settings")
 	}
 	want := float64(c.AlexaVolume) / 100
+	// Checked every time: the Echo is sometimes switched off. Then the announcement
+	// counts as failed (WhatsApp goes on regardless).
+	v, err := alexaVolume(e)
+	if errors.Is(err, errEchoUnavailable) {
+		return err
+	}
 	cw.alexaMu.Lock()
 	_, raised := cw.alexaSaved[e]
-	cw.alexaMu.Unlock()
-	if !raised {
-		if v, err := alexaVolume(e); err == nil && v != want {
-			cw.alexaMu.Lock()
-			cw.alexaSaved[e] = v
-			cw.alexaMu.Unlock()
-			cw.save()
-		} else if err != nil {
-			logf("cat watch: can't read %s's volume (it won't be put back): %v", e, err)
-		}
-	}
-	// The volume is set once a visit: the Echo beeps at every volume change, and a
-	// volume change every round was most of what was heard when the speech was dropped.
-	cw.alexaMu.Lock()
 	up := cw.alexaUp[e]
 	cw.alexaMu.Unlock()
-	if !up {
-		if err := alexaSetVolume(e, want); err != nil {
-			return err
+	// The volume is set once a visit: the Echo beeps at every volume change, and a
+	// volume change every round was most of what was heard when the speech was dropped.
+	// It is only changed when it could be read, so it can always be put back.
+	switch {
+	case up:
+	case err != nil:
+		logf("cat watch: can't read %s's volume, leaving it as it is: %v", e, err)
+	default:
+		if v != want {
+			if !raised {
+				cw.alexaMu.Lock()
+				cw.alexaSaved[e] = v
+				cw.alexaMu.Unlock()
+				cw.save()
+			}
+			if err := alexaSetVolume(e, want); err != nil {
+				return err
+			}
 		}
 		cw.alexaMu.Lock()
 		cw.alexaUp[e] = true

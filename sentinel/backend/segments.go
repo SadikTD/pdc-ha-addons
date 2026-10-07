@@ -146,8 +146,12 @@ func (st *Store) insert(s *Segment) {
 	defer st.mu.Unlock()
 	key := s.Cam + "/" + s.ID
 	if old, ok := st.byID[key]; ok {
+		// The growing file is re-indexed every 2 s: sort only when its place can change.
+		moved := !old.Start().Equal(s.Start())
 		*old = *s
-		st.sortCam(s.Cam)
+		if moved {
+			st.sortCam(s.Cam)
+		}
 		return
 	}
 	st.byID[key] = s
@@ -605,47 +609,68 @@ func (st *Store) Cleanup(pol map[string]Retention, def Retention, minFreeGB floa
 		logf("retention: removed %d old recordings", len(expired))
 	}
 
-	// Free-space floor: drop the oldest recordings across all cameras.
+	// Free-space floor: footage nobody needs goes first, so the motion and people kept
+	// for longer survive a full disk (they are also the oldest files).
 	floor := uint64(minFreeGB * 1e9)
+	if diskUsage(st.root).Free >= floor {
+		return
+	}
 	removed := 0
-	for diskUsage(st.root).Free < floor {
-		s := st.oldest()
-		if s == nil {
+	for _, s := range st.floorOrder(motion, people) {
+		if diskUsage(st.root).Free >= floor {
 			break
 		}
 		st.delete(s)
 		removed++
-		if removed%50 == 0 && diskUsage(st.root).Free >= floor {
-			break
-		}
 	}
 	if removed > 0 {
-		st.incidents.Add("warn", "", "Disk nearly full: removed %d oldest recordings to keep %.0f GB free", removed, minFreeGB)
+		st.incidents.Add("warn", "", "Disk nearly full: removed %d recordings to keep %.0f GB free", removed, minFreeGB)
 	}
+}
+
+// floorOrder lists the finished recordings in the order the free-space floor removes
+// them: footage without motion, then motion only, then footage with people; oldest
+// first within each.
+func (st *Store) floorOrder(motion, people map[string][]Span) []*Segment {
+	type cand struct {
+		s    *Segment
+		rank int
+	}
+	var cs []cand
+	st.mu.RLock()
+	for cam, list := range st.segs {
+		for _, s := range list {
+			if s.Active {
+				continue
+			}
+			from, to := s.Start().UnixMilli(), s.End().UnixMilli()
+			rank := 0
+			if overlaps(people[cam], from, to) {
+				rank = 2
+			} else if overlaps(motion[cam], from, to) {
+				rank = 1
+			}
+			cs = append(cs, cand{s, rank})
+		}
+	}
+	st.mu.RUnlock()
+	sort.SliceStable(cs, func(i, j int) bool {
+		if cs[i].rank != cs[j].rank {
+			return cs[i].rank < cs[j].rank
+		}
+		return cs[i].s.Start().Before(cs[j].s.Start())
+	})
+	out := make([]*Segment, len(cs))
+	for i, c := range cs {
+		out[i] = c.s
+	}
+	return out
 }
 
 // overlaps reports whether [from, to] touches any of the sorted, merged spans.
 func overlaps(spans []Span, from, to int64) bool {
 	i := sort.Search(len(spans), func(i int) bool { return spans[i].End >= from })
 	return i < len(spans) && spans[i].Start <= to
-}
-
-func (st *Store) oldest() *Segment {
-	st.mu.RLock()
-	defer st.mu.RUnlock()
-	var best *Segment
-	for _, list := range st.segs {
-		for _, s := range list {
-			if s.Active {
-				continue
-			}
-			if best == nil || s.Start().Before(best.Start()) {
-				best = s
-			}
-			break
-		}
-	}
-	return best
 }
 
 func (st *Store) delete(s *Segment) {

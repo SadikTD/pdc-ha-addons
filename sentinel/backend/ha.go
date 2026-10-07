@@ -83,6 +83,7 @@ type MQTT struct {
 	published map[string]bool   // discovery ids we've announced
 	onConnect func()
 	lastErr   string
+	stop      context.CancelFunc // ends the running connection (nil: MQTT is off)
 	// Messages wait here for the sender, so a slow or stuck broker never holds up
 	// motion detection (a publish can block for up to its write timeout).
 	out chan mqttMsg
@@ -124,6 +125,23 @@ func (m *MQTT) Error() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastErr
+}
+
+// SetEnabled connects or disconnects to match the setting (no restart needed).
+func (m *MQTT) SetEnabled(parent context.Context, on bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if on == (m.stop != nil) {
+		return
+	}
+	if !on {
+		m.stop()
+		m.stop = nil
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	m.stop = cancel
+	go m.Run(ctx)
 }
 
 func (m *MQTT) Run(ctx context.Context) {
@@ -192,6 +210,12 @@ func (m *MQTT) Run(ctx context.Context) {
 			c.Publish(availTopic, 1, true, "offline").WaitTimeout(2 * time.Second)
 			c.Disconnect(500)
 		}
+		m.mu.Lock()
+		if m.client == c {
+			m.client = nil
+			m.connected.Store(false)
+		}
+		m.mu.Unlock()
 		return
 	}
 }

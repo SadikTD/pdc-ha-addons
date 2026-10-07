@@ -57,16 +57,20 @@ type ClipBackup struct {
 }
 
 type ClipStore struct {
-	mu    sync.Mutex
-	dir   string
-	clips map[string]*Clip
-	queue chan string
-	app   *App
+	mu  sync.Mutex
+	dir string
+	// Motion-backup clips (Auto) are only made to be uploaded and deleted: they go on the
+	// recordings disk, so these copies never wear Home Assistant's SSD.
+	autoDir string
+	clips   map[string]*Clip
+	queue   chan string
+	app     *App
 }
 
 func newClipStore(dir string, app *App) *ClipStore {
-	cs := &ClipStore{dir: dir, clips: map[string]*Clip{}, queue: make(chan string, 100), app: app}
+	cs := &ClipStore{dir: dir, autoDir: filepath.Join(app.recBase, "drive-upload"), clips: map[string]*Clip{}, queue: make(chan string, 100), app: app}
 	_ = os.MkdirAll(cs.metaDir(), 0o755)
+	_ = os.MkdirAll(cs.autoDir, 0o755)
 	files, _ := filepath.Glob(filepath.Join(cs.metaDir(), "*.json"))
 	for _, f := range files {
 		data, err := os.ReadFile(f)
@@ -80,7 +84,7 @@ func newClipStore(dir string, app *App) *ClipStore {
 		if c.Status != "ready" {
 			// Interrupted by a restart or power cut.
 			c.Status, c.Error, c.Progress = "failed", "interrupted by a restart — save it again", 0
-			_ = os.Remove(cs.partPath(c.ID))
+			_ = os.Remove(cs.partPath(&c))
 		}
 		if c.Backup != nil && c.Backup.State == "uploading" {
 			c.Backup.State = "pending" // start the upload over
@@ -93,10 +97,12 @@ func newClipStore(dir string, app *App) *ClipStore {
 	for _, c := range cs.clips {
 		known[filepath.Base(cs.videoPath(c))] = true
 	}
-	top, _ := os.ReadDir(dir)
-	for _, e := range top {
-		if !e.IsDir() && !known[e.Name()] {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
+	for _, d := range []string{dir, cs.autoDir} {
+		top, _ := os.ReadDir(d)
+		for _, e := range top {
+			if !e.IsDir() && !known[e.Name()] {
+				_ = os.Remove(filepath.Join(d, e.Name()))
+			}
 		}
 	}
 	meta, _ := os.ReadDir(cs.metaDir())
@@ -119,15 +125,24 @@ func (cs *ClipStore) Run(ctx context.Context) {
 	}
 }
 
-func (cs *ClipStore) videoPath(c *Clip) string {
-	if c.File != "" {
-		return filepath.Join(cs.dir, c.File)
+func (cs *ClipStore) dirOf(c *Clip) string {
+	if c.Auto {
+		return cs.autoDir
 	}
-	return filepath.Join(cs.dir, c.ID+".mp4")
+	return cs.dir
 }
 
-func clipFileName(name, id string) string        { return safeFileName(name) + "_" + id + ".mp4" }
-func (cs *ClipStore) partPath(id string) string  { return filepath.Join(cs.metaDir(), id+".part.mp4") }
+func (cs *ClipStore) videoPath(c *Clip) string {
+	if c.File != "" {
+		return filepath.Join(cs.dirOf(c), c.File)
+	}
+	return filepath.Join(cs.dirOf(c), c.ID+".mp4")
+}
+
+func clipFileName(name, id string) string { return safeFileName(name) + "_" + id + ".mp4" }
+func (cs *ClipStore) partPath(c *Clip) string {
+	return filepath.Join(cs.dirOf(c), "."+c.ID+".part.mp4")
+}
 func (cs *ClipStore) thumbPath(id string) string { return filepath.Join(cs.metaDir(), id+".jpg") }
 
 // Thumbnails and metadata live in a hidden folder so Home Assistant's Media panel only
@@ -204,7 +219,7 @@ func (cs *ClipStore) render(ctx context.Context, id string) {
 	job := *c
 	cs.mu.Unlock()
 	fail := func(msg string) {
-		_ = os.Remove(cs.partPath(id))
+		_ = os.Remove(cs.partPath(&job))
 		cs.update(id, func(c *Clip) { c.Status, c.Error, c.Progress = "failed", msg, 0 })
 		cs.app.incidents.Add("warn", job.Camera, "Clip %q failed: %s", job.Name, msg)
 	}
@@ -244,7 +259,7 @@ func (cs *ClipStore) render(ctx context.Context, id string) {
 		args = append(args, "-tag:v", "hvc1")
 	}
 	cs.app.mu.Unlock()
-	args = append(args, "-movflags", "+faststart", "-progress", "pipe:1", "-y", cs.partPath(id))
+	args = append(args, "-movflags", "+faststart", "-progress", "pipe:1", "-y", cs.partPath(&job))
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, "ffmpeg", args...)
@@ -276,13 +291,15 @@ func (cs *ClipStore) render(ctx context.Context, id string) {
 		fail(redact(msg))
 		return
 	}
-	if err := os.Rename(cs.partPath(id), cs.videoPath(&job)); err != nil {
+	if err := os.Rename(cs.partPath(&job), cs.videoPath(&job)); err != nil {
 		fail(err.Error())
 		return
 	}
-	// Thumbnail from the middle of the clip.
-	mid := fmt.Sprintf("%.2f", float64(job.To-job.From)/2000)
-	_ = exec.CommandContext(cctx, "ffmpeg", "-v", "error", "-ss", mid, "-i", cs.videoPath(&job), "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "5", "-y", cs.thumbPath(id)).Run()
+	// Thumbnail from the middle of the clip (motion-backup clips are never shown).
+	if !job.Auto {
+		mid := fmt.Sprintf("%.2f", float64(job.To-job.From)/2000)
+		_ = exec.CommandContext(cctx, "ffmpeg", "-v", "error", "-ss", mid, "-i", cs.videoPath(&job), "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "5", "-y", cs.thumbPath(id)).Run()
+	}
 	st, _ := os.Stat(cs.videoPath(&job))
 	cs.update(id, func(c *Clip) {
 		c.Status, c.Progress, c.Error = "ready", 100, ""
@@ -331,7 +348,7 @@ func (cs *ClipStore) Patch(id string, name *string, pinned *bool) (Clip, bool) {
 		}
 		if c.Status == "ready" {
 			newFile := clipFileName(c.Name, c.ID)
-			if err := os.Rename(cs.videoPath(c), filepath.Join(cs.dir, newFile)); err == nil {
+			if err := os.Rename(cs.videoPath(c), filepath.Join(cs.dirOf(c), newFile)); err == nil {
 				c.File = newFile
 			}
 		}
@@ -355,7 +372,7 @@ func (cs *ClipStore) Delete(id string) bool {
 	if !ok {
 		return false
 	}
-	for _, p := range []string{cs.videoPath(c), cs.thumbPath(id), cs.partPath(id), filepath.Join(cs.metaDir(), id+".json")} {
+	for _, p := range []string{cs.videoPath(c), cs.thumbPath(id), cs.partPath(c), filepath.Join(cs.metaDir(), id+".json")} {
 		_ = os.Remove(p)
 	}
 	return ok
