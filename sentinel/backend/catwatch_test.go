@@ -193,3 +193,35 @@ func TestCatBlobNotAStandingPerson(t *testing.T) {
 		t.Errorf("a standing person was taken for the cat: %v", b)
 	}
 }
+
+func TestSceneChanged(t *testing.T) {
+	floor := make([]byte, patchW*patchH)
+	for i := range floor {
+		floor[i] = 120
+	}
+	put := func(g []byte, r Rect, v byte) {
+		for y := int(r.Y * patchH); y < int((r.Y+r.H)*patchH); y++ {
+			for x := int(r.X * patchW); x < int((r.X+r.W)*patchW); x++ {
+				g[y*patchW+x] = v
+			}
+		}
+	}
+	cat := append([]byte(nil), floor...)
+	put(cat, Rect{X: 0.14, Y: 0.42, W: 0.11, H: 0.08}, 230) // the cat lying by the stairs
+	put(cat, Rect{X: 0.56, Y: 0.76, W: 0.10, H: 0.13}, 30)  // and moved sandals
+	if sceneChanged(spots(cat, floor)) {
+		t.Errorf("a cat and sandals count as a light change (%.3f)", changedShare(spots(cat, floor)))
+	}
+	sun := append([]byte(nil), floor...)
+	put(sun, Rect{X: 0.05, Y: 0.30, W: 0.35, H: 0.45}, 200) // evening sun on the floor
+	if !sceneChanged(spots(sun, floor)) {
+		t.Errorf("the sun on the floor isn't a light change (%.3f)", changedShare(spots(sun, floor)))
+	}
+	night := make([]byte, len(floor)) // night mode: everything is different
+	for i := range night {
+		night[i] = 60
+	}
+	if !sceneChanged(spots(night, floor)) {
+		t.Error("night mode isn't a light change")
+	}
+}

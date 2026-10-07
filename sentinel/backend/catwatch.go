@@ -262,6 +262,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		personAt          time.Time // when a person was last in view (wall clock)
 		weakCats          []weakCat // weak cat sightings lately (see above)
 		missFrom          time.Time // the first look since the cat was last seen that saw nothing
+		sureLast          time.Time // the last look where the detector itself saw the cat (frame time)
 		lookBack          = []time.Duration{8 * time.Second, 4 * time.Second}
 		visit             *CatVisit
 		lastAlexa, lastWA time.Time
@@ -276,7 +277,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 	}
 	// reset forgets the cat (a replay carries on watching for the next one).
 	reset := func() {
-		first, last, seenAt, hint, visit, alerting, bgGray, oldBlobs, sizes, missFrom = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil, nil, nil, time.Time{}
+		first, last, seenAt, hint, visit, alerting, bgGray, oldBlobs, sizes, missFrom, sureLast = time.Time{}, time.Time{}, time.Time{}, Rect{}, nil, time.Time{}, nil, nil, nil, time.Time{}, time.Time{}
 		started = time.Now()
 	}
 	end := func(reason string) {
@@ -374,6 +375,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				}
 			}
 		}
+		sure := look.found // the detector saw it (not just its spot or blob, below)
 		if err != nil {
 			if errs++; errs == 5 {
 				cw.app.incidents.Add("warn", cam, "Cat watch can't check frames: %v", err)
@@ -394,6 +396,16 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			if bgGray != nil {
 				g = cw.app.grayNear(ctx, cam, t)
 				cur = spots(g, bgGray)
+				// The light changed (sun, a lamp, the camera's night mode) or someone is
+				// in view: the empty scene no longer matches, so neither its spot nor
+				// blobs say anything about the cat (17:24 on 2026-10-07: blobs all over,
+				// and the "cat" wandered onto a pair of sandals).
+				if sceneChanged(cur) {
+					if debugCat.Load() {
+						logf("cat watch: the scene changed too much for spots and blobs (%.0f%%)", 100*changedShare(cur))
+					}
+					g = nil
+				}
 			}
 		}
 		if !look.found && visit != nil && !last.IsZero() {
@@ -402,7 +414,9 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			reach := min(0.2+0.08*t.Sub(last).Seconds(), 1.5)
 			for _, d := range catNearby(weak, hint, catArea(sizes, hint), reach) {
 				if g != nil && catNotEmpty(g, bgGray, d.Box) {
-					look = catSighting{found: true, box: d.Box, score: d.Score}
+					// Only a weak cat or dog counts as seeing it again; anything else
+					// cat-sized (a "person", shoes) only keeps it like its blob does.
+					look = catSighting{found: true, box: d.Box, score: d.Score, still: d.Label != "cat" && d.Label != "dog"}
 					break
 				}
 			}
@@ -410,7 +424,14 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
 			if !look.found && time.Since(detected) < catBlobTrust && g != nil {
-				if b, ok := catBlob(cur, oldBlobs, hint, catArea(sizes, hint), reach, cw.app.frameAspect(cam)); ok {
+				// It may have walked to another blob only since the look before; once lost,
+				// only its own spot counts (a lost cat's reach grew to the whole picture and
+				// any new patch of light or moved shoe became the cat).
+				jump := reach
+				if t.Sub(last) > catGap {
+					jump = 0
+				}
+				if b, ok := catBlob(cur, oldBlobs, hint, catArea(sizes, hint), jump, cw.app.frameAspect(cam)); ok {
 					look = catSighting{found: true, box: b, still: true}
 				}
 			}
@@ -463,8 +484,11 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 					visit = nil
 				}
 				if visit == nil {
-					first, bgGray, oldBlobs, sizes = t, nil, nil, nil
+					first, bgGray, oldBlobs, sizes, sureLast = t, nil, nil, nil, time.Time{}
 				}
+			}
+			if sure {
+				sureLast = t
 			}
 			last, hint, seenAt, missFrom = t, look.box, time.Now(), time.Time{}
 			if !look.still {
@@ -502,7 +526,9 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 
 		// Staying: alert.
 		c := s.CatWatch
-		if visit != nil && alerting.IsZero() && last.Sub(first) >= time.Duration(c.MinSeconds)*time.Second {
+		// Only the detector's own sightings count towards MinSeconds: one false look at
+		// a crouching child, carried on by its blob, set off the alarm at 16:40 on 10-07.
+		if visit != nil && alerting.IsZero() && !sureLast.IsZero() && sureLast.Sub(first) >= time.Duration(c.MinSeconds)*time.Second {
 			alerting = time.Now()
 			cw.update(visit.ID, func(v *CatVisit) { v.Alerted = time.Now().UnixMilli() })
 			visit.Alerted = time.Now().UnixMilli()
@@ -1148,8 +1174,12 @@ const (
 	blobLevel     = 22                     // grey levels away from the empty scene
 	blobMinPixels = 15
 	overlayBand   = 0.1 // part of the picture's height along the top with the clock text
-	// A blob alone keeps a cat this long after the detector last saw it.
-	catBlobTrust = time.Hour
+	// A blob alone keeps a cat this long after the detector last saw it (a real cat
+	// lying still is seen by the detector on most looks anyway: 14:32 on 2026-10-07).
+	catBlobTrust = 20 * time.Minute
+	// More of the picture than this unlike the empty scene: the light changed (or
+	// someone is in view). A cat is 0.3-0.7%, the evening sun ~19%, night mode ~95%.
+	sceneChangedShare = 0.08
 )
 
 type catSpot struct {
@@ -1244,6 +1274,17 @@ func spots(g, bg []byte) []catSpot {
 	}
 	return out
 }
+
+// changedShare is the part of the picture that differs from the empty scene.
+func changedShare(cur []catSpot) float64 {
+	n := 0
+	for _, b := range cur {
+		n += b.n
+	}
+	return float64(n) / (blobW * blobH)
+}
+
+func sceneChanged(cur []catSpot) bool { return changedShare(cur) > sceneChangedShare }
 
 // catBlob picks the blob that is the cat last seen at box: about its usual size (area),
 // and either on its spot, or one that has appeared since (not among old: the blobs when
