@@ -152,7 +152,9 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import java.util.Calendar
 import kotlin.math.log2
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -188,6 +190,11 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
     val sub = remember(cam.id) { LivePlayer(context, state.engine.streamHttp) }
     val main = remember(cam.id) { LivePlayer(context, state.engine.streamHttp) }
     val rec = remember(cam.id) { RecordingPlayer(context, state.engine.http) { from, to -> api.vodUrl(cam.id, from, to) } }
+    // A video is being watched: an app update waits until it's closed.
+    DisposableEffect(Unit) {
+        app.sentinel.core.Updater.watching.value++
+        onDispose { app.sentinel.core.Updater.watching.value-- }
+    }
     DisposableEffect(cam.id) {
         rec.nowProvider = state::serverNow
         onDispose { sub.release(); main.release(); rec.release() }
@@ -381,33 +388,40 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
         }
     }
     val loading = if (live) !(subUi.firstFrame || mainUi.firstFrame) || (subUi.loading && mainUi.loading && !mainUi.firstFrame) else recUi.loading
-    val timelineCenter = if (tl.scrubbing) tl.scrubTime else playTime
+    // A function, not a value: the playhead moves 5 times a second, and reading it here
+    // would redraw the whole screen each time (only the parts showing it should).
+    fun timelineCenter() = if (tl.scrubbing) tl.scrubTime else playTime
 
     fun prevEvent() {
-        val t = timelineCenter - 3000
+        val t = timelineCenter() - 3000
         val e = (events + todayEvents).filter { it.start < t && ofKind(it) }.maxByOrNull { it.start }
         if (e != null) seekTo(e.bestTime - 2000) else Toaster.show("No earlier $jumpName nearby")
     }
 
     fun nextEvent() {
-        val t = timelineCenter + 1000
+        val t = timelineCenter() + 1000
         val e = (events + todayEvents).filter { it.start > t && ofKind(it) }.minByOrNull { it.start }
         if (e != null) seekTo(e.bestTime - 2000) else Toaster.show("No later $jumpName")
     }
 
+    val saver = app.sentinel.ui.components.rememberGallerySaver()
     fun snapshot() {
         val bmp = texture?.bitmap ?: return Toaster.error("Nothing to capture yet")
-        scope.launch {
+        saver { scope.launch {
             Gallery.saveBitmap(context, bmp, "${Gallery.safeName(cam.name)}_${System.currentTimeMillis() / 1000}")
                 .onSuccess { Toaster.show("Snapshot saved to Pictures/Sentinel") }
                 .onFailure { Toaster.error(it.message ?: "Couldn't save") }
-        }
+        } }
     }
 
     fun shareSnapshot() {
         val bmp = texture?.bitmap ?: return Toaster.error("Nothing to share yet")
-        val uri = Gallery.shareBitmapFile(context, bmp, "${Gallery.safeName(cam.name)}_${System.currentTimeMillis() / 1000}")
-        Gallery.share(context, uri, "image/jpeg", "${cam.name} · ${fmtTimeSec(timelineCenter)}")
+        val title = "${cam.name} · ${fmtTimeSec(timelineCenter())}"
+        scope.launch {
+            // Compressing a full-size picture takes a moment: not on the screen's thread.
+            val uri = withContext(Dispatchers.IO) { Gallery.shareBitmapFile(context, bmp, "${Gallery.safeName(cam.name)}_${System.currentTimeMillis() / 1000}") }
+            Gallery.share(context, uri, "image/jpeg", title)
+        }
     }
 
     fun toggleFullscreen() {
@@ -426,6 +440,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
             scrubbing = tl.scrubbing,
             scrubTime = tl.scrubTime,
             loading = loading,
+            error = if (live) (if (subUi.firstFrame || mainUi.firstFrame) null else subUi.error ?: mainUi.error) else recUi.error,
             onTexture = { texture = it },
             onTap = { controlsVisible = !controlsVisible; lastTouch = System.currentTimeMillis() },
         )
@@ -454,7 +469,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
     val transport: @Composable () -> Unit = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             RoundIcon(Icons.Rounded.SkipPrevious, "Previous $jumpName", size = 46.dp) { prevEvent() }
-            RoundIcon(Icons.Rounded.Replay10, "Back 10 seconds", size = 46.dp) { seekTo(timelineCenter - 10_000) }
+            RoundIcon(Icons.Rounded.Replay10, "Back 10 seconds", size = 46.dp) { seekTo(timelineCenter() - 10_000) }
             Box(
                 Modifier.size(64.dp).clip(CircleShape).background(C.accent).clickable {
                     lastTouch = System.currentTimeMillis()
@@ -467,7 +482,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
                     Icon(if (p) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (p) "Pause" else "Play", tint = Color.White, modifier = Modifier.size(34.dp))
                 }
             }
-            RoundIcon(Icons.Rounded.Forward10, "Forward 10 seconds", size = 46.dp) { if (!live) seekTo(timelineCenter + 10_000) }
+            RoundIcon(Icons.Rounded.Forward10, "Forward 10 seconds", size = 46.dp) { if (!live) seekTo(timelineCenter() + 10_000) }
             RoundIcon(Icons.Rounded.SkipNext, "Next $jumpName", size = 46.dp) { nextEvent() }
         }
     }
@@ -480,7 +495,7 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
                 ActionTile("Share", Icons.Rounded.Share, Modifier.weight(1f)) { shareSnapshot() }
                 ActionTile(if (clipRange != null) "Cancel clip" else "Save clip", Icons.Rounded.ContentCut, Modifier.weight(1f), highlighted = clipRange != null) {
                     clipRange = if (clipRange != null) null else {
-                        val c = minOf(timelineCenter, state.serverNow() - 1000)
+                        val c = minOf(timelineCenter(), state.serverNow() - 1000)
                         (c - 15_000) to minOf(c + 15_000, state.serverNow())
                     }
                     if (clipRange != null) tl.span = 2f * MINUTE
@@ -608,12 +623,16 @@ private fun CameraContent(state: AppState, cam: CameraStatus, startAt: Long?, ev
             }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 // Who is in the person event being watched (tap to see large, and name).
-                val playingPerson = events.find { it.has("person") && playTime >= it.start - 3000 && playTime <= it.endOr(state.serverNow()) + 2000 }?.id
-                    ?: list.getOrNull(at)?.id?.takeIf { !live }
-                Box(Modifier.padding(horizontal = 14.dp)) { EventPeopleStrip(state, cam.id, playingPerson) { c, t -> onOpenCamera(c) } }
+                val people: @Composable () -> Unit = {
+                    val playingPerson = events.find { it.has("person") && playTime >= it.start - 3000 && playTime <= it.endOr(state.serverNow()) + 2000 }?.id
+                        ?: list.getOrNull(at)?.id?.takeIf { !live }
+                    Box(Modifier.padding(horizontal = 14.dp)) { EventPeopleStrip(state, cam.id, playingPerson) { c, t -> onOpenCamera(c) } }
+                }
+                people()
                 // Timeline header: what's in view, and zoom buttons for those who don't pinch.
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(fmtDay(timelineCenter, state.serverNow()), color = C.Text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    val day: @Composable () -> Unit = { Text(fmtDay(timelineCenter(), state.serverNow()), color = C.Text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp) }
+                    day()
                     Text("  ·  ${spanLabel(tl.span)} in view", color = C.TextFaint, fontSize = 12.sp, modifier = Modifier.weight(1f))
                     RoundIcon(Icons.Rounded.ZoomOut, "Show more time", size = 34.dp, background = Color(0x10FFFFFF)) { tl.span = (tl.span * 2f).coerceAtMost(TimelineState.MAX_SPAN) }
                     RoundIcon(Icons.Rounded.ZoomIn, "Show less time", Modifier.padding(start = 6.dp), size = 34.dp, background = Color(0x10FFFFFF)) { tl.span = (tl.span / 2f).coerceAtLeast(TimelineState.MIN_SPAN) }
@@ -680,6 +699,7 @@ private fun BoxScope.VideoArea(
     scrubbing: Boolean,
     scrubTime: Long,
     loading: Boolean,
+    error: String?,
     onTexture: (TextureView?) -> Unit,
     onTap: () -> Unit,
 ) {
@@ -726,6 +746,15 @@ private fun BoxScope.VideoArea(
             )
         }
         if (loading && !scrubbing) CircularProgressIndicator(Modifier.align(Alignment.Center).size(34.dp), color = Color.White.copy(alpha = 0.8f), strokeWidth = 3.dp)
+        // Why nothing plays (it retries by itself).
+        if (error != null && !loading && !scrubbing) Row(
+            // Under the play button, not over it.
+            Modifier.align(Alignment.BottomCenter).padding(start = 56.dp, end = 56.dp, bottom = 16.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xCC0B0F17)).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.SensorsOff, null, tint = C.RoseLight, modifier = Modifier.size(18.dp))
+            Text("  $error", color = Color.White, fontSize = 13.sp)
+        }
     }
 }
 
@@ -856,8 +885,13 @@ private fun OtherCameras(state: AppState, current: String, onOpen: (String) -> U
 @Composable
 private fun GoToDialog(now: Long, onDismiss: () -> Unit, onGo: (Long) -> Unit) {
     var step by remember { mutableStateOf(0) }
-    val dateState = rememberDatePickerState(initialSelectedDateMillis = now, selectableDates = object : androidx.compose.material3.SelectableDates {
-        override fun isSelectableDate(utcTimeMillis: Long) = utcTimeMillis <= now + DAY
+    // The picker works in UTC days: today (here) as midnight UTC.
+    val todayUtc = remember(now) {
+        val l = Calendar.getInstance().apply { timeInMillis = now }
+        Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { clear(); set(l.get(Calendar.YEAR), l.get(Calendar.MONTH), l.get(Calendar.DAY_OF_MONTH)) }.timeInMillis
+    }
+    val dateState = rememberDatePickerState(initialSelectedDateMillis = todayUtc, selectableDates = object : androidx.compose.material3.SelectableDates {
+        override fun isSelectableDate(utcTimeMillis: Long) = utcTimeMillis <= todayUtc
     })
     val cal = Calendar.getInstance().apply { timeInMillis = now }
     val timeState = rememberTimePickerState(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
@@ -866,12 +900,12 @@ private fun GoToDialog(now: Long, onDismiss: () -> Unit, onGo: (Long) -> Unit) {
         confirmButton = {
             TextButton({
                 if (step == 0) step = 1 else {
+                    // The picker gives the chosen day as midnight UTC: read the day in UTC, then
+                    // make that local date and time (west of UTC it was the day before).
+                    val utc = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { timeInMillis = dateState.selectedDateMillis ?: todayUtc }
                     val d = Calendar.getInstance().apply {
-                        timeInMillis = dateState.selectedDateMillis ?: now
-                        val y = get(Calendar.YEAR); val m = get(Calendar.MONTH); val day = get(Calendar.DAY_OF_MONTH)
-                        timeZone = java.util.TimeZone.getDefault()
                         clear()
-                        set(y, m, day, timeState.hour, timeState.minute, 0)
+                        set(utc.get(Calendar.YEAR), utc.get(Calendar.MONTH), utc.get(Calendar.DAY_OF_MONTH), timeState.hour, timeState.minute, 0)
                     }
                     onGo(d.timeInMillis.coerceAtMost(now))
                 }

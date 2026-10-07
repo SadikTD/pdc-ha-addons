@@ -317,10 +317,19 @@ class RecordingPlayer(private val context: Context, private val http: OkHttpClie
         val (from, to) = VodCache.window(t, nowProvider())
         val url = urlFor(from, to)
         val body = withContext(Dispatchers.IO) {
-            runCatching { http.newCall(Request.Builder().url(url).build()).execute().use { it.body?.bytes() } }.getOrNull()
-        } ?: ByteArray(0)
-        val list = parsePlaylist(String(body))
+            runCatching { http.newCall(Request.Builder().url(url).build()).execute().use { if (it.isSuccessful) it.body?.bytes() else null } }.getOrNull()
+        }
         if (seq != loadSeq) return true
+        if (body == null) {
+            // Sentinel couldn't be reached: say so (not "nothing recorded") and try again.
+            _ui.value = _ui.value.copy(loading = false, error = "Can't reach Sentinel — trying again…")
+            scope.launch {
+                delay(3000)
+                if (seq == loadSeq) load(t)
+            }
+            return true
+        }
+        val list = parsePlaylist(String(body))
         val pos = timeToPos(list, t)
         if (list.isEmpty() || pos == null) {
             _ui.value = _ui.value.copy(loading = false)

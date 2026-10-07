@@ -335,3 +335,25 @@ fun Gap(h: Dp) = Spacer(Modifier.height(h))
 
 @Composable
 fun HGap(w: Dp) = Spacer(Modifier.width(w))
+
+/**
+ * Runs a "save to the gallery" action, first asking for the storage permission that
+ * Android 8 and 9 need for it (newer Android doesn't).
+ */
+@Composable
+fun rememberGallerySaver(): (() -> Unit) -> Unit {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val pending = remember { arrayOfNulls<() -> Unit>(1) }
+    val ask = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) pending[0]?.invoke() else Toaster.error("Allow storage access to save to your gallery")
+        pending[0] = null
+    }
+    return { action ->
+        val perm = android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+        if (android.os.Build.VERSION.SDK_INT >= 29 || androidx.core.content.ContextCompat.checkSelfPermission(context, perm) == android.content.pm.PackageManager.PERMISSION_GRANTED) action()
+        else {
+            pending[0] = action
+            ask.launch(perm)
+        }
+    }
+}

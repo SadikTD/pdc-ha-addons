@@ -17,6 +17,9 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import app.sentinel.ui.SentinelRoot
 import app.sentinel.ui.theme.SentinelTheme
 
@@ -47,7 +50,12 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(0), navigationBarStyle = SystemBarStyle.dark(0))
         handleIntent(intent)
         val app = application as SentinelApp
-        locked = app.state.prefs.value.appLock
+        // The saved settings, not the defaults shown until they're read: opening the app
+        // fresh (after a restart, or Android closing it) must lock too.
+        val prefs = runBlocking { app.state.loadPrefs() }
+        locked = prefs.appLock
+        hideInRecents(prefs.appLock)
+        lifecycleScope.launch { app.state.prefs.collect { hideInRecents(it.appLock) } }
         setContent {
             SentinelTheme {
                 SentinelRoot(app.state, this)
@@ -68,6 +76,11 @@ class MainActivity : FragmentActivity() {
             "camera" -> data.getQueryParameter("id")?.let { openCamera = it to data.getQueryParameter("t")?.toLongOrNull() }
             "summary" -> openSummary = data.getQueryParameter("date") ?: ""
         }
+    }
+
+    /** With App lock on, the recent-apps screen shows no camera pictures (screenshots still work). */
+    private fun hideInRecents(hide: Boolean) {
+        if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(!hide)
     }
 
     fun consumeDeepLink() {

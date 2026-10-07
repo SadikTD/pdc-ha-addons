@@ -48,6 +48,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -72,6 +73,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.sentinel.core.AppState
 import app.sentinel.core.DAY
+import app.sentinel.core.MINUTE
 import app.sentinel.core.SearchQuery
 import app.sentinel.core.SentinelEvent
 import app.sentinel.core.fmtDay
@@ -120,6 +122,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) 
     // Kept while an event is open, so coming back shows the list at once, where it was.
     val key = "$range|$camFilter|$asked"
     var events by remember { mutableStateOf(state.eventsCache[key]) }
+    var lastFull by remember { mutableLongStateOf(0L) }
     val grid = rememberLazyGridState()
     var searching by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
@@ -144,11 +147,24 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) 
             2 -> now - 3 * DAY
             else -> now - 7 * DAY
         }
-        runCatching { state.api.events(camFilter?.let { listOf(it) } ?: emptyList(), from, null, LIMIT) }
-            .onSuccess { events = it.sortedByDescending { e -> e.start }.also { l -> state.eventsCache[key] = l } }
+        // The whole list now and then; in between only what's recent (new events, and
+        // labels and people added to them in the minutes after). A week is 2,000+ events.
+        val old = events
+        val full = old == null || now - lastFull > 5 * MINUTE
+        val since = if (full) from else maxOf(from, now - 15 * MINUTE)
+        runCatching { state.api.events(camFilter?.let { listOf(it) } ?: emptyList(), since, null, LIMIT) }
+            .onSuccess { got ->
+                val merged = if (full || old == null) got else {
+                    val fresh = got.mapTo(HashSet()) { "${it.camera}/${it.id}" }
+                    old.filter { it.start < since && "${it.camera}/${it.id}" !in fresh } + got
+                }
+                events = merged.sortedByDescending { e -> e.start }.also { l -> state.eventsCache[key] = l }
+                if (full) lastFull = now
+            }
     }
     LaunchedEffect(range, camFilter, asked) {
         events = state.eventsCache[key]
+        lastFull = 0L
         while (true) {
             state.awaitVisible()
             load()
@@ -161,24 +177,29 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) 
         focus.clearFocus()
     }
 
-    val minPeak = when (size) { 1 -> 3.0; 2 -> 10.0; else -> 0.0 }
-    val sized = events?.filter { it.peak >= minPeak }
+    // Worked out only when the list or a filter changes (not on every status refresh).
+    val sized = remember(events, size) {
+        val minPeak = when (size) { 1 -> 3.0; 2 -> 10.0; else -> 0.0 }
+        events?.filter { it.peak >= minPeak }
+    }
     val counts = remember(sized) {
         val c = mutableMapOf("all" to (sized?.size ?: 0), "motion" to 0, "person" to 0, "cat" to 0, "dog" to 0)
         sized?.forEach { e -> if (e.labels.isEmpty()) { if (e.scan == "done") c["motion"] = c["motion"]!! + 1 } else e.labels.forEach { c[it] = (c[it] ?: 0) + 1 } }
         c
     }
-    val list = sized?.filter {
-        when (kind) {
-            "all" -> true
-            "motion" -> it.scan == "done" && it.labels.isEmpty()
-            else -> kind in it.labels
-        } && (whoFilter == null || it.who.any { w -> w.person == whoFilter })
+    val list = remember(sized, kind, whoFilter) {
+        sized?.filter {
+            when (kind) {
+                "all" -> true
+                "motion" -> it.scan == "done" && it.labels.isEmpty()
+                else -> kind in it.labels
+            } && (whoFilter == null || it.who.any { w -> w.person == whoFilter })
+        }
     }
     // Back-to-back motion on one camera is one activity (a person walking through
     // trips the detector several times).
-    val activities = list?.let { groupActivities(it) }
-    val grouped = activities?.groupBy { startOfDay(it.start) }?.toSortedMap(compareByDescending { it })
+    val activities = remember(list) { list?.let { groupActivities(it) } }
+    val grouped = remember(activities) { activities?.groupBy { startOfDay(it.start) }?.toSortedMap(compareByDescending { it }) }
     val pending = status?.detection?.backlog ?: 0
 
     PullToRefreshBox(refreshing, onRefresh = { scope.launch { refreshing = true; load(); refreshing = false } }, modifier = Modifier.fillMaxSize()) {
@@ -195,7 +216,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Events", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
                         if (activities != null) Text(
-                            "${activities.size} activit${if (activities.size == 1) "y" else "ies"} · ${list.size}${if ((events?.size ?: 0) >= LIMIT) "+" else ""} events",
+                            "${activities.size} activit${if (activities.size == 1) "y" else "ies"} · ${list?.size ?: 0}${if ((events?.size ?: 0) >= LIMIT) "+" else ""} events",
                             color = C.TextDim, fontSize = 13.sp,
                         )
                     }
@@ -303,7 +324,7 @@ fun EventsScreen(state: AppState, padding: PaddingValues, openEvent: (ListItem) 
                         onLongClick = if (state.isAdmin && a.shown.labels.isNotEmpty()) ({ wrongFor = a.shown }) else null,
                     ) {
                         // The player steps through this list; the list marks what was watched.
-                        state.eventList = activities.map { x -> ListItem(x.first.camera, x.first.id, x.shown.bestTime - 2000) }
+                        state.eventList = activities.orEmpty().map { x -> ListItem(x.first.camera, x.first.id, x.shown.bestTime - 2000) }
                         state.lastWatched = a.first.id
                         openEvent(ListItem(a.first.camera, a.first.id, a.shown.bestTime - 2000))
                     }

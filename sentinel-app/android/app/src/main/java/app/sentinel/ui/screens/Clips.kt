@@ -97,6 +97,7 @@ import kotlinx.coroutines.launch
 fun ClipsScreen(state: AppState, padding: PaddingValues) {
     var clips by remember { mutableStateOf<List<Clip>?>(null) }
     var open by remember { mutableStateOf<Clip?>(null) }
+    var failed by remember { mutableStateOf<Clip?>(null) }
     val scope = rememberCoroutineScope()
 
     suspend fun load() {
@@ -130,12 +131,36 @@ fun ClipsScreen(state: AppState, padding: PaddingValues) {
             EmptyState(Icons.Rounded.Movie, "No clips yet", "Open a camera, tap Clip, drag the handles on the timeline and save. Clips are cut without re-encoding, so they're full quality.")
         }
         items(list ?: emptyList(), key = { it.id }) { c ->
-            ClipCard(state, c, Modifier.animateItem()) { if (c.status == "ready") open = c }
+            ClipCard(state, c, Modifier.animateItem()) {
+                when (c.status) {
+                    "ready" -> open = c
+                    "failed" -> failed = c
+                }
+            }
         }
     }
 
     open?.let { c ->
         ClipViewer(state, c, onClose = { open = null }, onChanged = { scope.launch { load() } })
+    }
+    // A clip that couldn't be saved: why, and (admins) remove it.
+    failed?.let { c ->
+        AlertDialog(
+            onDismissRequest = { failed = null },
+            title = { Text("“${c.name}” wasn't saved") },
+            text = { Text(c.error?.takeIf { it.isNotBlank() } ?: "Sentinel couldn't save this clip.") },
+            confirmButton = {
+                if (state.isAdmin) TextButton({
+                    failed = null
+                    scope.launch {
+                        runCatching { state.api.deleteClip(c.id) }.onSuccess { Toaster.show("Clip removed"); load() }.onFailure { Toaster.error(it.message ?: "Couldn't remove it") }
+                    }
+                }) { Text("Remove", color = C.RoseLight) }
+                else TextButton({ failed = null }) { Text("OK", color = C.Cyan) }
+            },
+            dismissButton = { if (state.isAdmin) TextButton({ failed = null }) { Text("Keep", color = C.TextDim) } },
+            containerColor = C.Ink850,
+        )
     }
 }
 
@@ -178,7 +203,10 @@ private fun ClipViewer(state: AppState, clip: Clip, onClose: () -> Unit, onChang
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val player = remember(clip.id) { ClipPlayer(context, state.engine.streamHttp, state.api.clipVideoUrl(clip.id)) }
-    DisposableEffect(player) { onDispose { player.release() } }
+    DisposableEffect(player) {
+        app.sentinel.core.Updater.watching.value++ // an app update waits while a clip plays
+        onDispose { player.release(); app.sentinel.core.Updater.watching.value-- }
+    }
     var c by remember { mutableStateOf(clip) }
     var progress by remember { mutableFloatStateOf(-1f) }
     var renaming by remember { mutableStateOf(false) }
@@ -186,6 +214,7 @@ private fun ClipViewer(state: AppState, clip: Clip, onClose: () -> Unit, onChang
     val auth by state.auth.collectAsStateWithLifecycle()
     val admin = state.isAdmin
     val fileName = Gallery.safeName(c.name)
+    val saver = app.sentinel.ui.components.rememberGallerySaver()
 
     Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(Modifier.fillMaxSize().background(C.Ink950)) {
@@ -214,13 +243,12 @@ private fun ClipViewer(state: AppState, clip: Clip, onClose: () -> Unit, onChang
                 Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SubtleButton("Save", Modifier.weight(1f), icon = Icons.Rounded.Download) {
                         if (progress >= 0) return@SubtleButton
-                        progress = 0f
-                        scope.launch {
+                        saver { progress = 0f; scope.launch {
                             Gallery.saveVideo(context, state.engine.streamHttp, state.api.clipVideoUrl(c.id), fileName) { progress = it }
                                 .onSuccess { Toaster.show("Saved to Movies/Sentinel") }
                                 .onFailure { Toaster.error(it.message ?: "Download failed") }
                             progress = -1f
-                        }
+                        } }
                     }
                     SubtleButton("Share", Modifier.weight(1f), icon = Icons.Rounded.Share) {
                         if (progress >= 0) return@SubtleButton

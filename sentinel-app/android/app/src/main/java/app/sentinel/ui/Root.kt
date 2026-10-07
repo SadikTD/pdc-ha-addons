@@ -53,6 +53,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -119,7 +120,12 @@ fun SentinelRoot(state: AppState, activity: MainActivity) {
                 }
             }
             if (activity.locked && auth is Auth.LoggedIn) LockScreen { activity.unlock() }
+            else app.sentinel.ui.components.UpdateBanner()
             ToastHost()
+            // Just updated itself: what's new (once).
+            val context = androidx.compose.ui.platform.LocalContext.current
+            var whatsNew by remember { mutableStateOf(app.sentinel.core.Updater.takeWhatsNew(context)) }
+            whatsNew?.let { (v, notes) -> if (!activity.locked) app.sentinel.ui.components.WhatsNewSheet(v, notes) { whatsNew = null } }
         }
     }
 }

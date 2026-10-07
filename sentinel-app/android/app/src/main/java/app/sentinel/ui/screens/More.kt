@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.Refresh
@@ -130,6 +131,7 @@ fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onS
         MenuItem(Icons.Rounded.MonitorHeart, "System", "Health, storage, recorders${if (a.user.admin) ", activity log" else ""}", onSystem)
         if (a.user.admin) MenuItem(Icons.Rounded.Group, "Users", "Who can use the app, and signed-in phones", onUsers)
         MenuItem(Icons.Rounded.Tune, "App settings", "Layout, data saver, app lock, camera order", onSettings)
+        AppUpdatesItem()
         MenuItem(Icons.AutoMirrored.Rounded.Logout, "Log out", "Sign this phone out of Sentinel", tint = C.RoseLight) { confirmLogout = true }
         Gap(20.dp)
         AboutCard(status?.version, BuildConfig.VERSION_NAME)
@@ -144,6 +146,25 @@ fun MoreScreen(state: AppState, padding: PaddingValues, onUsers: () -> Unit, onS
             dismissButton = { TextButton({ confirmLogout = false }) { Text("Cancel", color = C.TextDim) } },
             containerColor = C.Ink850,
         )
+    }
+}
+
+/** The app's version, and its updates (they install by themselves; tap to check now). */
+@Composable
+private fun AppUpdatesItem() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val st by app.sentinel.core.Updater.state.collectAsStateWithLifecycle()
+    val checked by app.sentinel.core.Updater.checkedAt.collectAsStateWithLifecycle()
+    val sub = when (val s = st) {
+        is app.sentinel.core.Update.Downloading -> "Downloading ${s.release.version} · ${(s.progress * 100).toInt()}%"
+        is app.sentinel.core.Update.Ready -> "Version ${s.release.version} is ready · tap to install"
+        is app.sentinel.core.Update.Installing -> "Installing ${s.release.version}…"
+        app.sentinel.core.Update.Checking -> "Checking…"
+        else -> "Version ${BuildConfig.VERSION_NAME}" + (if (checked > 0) " · up to date" else "") + " · updates install by themselves"
+    }
+    MenuItem(Icons.Rounded.SystemUpdate, "App updates", sub) {
+        if (st is app.sentinel.core.Update.Ready) app.sentinel.core.Updater.install(context)
+        else app.sentinel.core.Updater.check(context, manual = true)
     }
 }
 

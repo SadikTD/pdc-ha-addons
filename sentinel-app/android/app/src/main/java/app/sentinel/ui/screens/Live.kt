@@ -206,9 +206,10 @@ fun LiveScreen(state: AppState, contentPadding: PaddingValues, onSummary: () -> 
         }
     }
     }
+    val saver = app.sentinel.ui.components.rememberGallerySaver()
     menuFor?.let { cam ->
         CameraMenu(
-            state, cam, soundOn = soundOn == cam.id, onDismiss = { menuFor = null }, onOpen = { menuFor = null; onOpen(cam) },
+            state, cam, scope, saver, soundOn = soundOn == cam.id, onDismiss = { menuFor = null }, onOpen = { menuFor = null; onOpen(cam) },
             onSound = { soundOn = if (soundOn == cam.id) null else cam.id; menuFor = null },
         )
     }
@@ -217,9 +218,13 @@ fun LiveScreen(state: AppState, contentPadding: PaddingValues, onSummary: () -> 
 /** Long-press actions for a camera on the Live grid. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CameraMenu(state: AppState, cam: CameraStatus, soundOn: Boolean, onDismiss: () -> Unit, onOpen: () -> Unit, onSound: () -> Unit) {
+private fun CameraMenu(
+    state: AppState, cam: CameraStatus,
+    // The Live screen's: the menu closes at once, and work started in its own would be cancelled with it.
+    scope: kotlinx.coroutines.CoroutineScope, saver: (() -> Unit) -> Unit,
+    soundOn: Boolean, onDismiss: () -> Unit, onOpen: () -> Unit, onSound: () -> Unit,
+) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var confirmRestart by remember { mutableStateOf(false) }
     // The sheet is its own window, where the navigation bar inset reads as 0: measure it here.
     val navBottom = androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -239,7 +244,7 @@ private fun CameraMenu(state: AppState, cam: CameraStatus, soundOn: Boolean, onD
             if (cam.hasAudio) MenuRow(if (soundOn) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp, if (soundOn) "Stop listening" else "Listen here") { onSound() }
             MenuRow(Icons.Rounded.CameraAlt, "Save a full-quality snapshot") {
                 onDismiss()
-                scope.launch {
+                saver { scope.launch {
                     val bmp = withContext(Dispatchers.IO) {
                         runCatching {
                             state.engine.http.newCall(okhttp3.Request.Builder().url(state.api.snapshotUrl(cam.id, hq = true, bust = System.currentTimeMillis())).build()).execute()
@@ -253,7 +258,7 @@ private fun CameraMenu(state: AppState, cam: CameraStatus, soundOn: Boolean, onD
                             .onSuccess { Toaster.show("Saved to Pictures/Sentinel") }
                             .onFailure { Toaster.error(it.message ?: "Couldn't save") }
                     }
-                }
+                } }
             }
             MenuRow(Icons.Rounded.VisibilityOff, "Hide from Live") {
                 state.setPrefs { it.copy(hidden = it.hidden + cam.id) }

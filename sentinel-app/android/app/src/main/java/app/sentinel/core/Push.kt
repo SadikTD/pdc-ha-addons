@@ -191,8 +191,12 @@ class SentinelMessagingService : FirebaseMessagingService() {
                     .setContentText(d["text"] ?: "")
                     .setStyle(NotificationCompat.BigTextStyle().bigText(d["text"] ?: ""))
                     .setContentIntent(Push.openIntent(this, null, null))
+                    // When several cameras stop at once (a power cut), they're one group that
+                    // alerts once instead of a buzz per camera.
+                    .setGroup(STATUS_GROUP).setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
                 id = "status/$cam".hashCode()
                 nm.notifySafe(id, b.build())
+                statusSummary(nm, if (down) "Cameras stopped recording" else "Cameras recording again")
             }
             "test" -> {
                 b.setChannelId(Push.CH_STATUS).setContentTitle("Sentinel notifications work").setContentText("You'll get alerts on this phone.")
@@ -218,6 +222,24 @@ class SentinelMessagingService : FirebaseMessagingService() {
             val visible = androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
             if (!visible) app.engine.onBackground()
         }
+    }
+
+    private fun statusSummary(nm: NotificationManagerCompat, title: String) {
+        val n = NotificationCompat.Builder(this, Push.CH_STATUS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(0xFF8B5CF6.toInt())
+            .setContentTitle(title)
+            .setGroup(STATUS_GROUP).setGroupSummary(true)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+            .setContentIntent(Push.openIntent(this, null, null))
+            .build()
+        nm.notifySafe(STATUS_GROUP.hashCode(), n)
+    }
+
+    private companion object {
+        const val STATUS_GROUP = "camera-status"
     }
 
     private fun NotificationManagerCompat.notifySafe(id: Int, n: android.app.Notification) {

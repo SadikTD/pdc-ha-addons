@@ -7,6 +7,14 @@ events and clips on your phone, at home or anywhere, fast and end-to-end encrypt
 [latest release](https://github.com/SadikTD/pdc-ha-addons/releases/latest) on the phone
 and open it (allow installing from your browser when Android asks). Android 8 or newer.
 
+**Updates (1.11.0+):** the app updates itself. Each time it's opened it checks this
+repository's latest `sentinel-app-v*` release, downloads it with a progress bar and
+installs it (after a 5-second "Updating" message, or once a video being watched is
+closed). Android asks once to allow Sentinel to install apps; after that updates install
+without a tap on Android 12+, and a notification says what's new. To publish one: bump
+`versionCode`/`versionName`, build, and create the release with `Sentinel.apk` attached;
+its description (lines starting with "-") becomes the "What's new" list.
+
 **Set up:** in Sentinel's web page go to **Settings → Sentinel app**, add a user, then in
 the app log in with it. At home the app finds Sentinel by itself; elsewhere scan the QR
 code or type the Sentinel ID shown there.

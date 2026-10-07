@@ -88,6 +88,9 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
         }
     }
 
+    /** The saved preferences, waiting for them to be read. */
+    suspend fun loadPrefs(): AppPrefs = context.store.data.first().toPrefs()
+
     private fun Preferences.toPrefs() = AppPrefs(
         gridColumns = this[K.cols] ?: 0,
         dataSaver = this[K.saver] ?: false,
@@ -178,7 +181,9 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
 
     /** Tells Sentinel where to send this phone's notifications. */
     suspend fun registerPush(token: String? = null) {
-        if (_auth.value !is Auth.LoggedIn) return
+        // A new token can arrive while the app is still starting: wait for the login to be
+        // read instead of dropping it (notifications would stop until the app is opened).
+        if (_auth.first { it !is Auth.Loading } !is Auth.LoggedIn) return
         val t = token ?: Push.token() ?: return
         runCatching { api.setPush(t, null) }.onSuccess { _pushPrefs.value = it }
     }
@@ -204,8 +209,10 @@ class AppState(private val context: Context, val engine: Engine, val api: Api) {
     }
 
     fun setPrefs(change: (AppPrefs) -> AppPrefs) = scope.launch {
-        val n = change(prefs.value)
         context.store.edit {
+            // From what's saved, not prefs.value: right after launch that may still be the
+            // defaults, and writing them back would wipe the user's choices.
+            val n = change(it.toPrefs())
             it[K.cols] = n.gridColumns
             it[K.saver] = n.dataSaver
             it[K.lock] = n.appLock
