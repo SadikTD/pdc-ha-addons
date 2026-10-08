@@ -40,6 +40,9 @@ const (
 	// for this long has gone even without new motion (on the replay, a visit that
 	// should have ended at 18:31 lasted until the cat came back at 18:34).
 	catLostAfter = 90 * time.Second
+	// The same with a model trained on the camera, which sees a present cat on almost
+	// every look (a cat lying by the stairs for 17 min: 9 in 10 looks, gaps of one look).
+	catStillTrained = 20 * time.Second
 	// Motion with no cat in it stops being watched after this long without motion.
 	catIdleAfter = 15 * time.Second
 	catLogLimit  = 100
@@ -414,6 +417,9 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 			// picture a second from the 3rd floor camera).
 			reach := min(0.2+0.08*t.Sub(last).Seconds(), 1.5)
 			for _, d := range catNearby(weak, hint, catArea(sizes, hint), reach) {
+				if !weakKeeps(d.Label, trained, time.Since(detected)) {
+					continue
+				}
 				if g != nil && catNotEmpty(g, bgGray, d.Box) {
 					// Only a weak cat or dog counts as seeing it again; anything else
 					// cat-sized (a "person", shoes) only keeps it like its blob does.
@@ -421,7 +427,13 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 					break
 				}
 			}
-			if !look.found && time.Since(detected) < catLostAfter && g != nil && catStill(g, bgGray, hint, tpl) {
+			// Its spot looking like the cat bridges looks the detector missed: briefly with
+			// a model trained on this camera (it misses single looks, not minutes).
+			stillFor := catLostAfter
+			if trained {
+				stillFor = catStillTrained
+			}
+			if !look.found && time.Since(detected) < stillFor && g != nil && catStill(g, bgGray, hint, tpl) {
 				look = catSighting{found: true, box: hint, still: true}
 			}
 			// Not with a model trained on this camera: it sees the cat on almost every
@@ -1028,6 +1040,18 @@ func (a *App) catLook(ctx context.Context, cam Camera, t time.Time, hint Rect) (
 //     (catStill: there, similarity to the empty floor fell from 1.00 to about 0.77 while
 //     the cat sat, and came back to 1.00 seconds after it left).
 // The look of the spot alone keeps a cat for at most catLostAfter.
+
+// weakKeeps: can a weak sighting labelled label keep a cat the detector last saw since
+// ago? A weak cat or dog can. Anything else only with the general model (it calls a cat
+// seen from above a "person"), and only shortly: on 2026-10-08 at 17:30 a pair of sandals
+// taken off by the door, called "person" 0.97 by the trained model, kept a cat that had
+// left for 5 minutes.
+func weakKeeps(label string, trained bool, since time.Duration) bool {
+	if label == "cat" || label == "dog" {
+		return true
+	}
+	return !trained && since < catLostAfter
+}
 
 // catNearby lists the weak sightings that could be the cat last seen at box: about its
 // usual size (area), within reach (part of the picture; a walking cat goes further),

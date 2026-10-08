@@ -225,3 +225,22 @@ func TestSceneChanged(t *testing.T) {
 		t.Error("night mode isn't a light change")
 	}
 }
+
+func TestWeakKeeps(t *testing.T) {
+	for _, c := range []struct {
+		label   string
+		trained bool
+		since   time.Duration
+		want    bool
+	}{
+		{"cat", true, time.Hour, true},
+		{"dog", false, time.Hour, true},
+		{"person", true, time.Second, false}, // sandals by the door, 17:30 on 2026-10-08
+		{"person", false, 30 * time.Second, true},
+		{"person", false, catLostAfter, false},
+	} {
+		if got := weakKeeps(c.label, c.trained, c.since); got != c.want {
+			t.Errorf("weakKeeps(%q, %v, %v) = %v", c.label, c.trained, c.since, got)
+		}
+	}
+}
