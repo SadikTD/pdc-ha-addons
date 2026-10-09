@@ -38,6 +38,10 @@ export const MONITOR_SETTINGS = {
   } },
   health_alerts: { env: 'MONITOR_HEALTH_ALERTS', fallback: 'true', parse: v => v !== 'false', store: bool },
   reference_days: { env: 'MONITOR_REFERENCE_DAYS', fallback: '7', parse: v => Math.min(14, Math.max(1, Number(v) || 7)), store: int(1, 14) },
+  // The AotF sheet and OS Asana monitors (pitch-sources.mjs, add-on only).
+  // `enabled` above stays the WGTC Trello switch.
+  aotf_enabled: { env: 'AOTF_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
+  os_enabled: { env: 'OS_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
 };
 
 export function effectiveSettings(env) {
@@ -191,6 +195,25 @@ export async function loadMonitorCards(env, get = monitorTrelloGet) {
   return { cards: [...cards.values()], watched };
 }
 
+// A site the monitor watches; each keeps its own state, history and alerts
+// under its own board_id. WGTC on Trello is defined here; the AotF sheet and
+// OS Asana sites are in pitch-sources.mjs (add-on only).
+// `settle` (seconds): wait before checking a new pitch, and check its latest
+// version: rows and tasks are typed in place, unlike Trello cards. A pitch
+// that disappears meanwhile is marked 'gone' and never checked.
+export const TRELLO_SITE = {
+  id: 'wgtc', label: 'WGTC', platform: 'Trello', place: 'List', item: 'card', settle: 0,
+  board: env => env.TRELLO_MONITOR_BOARD_ID,
+  enabled: env => env.TRELLO_MONITOR_ENABLED === 'true',
+  validate(env) {
+    if (!ID.test(env.TRELLO_MONITOR_BOARD_ID || '') || !env.TRELLO_KEY || !env.TRELLO_TOKEN) throw new Error('Monitor configuration incomplete');
+  },
+  needs: () => null, // what's missing before it can run, in plain words
+  load: env => loadMonitorCards(env),
+  alertKey: (board, cardId) => `trello:${board}:${cardId}`,
+  safeError: m => m === 'Trello token does not grant read access to the configured board' || /^Trello read failed \(\d{3}\)$/.test(m),
+};
+
 // Normalizing every board card costs ~5 ms of CPU (keyword extraction), so a
 // run does it once per card and reuses it for every check in that run.
 const normalized = new WeakMap();
@@ -284,47 +307,44 @@ const BDT_FORMAT = new Intl.DateTimeFormat('en-GB', {
 
 // `qualifies` picks the findings the dashboard's alert rules allow; if the
 // rules changed after the alert was queued, all findings are used instead.
-export function buildMonitorAlert(job, qualifies = () => true) {
+export function buildMonitorAlert(job, qualifies = () => true, site = TRELLO_SITE) {
   const card = JSON.parse(job.card_json), all = JSON.parse(job.result_json);
   const findings = all.some(qualifies) ? all.filter(qualifies) : all;
   if (!findings.length) throw new Error('No findings to notify');
   const best = findings[0];
   const heading = {
-    duplicate: '🔴 *Duplicate pitch found*',
-    same_story: '🟠 *Similar story found*',
-    near_miss: '🟡 *Possible pitch overlap*',
-  }[best.verdict] || '🟡 *Possible pitch overlap*';
+    duplicate: '🔴 *Duplicate pitch found',
+    same_story: '🟠 *Similar story found',
+    near_miss: '🟡 *Possible pitch overlap',
+  }[best.verdict] || '🟡 *Possible pitch overlap';
   const sameTitle = titleKey(card.name) === titleKey(best.candidate.title);
   const existingList = clean(best.candidate.status, 100);
+  const link = (label, url) => clean(url, 300) ? ['', `🔗 *${label}*`, clean(url, 300)] : [];
   return [
-    heading,
+    `${heading} · ${site.label}*`,
     '',
     '📝 *New pitch*',
     clean(card.name, 450),
     `👤 *Writer:* ${clean(card._writer || 'Unassigned', 180)}`,
-    `📍 *List:* ${clean(card._listName || 'Unknown', 100)}`,
-    `🕒 *Created:* ${formatPitchTime(null, card.id)}`,
+    `📍 *${site.place}:* ${clean(card._listName || 'Unknown', 100)}`,
+    `🕒 *Created:* ${card._createdLabel || formatPitchTime(card._created || null, card.id)}`,
     '',
     '📌 *Existing pitch*',
     sameTitle ? 'Same title as above.' : clean(best.candidate.title, 450),
     `👤 *Writer:* ${clean(best.candidate.writer || 'Unassigned', 180)}`,
-    `📍 *List:* ${existingList || 'Unknown'}`,
-    `🕒 *Created:* ${formatPitchTime(best.candidate.date, best.candidate.cardId)}`,
+    `📍 *${site.place}:* ${existingList || 'Unknown'}`,
+    `🕒 *Created:* ${best.candidate.dateLabel || formatPitchTime(best.candidate.date, best.candidate.cardId)}`,
     '',
     '*Why it matched*',
     clean(best.reason, 280),
     `Confidence: ${best.confidence}%`,
-    '',
-    '🔗 *Open new card*',
-    clean(card.shortUrl, 150),
-    '',
-    '🔗 *Open existing card*',
-    clean(best.candidate.editLink, 150),
+    ...link(`Open new ${site.item}`, card.shortUrl),
+    ...link(`Open existing ${site.item}`, best.candidate.editLink),
     ...(findings.length > 1 ? ['', `*Also found:* ${findings.length - 1} more possible match${findings.length === 2 ? '' : 'es'}.`] : []),
   ].join('\n');
 }
-export function sendMonitorAlert(job, env) {
-  return sendWhatsAppText(buildMonitorAlert(job, alertFilter(env)), `trello:${job.board_id}:${job.card_id}`, env);
+export function sendMonitorAlert(job, env, site = TRELLO_SITE) {
+  return sendWhatsAppText(buildMonitorAlert(job, alertFilter(env), site), site.alertKey(job.board_id, job.card_id), env);
 }
 
 // Queues the message once per idempotency key and reports what the bridge has
@@ -370,9 +390,10 @@ export async function reserveWhatsAppSlot(db, dependencies = {}) {
 const HEALTH_REPEAT = 6 * 3600;
 const bdtTime = t => formatPitchTime(new Date(t * 1000).toISOString());
 
-export async function checkMonitorHealth(env, dependencies = {}) {
+export async function checkMonitorHealth(env, dependencies = {}, site = TRELLO_SITE) {
   if (env.TRELLO_MONITOR_SEND !== 'true' || !effectiveSettings(env).health_alerts) return [];
-  const db = env.DB, board = env.TRELLO_MONITOR_BOARD_ID, t = (dependencies.clock || now)();
+  const db = env.DB, board = site.board(env), t = (dependencies.clock || now)();
+  const name = `${site.label} (${site.platform})`;
   if (inQuietHours(env, t)) return []; // re-evaluated every tick, so it goes out after the window
   const send = dependencies.sendText || sendWhatsAppText;
   const sent = [];
@@ -392,14 +413,14 @@ export async function checkMonitorHealth(env, dependencies = {}) {
   const stuck = await sql(db, `SELECT COUNT(*) AS n FROM trello_monitor_jobs WHERE board_id=? AND check_status='pending' AND first_seen<?`, board, t - 3600).first();
   const problems = [
     { kind: 'scan', active: Boolean(state?.last_ok && state.last_ok < t - 1800),
-      alert: () => ['⚠️ *Pitch monitor problem*', '',
-        `The Trello monitor hasn't completed a scan since ${bdtTime(state.last_ok)}, so new pitches aren't being checked.`, '',
+      alert: () => [`⚠️ *Pitch monitor problem · ${site.label}*`, '',
+        `The ${name} monitor hasn't completed a scan since ${bdtTime(state.last_ok)}, so new pitches aren't being checked.`, '',
         `Reason: ${clean(state.last_error || 'unknown', 200)}`].join('\n'),
-      ok: '✅ *Pitch monitor recovered*\n\nTrello scans are working again.' },
+      ok: `✅ *Pitch monitor recovered · ${site.label}*\n\n${name} scans are working again.` },
     { kind: 'ai', active: Number(stuck?.n) > 0,
-      alert: () => ['⚠️ *Pitch monitor problem*', '',
-        `${stuck.n} new pitch${stuck.n === 1 ? '' : 'es'} couldn't be checked for over an hour. The AI service (MiMo/Gemini) may be failing or out of quota.`].join('\n'),
-      ok: '✅ *Pitch monitor recovered*\n\nAll waiting pitches have now been checked.' },
+      alert: () => [`⚠️ *Pitch monitor problem · ${site.label}*`, '',
+        `${stuck.n} new ${site.label} pitch${stuck.n === 1 ? '' : 'es'} couldn't be checked for over an hour. The AI service (MiMo/Gemini) may be failing or out of quota.`].join('\n'),
+      ok: `✅ *Pitch monitor recovered · ${site.label}*\n\nAll waiting ${site.label} pitches have now been checked.` },
   // The HA add-on watches scans from outside the run (a hung run can't report
   // itself), so this in-run scan check would only send a second message there.
   ].filter(p => !(p.kind === 'scan' && env.MONITOR_SCAN_WATCHDOG === 'external'));
@@ -419,16 +440,16 @@ export async function checkMonitorHealth(env, dependencies = {}) {
   else if (bad.length > prev.last_value) {
     const fresh = bad.slice(0, bad.length - prev.last_value);
     const links = fresh.slice(0, 5).map(r => { try { return clean(JSON.parse(r.card_json).shortUrl, 150); } catch { return ''; } }).filter(Boolean);
-    const text = ['⚠️ *Pitch alert not delivered*', '',
-      `${fresh.length} duplicate alert${fresh.length === 1 ? '' : 's'} may not have reached WhatsApp. Check ${fresh.length === 1 ? 'this card' : 'these cards'}:`,
+    const text = [`⚠️ *Pitch alert not delivered · ${site.label}*`, '',
+      `${fresh.length} duplicate alert${fresh.length === 1 ? '' : 's'} may not have reached WhatsApp. Check ${fresh.length === 1 ? `this ${site.item}` : `these ${site.item}s`}:`,
       ...links].join('\n');
     if (await deliver(text, `health:${board}:delivery:${bad.length}`)) await save('delivery', 0, t, bad.length);
   } else if (bad.length < prev.last_value) await save('delivery', 0, prev.last_sent, bad.length);
   return sent;
 }
 
-async function safeHealthCheck(env, dependencies) {
-  try { await checkMonitorHealth(env, dependencies); } catch { /* never let self-monitoring break a tick */ }
+async function safeHealthCheck(env, dependencies, site) {
+  try { await checkMonitorHealth(env, dependencies, site); } catch { /* never let self-monitoring break a tick */ }
 }
 
 // A run that Cloudflare kills (e.g. CPU limit) can't release its lock, so the
@@ -440,7 +461,7 @@ const LEASE = 120, CHECK_BUDGET = 60; // a renewal always precedes a check (≤ 
 
 // Queues found duplicates in the WhatsApp outbox (or reads their status).
 // No send spacing here: the bridge add-on spaces the actual WhatsApp sends.
-async function queueAlerts(env, dependencies, board, report) {
+async function queueAlerts(env, dependencies, board, report, site) {
   const db = env.DB, t = now();
   // A tick that died mid-send is resubmitted: the bridge's idempotency key
   // returns the original result instead of sending twice.
@@ -449,17 +470,22 @@ async function queueAlerts(env, dependencies, board, report) {
   for (const job of outbox) {
     const claim = await sql(db, `UPDATE trello_monitor_jobs SET send_status='sending' WHERE board_id=? AND card_id=? AND send_status='pending'`, board, job.card_id).run();
     if (!changed(claim)) continue;
-    const result = await (dependencies.send || sendMonitorAlert)(job, env);
+    const result = await (dependencies.send || sendMonitorAlert)(job, env, site);
     await sql(db, `UPDATE trello_monitor_jobs SET send_status=?,message_sid=?,last_error=?,next_send=? WHERE board_id=? AND card_id=?`,
       result.status, result.sid || null, result.error || null, now() + (result.retryIn || 300), board, job.card_id).run();
     if (result.status === 'accepted') report.accepted++;
   }
 }
 
-export async function runTrelloMonitor(env, engine, dependencies = {}) {
-  if (env.TRELLO_MONITOR_ENABLED !== 'true') return { disabled: true };
-  const db = env.DB, board = env.TRELLO_MONITOR_BOARD_ID;
-  if (!db || !ID.test(board || '') || !env.TRELLO_KEY || !env.TRELLO_TOKEN) throw new Error('Monitor configuration incomplete');
+export function runTrelloMonitor(env, engine, dependencies = {}) {
+  return runPitchMonitor(env, engine, dependencies, TRELLO_SITE);
+}
+
+export async function runPitchMonitor(env, engine, dependencies = {}, site = TRELLO_SITE) {
+  if (!site.enabled(env)) return { disabled: true };
+  const db = env.DB, board = site.board(env);
+  if (!db) throw new Error('Monitor configuration incomplete');
+  site.validate(env);
   if (env.TRELLO_MONITOR_SEND === 'true') baileysConfig(env);
   const owner = crypto.randomUUID(), started = now();
   await sql(db, 'INSERT OR IGNORE INTO trello_monitor_state(board_id) VALUES (?)', board).run();
@@ -468,15 +494,15 @@ export async function runTrelloMonitor(env, engine, dependencies = {}) {
   const report = { checked: 0, flagged: 0, accepted: 0 }, stats = { cards: 0 };
   try {
     const state = await sql(db, 'SELECT * FROM trello_monitor_state WHERE board_id=?', board).first();
-    const { cards, watched } = await (dependencies.load || loadMonitorCards)(env);
+    const { cards, watched } = await (dependencies.load || site.load)(env);
     stats.cards = cards.length;
     const eligible = cards.filter(c => !c.closed && watched.includes(c.idList));
     // Baseline and marker commit atomically: a failed initial scan cannot seed a partial baseline.
     const existing = (await sql(db, 'SELECT card_id FROM trello_monitor_jobs WHERE board_id=?', board).all()).results;
     const known = new Set(existing.map(r => r.card_id));
     const inserts = eligible.filter(c => !known.has(c.id) && (!state.initialized || clean(c.name).length >= 3)).map(c => sql(db,
-      `INSERT OR IGNORE INTO trello_monitor_jobs(board_id,card_id,card_json,check_status,first_seen) VALUES (?,?,?,?,?)`,
-      board, c.id, JSON.stringify(c), state.initialized ? 'pending' : 'baseline', started));
+      `INSERT OR IGNORE INTO trello_monitor_jobs(board_id,card_id,card_json,check_status,first_seen,next_check) VALUES (?,?,?,?,?,?)`,
+      board, c.id, JSON.stringify(c), state.initialized ? 'pending' : 'baseline', started, site.settle ? started + site.settle : 0));
     if (!state.initialized) {
       await db.batch([...inserts, sql(db, 'UPDATE trello_monitor_state SET initialized=1,last_ok=?,last_error=NULL WHERE board_id=? AND owner=?', started, board, owner)]);
       await recordScan(db, board, { ok: true, cards: cards.length, ms: Date.now() - started * 1000 });
@@ -490,21 +516,36 @@ export async function runTrelloMonitor(env, engine, dependencies = {}) {
     // Alerts already found and the self-monitoring go out BEFORE the AI checks:
     // a check is what gets a run killed (CPU limit), and a killed run must not
     // hold back duplicates that were found earlier.
-    if (sending && !inQuietHours(env)) { await renew(); await queueAlerts(env, dependencies, board, report); }
-    await safeHealthCheck(env, dependencies);
+    if (sending && !inQuietHours(env)) { await renew(); await queueAlerts(env, dependencies, board, report, site); }
+    await safeHealthCheck(env, dependencies, site);
     const pending = (await sql(db, `SELECT * FROM trello_monitor_jobs WHERE board_id=? AND check_status='pending' AND next_check<=? ORDER BY first_seen,card_id LIMIT 5`, board, started).all()).results;
     const qualifies = alertFilter(env);
     const discovered = new Set(eligible.filter(e => !known.has(e.id)).map(e => e.id));
+    const byId = new Map(cards.map(c => [c.id, c]));
     for (const job of pending) {
       if (now() - started > CHECK_BUDGET) break; // the rest wait for the next run
       await renew();
+      let card = JSON.parse(job.card_json);
+      if (site.settle) {
+        const latest = byId.get(job.card_id);
+        if (!latest) { // deleted (or its row was edited away) before it was checked
+          await sql(db, `UPDATE trello_monitor_jobs SET check_status='gone',checked_at=?,last_error=NULL WHERE board_id=? AND card_id=? AND check_status='pending'`, now(), board, job.card_id).run();
+          continue;
+        }
+        const fresh = JSON.stringify(latest);
+        if (titleKey(latest.name) !== titleKey(card.name) || clean(latest.name).length < 3) { // still being typed: wait until it stops changing
+          await sql(db, `UPDATE trello_monitor_jobs SET card_json=?,next_check=? WHERE board_id=? AND card_id=?`, fresh, now() + site.settle, board, job.card_id).run();
+          continue;
+        }
+        if (fresh !== job.card_json) await sql(db, `UPDATE trello_monitor_jobs SET card_json=? WHERE board_id=? AND card_id=?`, fresh, board, job.card_id).run();
+        card = latest;
+      }
       // Count the attempt and schedule the retry BEFORE checking: if the run is
       // killed mid-check, this card backs off instead of being first in line
       // (and killing the run) every time.
       await sql(db, `UPDATE trello_monitor_jobs SET attempts=attempts+1,next_check=? WHERE board_id=? AND card_id=?`,
         now() + Math.min(3600, 60 * 2 ** Math.min(job.attempts, 6)), board, job.card_id).run();
       try {
-        const card = JSON.parse(job.card_json);
         // No self matches. Break ties between concurrently discovered cards by card ID.
         const peers = cards.filter(c => c.id !== card.id && (!discovered.has(c.id) || c.id < card.id));
         const meta = {}, t0 = Date.now();
@@ -524,17 +565,15 @@ export async function runTrelloMonitor(env, engine, dependencies = {}) {
       }
     }
     // Duplicates found in this run go out straight away when the run survives.
-    if (sending && report.flagged && !inQuietHours(env)) { await renew(); await queueAlerts(env, dependencies, board, report); }
+    if (sending && report.flagged && !inQuietHours(env)) { await renew(); await queueAlerts(env, dependencies, board, report, site); }
     await recordScan(db, board, { ok: true, ...stats, ...report, ms: Date.now() - started * 1000 });
     return report;
   } catch (error) {
     const message = String(error?.message || '');
-    const safeMessage = message === 'Trello token does not grant read access to the configured board'
-      || /^Trello read failed \(\d{3}\)$/.test(message)
-      ? message : 'Monitor tick failed; inspect Cloudflare logs';
+    const safeMessage = site.safeError(message) ? message : 'Monitor tick failed; inspect Cloudflare logs';
     await sql(db, 'UPDATE trello_monitor_state SET last_error=? WHERE board_id=? AND owner=?', safeMessage, board, owner).run();
     await recordScan(db, board, { ok: false, ...stats, ...report, ms: Date.now() - started * 1000 });
-    await safeHealthCheck(env, dependencies);
+    await safeHealthCheck(env, dependencies, site);
     throw error;
   } finally {
     await sql(db, 'UPDATE trello_monitor_state SET owner=NULL,lease_until=0 WHERE board_id=? AND owner=?', board, owner).run();

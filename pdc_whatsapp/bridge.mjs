@@ -19,6 +19,8 @@ export function loadOptions(file = `${DATA}/options.json`) {
     notifications: o.ha_notifications !== false,
     offlineMinutes: Math.min(1440, Math.max(1, Number(o.offline_notify_minutes) || 10)),
     workerUrl: String(o.worker_url || '').trim().replace(/\/+$/, ''),
+    // Read-only access to the OS Curveball Asana project; the OS monitor waits until it's set.
+    asanaToken: String(o.asana_token || '').trim(),
     // 0 turns the "Worker can't reach this bridge" watchdog off.
     upstreamMinutes: Math.min(1440, Math.max(0, Number(o.upstream_alert_minutes ?? 15) || 0)),
   };

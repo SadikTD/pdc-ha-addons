@@ -1,7 +1,7 @@
 name: PDC WhatsApp Bridge
-version: "3.0.3"
+version: "3.1.0"
 slug: pdc_whatsapp
-description: Pitch Duplicate Checker Trello monitor with self-hosted WhatsApp alerts and a sidebar dashboard
+description: Pitch Duplicate Checker monitor for WGTC (Trello), AotF (Google Sheet) and OS (Asana) with self-hosted WhatsApp alerts and a sidebar dashboard
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/pdc_whatsapp
 arch:
   - aarch64
@@ -34,6 +34,9 @@ options:
   # The pitch-checker Worker, e.g. https://name.account.workers.dev. The pitch
   # monitor moves from it to this add-on on first start (signs in with api_token).
   worker_url: ""
+  # Asana personal access token for the OS monitor (read-only use). Can also be
+  # set from PDC Monitor > Settings.
+  asana_token: ""
 schema:
   api_token: password
   sender_number: match(^\+[1-9]\d{7,14}$)
@@ -42,3 +45,4 @@ schema:
   offline_notify_minutes: int(1,1440)
   upstream_alert_minutes: int(0,1440)?
   worker_url: match(^(https://[A-Za-z0-9.-]+(:\d+)?/?)?$)?
+  asana_token: password?

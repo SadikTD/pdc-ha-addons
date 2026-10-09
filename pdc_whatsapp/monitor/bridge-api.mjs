@@ -2,9 +2,12 @@
 // outbox it collects messages from. Authenticated with the shared bearer token
 // (BAILEYS_TOKEN). Server-to-server only: no CORS headers, never called from a
 // browser.
-import { withMonitorSettings, effectiveSettings, saveMonitorSettings, MONITOR_SETTINGS, monitorTrelloGet, resolveWatchedLists, inQuietHours } from './trello-monitor.mjs';
+import { withMonitorSettings, effectiveSettings, saveMonitorSettings, MONITOR_SETTINGS, monitorTrelloGet, resolveWatchedLists, inQuietHours, TRELLO_SITE } from './trello-monitor.mjs';
 
 const ID = /^[a-f0-9]{24}$/;
+// The sites this monitor watches: the add-on passes all three (env._sites);
+// the Worker only ever had Trello.
+const sitesOf = env => env._sites || [TRELLO_SITE];
 const reply = (body, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
 });
@@ -25,17 +28,22 @@ const created = id => ID.test(id || '') ? parseInt(id.slice(0, 8), 16) : null;
 const sourceUrl = desc => /(https?:\/\/[^\s"')\]]+)/.exec(String(desc || ''))?.[1] || '';
 
 // Compact, display-ready shape of a job row.
-export function dashboardJob(r) {
+// `created` is in seconds; `createdDay` means only the day is known (sheet rows).
+const createdAt = (iso, id) => (iso ? Math.floor(Date.parse(iso) / 1000) || null : created(id));
+export function dashboardJob(r, site = TRELLO_SITE) {
   const card = parse(r.card_json, {});
   return {
-    id: r.card_id, name: card.name || '', url: card.shortUrl || '', list: card._listName || '', writer: card._writer || 'Unassigned',
-    source: sourceUrl(card.desc), created: created(r.card_id), firstSeen: r.first_seen, checkedAt: r.checked_at,
+    id: r.card_id, site: site.id, key: site.alertKey(r.board_id, r.card_id),
+    name: card.name || '', url: card.shortUrl || '', list: card._listName || '', writer: card._writer || 'Unassigned',
+    source: sourceUrl(card.desc), created: createdAt(card._created, r.card_id), createdDay: Boolean(card._createdLabel),
+    firstSeen: r.first_seen, checkedAt: r.checked_at,
     check: r.check_status, send: r.send_status, sid: r.message_sid, attempts: r.attempts, nextCheck: r.next_check,
     nextSend: r.next_send, error: r.last_error, meta: parse(r.check_meta, null),
     findings: (parse(r.result_json, []) || []).map(f => ({
       verdict: f.verdict, confidence: f.confidence, reason: f.reason,
       title: f.candidate?.title || '', list: f.candidate?.status || '', writer: f.candidate?.writer || 'Unassigned',
       url: f.candidate?.editLink || '', created: f.candidate?.date ? Math.floor(Date.parse(f.candidate.date) / 1000) || null : created(f.candidate?.cardId),
+      createdDay: Boolean(f.candidate?.dateLabel),
     })),
   };
 }
@@ -49,31 +57,44 @@ function settingsPayload(env) {
 }
 
 async function dashboard(env, url) {
-  const db = env.DB, board = env.TRELLO_MONITOR_BOARD_ID || '';
+  const db = env.DB;
   const limit = Math.min(2000, Math.max(1, Number(url.searchParams.get('limit')) || 600));
   const t = Math.floor(Date.now() / 1000);
   const one = (q, ...a) => db.prepare(q).bind(...a).first();
   const all = async (q, ...a) => (await db.prepare(q).bind(...a).all()).results;
-  const [state, total, jobs, counts, scans, health, delivery, poll, queued] = await Promise.all([
-    one('SELECT initialized,last_ok,last_error,lease_until FROM trello_monitor_state WHERE board_id=?', board),
-    one('SELECT COUNT(*) AS n FROM trello_monitor_jobs WHERE board_id=?', board),
-    all('SELECT * FROM trello_monitor_jobs WHERE board_id=? ORDER BY first_seen DESC, card_id DESC LIMIT ?', board, limit),
-    all('SELECT check_status,send_status,COUNT(*) AS count FROM trello_monitor_jobs WHERE board_id=? GROUP BY check_status,send_status', board),
-    all('SELECT hour,scans,failures,cards,checks,flagged,sent,last_at,last_ms,last_ok FROM trello_monitor_scans WHERE board_id=? AND hour>=? ORDER BY hour', board, t - 14 * 86400).catch(() => []),
-    all('SELECT kind,active,last_sent,last_value FROM trello_monitor_health WHERE board_id=?', board).catch(() => []),
+  // Each site's own state and history; `limit` pitches per site, newest first.
+  const sites = await Promise.all(sitesOf(env).map(async site => {
+    const board = site.board(env) || '';
+    const [state, total, jobs, counts, scans, health] = await Promise.all([
+      one('SELECT initialized,last_ok,last_error,lease_until FROM trello_monitor_state WHERE board_id=?', board),
+      one('SELECT COUNT(*) AS n FROM trello_monitor_jobs WHERE board_id=?', board),
+      all('SELECT * FROM trello_monitor_jobs WHERE board_id=? ORDER BY first_seen DESC, card_id DESC LIMIT ?', board, limit),
+      all('SELECT check_status,send_status,COUNT(*) AS count FROM trello_monitor_jobs WHERE board_id=? GROUP BY check_status,send_status', board),
+      all('SELECT hour,scans,failures,cards,checks,flagged,sent,last_at,last_ms,last_ok FROM trello_monitor_scans WHERE board_id=? AND hour>=? ORDER BY hour', board, t - 14 * 86400).catch(() => []),
+      all('SELECT kind,active,last_sent,last_value FROM trello_monitor_health WHERE board_id=?', board).catch(() => []),
+    ]);
+    return {
+      id: site.id, label: site.label, platform: site.platform, place: site.place, item: site.item, board,
+      enabled: Boolean(site.enabled(env)), needs: site.needs?.(env) || null,
+      state, total: Number(total?.n || 0), counts, scans, health, jobs: jobs.map(r => dashboardJob(r, site)),
+    };
+  }));
+  const [delivery, poll, queued] = await Promise.all([
     one("SELECT next_allowed FROM trello_monitor_delivery WHERE provider='baileys'").catch(() => null),
     one("SELECT next_allowed FROM trello_monitor_delivery WHERE provider='bridge_poll'").catch(() => null),
     one("SELECT COUNT(*) AS n, MIN(created) AS oldest FROM trello_monitor_wa_outbox WHERE status='queued'").catch(() => null),
   ]);
+  const { state, total, counts, scans, health } = sites[0]; // WGTC, as before there were three sites
   return {
-    now: t, board,
+    now: t, board: env.TRELLO_MONITOR_BOARD_ID || '',
     settings: settingsPayload(env),
     quietNow: inQuietHours(env, t),
     ai: { mimo: Boolean(String(env.MIMO_KEYS || '').trim()), gemini: Boolean(String(env.GEMINI_KEYS || '').trim()) },
-    state, total: Number(total?.n || 0), counts, scans, health,
+    state, total, counts, scans, health,
+    sites: sites.map(({ jobs, ...site }) => site),
     nextSendAllowed: delivery?.next_allowed || 0,
     outbox: { lastPoll: poll?.next_allowed || null, queued: Number(queued?.n || 0), oldest: queued?.oldest || null },
-    jobs: jobs.map(dashboardJob),
+    jobs: sites.flatMap(s => s.jobs).sort((a, b) => b.firstSeen - a.firstSeen || (a.id < b.id ? 1 : -1)),
   };
 }
 
@@ -87,9 +108,10 @@ async function lists(env) {
 // Recheck: run the AI comparison again on the next tick. The alert keeps its
 // idempotency key, so a card that was already alerted is not messaged twice
 // unless the add-on also clears that key (which is what "resend" does).
-async function jobAction(env, action, cardId) {
-  const db = env.DB, board = env.TRELLO_MONITOR_BOARD_ID;
-  if (!ID.test(cardId || '')) return reply({ error: 'bad card id' }, 400);
+async function jobAction(env, action, cardId, siteId = TRELLO_SITE.id) {
+  const site = sitesOf(env).find(s => s.id === siteId);
+  if (!site) return reply({ error: 'not found' }, 404);
+  const db = env.DB, board = site.board(env), key = site.alertKey(board, cardId);
   const res = action === 'recheck'
     ? await db.prepare(`UPDATE trello_monitor_jobs SET check_status='pending',attempts=0,next_check=0,last_error=NULL,send_status='none'
         WHERE board_id=? AND card_id=? AND send_status NOT IN ('pending','sending')`).bind(board, cardId).run()
@@ -98,8 +120,8 @@ async function jobAction(env, action, cardId) {
         AND send_status IN ('failed','uncertain','skipped','dry_run','accepted')`).bind(board, cardId).run();
   if (!Number(res.meta?.changes)) return reply({ error: action === 'recheck' ? 'This pitch is busy sending; try again in a minute' : 'Only checked pitches with findings can be resent' }, 409);
   // Queue a fresh copy (the add-on clears its own ledger entry for this key too).
-  if (action === 'resend') await db.prepare("DELETE FROM trello_monitor_wa_outbox WHERE key=? AND status<>'queued'").bind(`trello:${board}:${cardId}`).run();
-  return reply({ ok: true, key: `trello:${board}:${cardId}`, sending: env.TRELLO_MONITOR_SEND === 'true' });
+  if (action === 'resend') await db.prepare("DELETE FROM trello_monitor_wa_outbox WHERE key=? AND status<>'queued'").bind(key).run();
+  return reply({ ok: true, key, sending: env.TRELLO_MONITOR_SEND === 'true' });
 }
 
 // Outbox: the bridge polls for queued messages and reports each result.
@@ -121,7 +143,7 @@ async function outboxAck(env, body) {
     .bind(status, id, error, t, key).run();
   // Show the pitch's delivery right away instead of on the monitor's next check
   // of the outbox (same outcome sendWhatsAppText would report then).
-  const alert = /^trello:([a-f0-9]{24}):([a-f0-9]{24})$/.exec(key);
+  const alert = /^(?:trello|pitch):([a-z0-9]{1,24}):([A-Za-z0-9]{1,40})$/.exec(key);
   if (alert && Number(res.meta?.changes)) {
     await env.DB.prepare(`UPDATE trello_monitor_jobs SET send_status=?,message_sid=?,last_error=? WHERE board_id=? AND card_id=? AND send_status='pending'`)
       .bind({ sent: 'accepted', unknown: 'uncertain', failed: 'failed' }[status], id,
@@ -204,6 +226,8 @@ export async function handleBridgeApi(request, env) {
     }
     const job = /^POST \/bridge\/jobs\/([a-f0-9]{24})\/(recheck|resend)$/.exec(route);
     if (job) return jobAction(live, job[2], job[1]);
+    const siteJob = /^POST \/bridge\/jobs\/([a-z]{1,12})\/([A-Za-z0-9]{1,40})\/(recheck|resend)$/.exec(route);
+    if (siteJob) return jobAction(live, siteJob[3], siteJob[2], siteJob[1]);
     return reply({ error: 'not found' }, 404);
   } catch (e) {
     const message = /^Trello read failed \(\d{3}\)$/.test(e?.message) ? e.message : 'Dashboard request failed; inspect Cloudflare logs';

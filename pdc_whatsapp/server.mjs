@@ -266,14 +266,16 @@ const upstream = createUpstreamWatchdog({
   },
 });
 setInterval(() => upstream.tick().catch(e => log('Watchdog failed:', e?.message || e)), 60000).unref();
-// The pitch monitor scans Trello once a minute in this add-on (it moves here
-// from the Worker on first start). Its alerts are sent straight after each
+// The pitch monitor scans WGTC (Trello), AotF (Google Sheet) and OS (Asana)
+// once a minute in this add-on (Trello moved here from the Worker). Its alerts are sent straight after each
 // run; until the move they are collected from the Worker over outbound HTTPS.
 let outbox = null, shutdown = null;
 // Sent straight from here, not through the monitor's outbox: the monitor is
 // what's broken when these go out.
-async function monitorAlert(text, recovered) {
-  await haNotify(options, recovered ? null : text.replace(/\*/g, ''), 'pdc_monitor_scans');
+// One Home Assistant notification per site (WGTC keeps its original id).
+async function monitorAlert(text, recovered, site) {
+  const id = !site || site.id === 'wgtc' ? 'pdc_monitor_scans' : `pdc_monitor_scans_${site.id}`;
+  await haNotify(options, recovered ? null : text.replace(/\*/g, ''), id);
   const s = wa.status();
   if (!s.connected || !s.accountOk) return false; // retried next minute
   const key = `monitor-watch:${Date.now()}`;

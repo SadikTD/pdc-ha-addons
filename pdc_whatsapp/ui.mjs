@@ -41,6 +41,10 @@ export function validateBridgeSettings(changes) {
       if (typeof value === 'boolean') clean[key] = value; else errors[key] = 'Must be on or off';
     } else if (key === 'offline_notify_minutes') {
       if (Number.isInteger(value) && value >= 1 && value <= 1440) clean[key] = value; else errors[key] = 'Whole minutes from 1 to 1440';
+    } else if (key === 'asana_token') {
+      // Asana personal access tokens are printable ASCII with no spaces (e.g. 2/123…/456…:abc…).
+      const v = String(value ?? '').trim();
+      if (/^[\x21-\x7e]{20,300}$/.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Asana personal access token';
     } else if (key === 'worker_url') {
       const v = String(value || '').trim().replace(/\/+$/, '');
       if (v === '' || /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(v)) clean[key] = v; else errors[key] = 'Use the Worker address, e.g. https://name.account.workers.dev';
@@ -80,6 +84,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     recipient_number: `+${options.recipient}`, sender_number: `+${options.sender}`,
     ha_notifications: options.notifications, offline_notify_minutes: options.offlineMinutes,
     worker_url: options.workerUrl, api_token_set: options.token.length >= 32,
+    asana_token_set: Boolean(options.asanaToken), // never the token itself
   });
 
   const status = () => {
@@ -101,7 +106,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     const { clean, errors } = validateBridgeSettings(changes);
     if (Object.keys(errors).length) return [400, { errors }];
     const current = safeOptions();
-    const changed = Object.fromEntries(Object.entries(clean).filter(([k, v]) => v !== current[k]));
+    const changed = Object.fromEntries(Object.entries(clean).filter(([k, v]) => (k === 'asana_token' ? v !== options.asanaToken : v !== current[k])));
     if (!Object.keys(changed).length) return [200, { ok: true, changed: [], restart: false }];
     // The Worker addresses alerts to its own recipient setting and this bridge
     // only messages its configured recipient, so both must change together.
@@ -120,7 +125,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       await writeFile(optionsFile + '.tmp', JSON.stringify({ ...stored, ...changed }, null, 2));
       await rename(optionsFile + '.tmp', optionsFile);
     }
-    events.add('settings', `Changed ${Object.keys(changed).join(', ')}; restarting to apply`);
+    events.add('settings', `Changed ${Object.keys(changed).map(k => (k === 'asana_token' ? 'Asana token' : k)).join(', ')}; restarting to apply`);
     log('Settings changed:', Object.keys(changed).join(', '));
     restart();
     return [200, { ok: true, changed: Object.keys(changed), restart: true }];
@@ -157,12 +162,14 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       if (code === 200) { monitorCache = null; events.add('settings', `Monitor settings changed: ${Object.keys(body.settings || {}).join(', ')}`); }
       return [code, result];
     }
-    const job = /^POST \/api\/jobs\/([a-f0-9]{24})\/(recheck|resend)$/.exec(route);
+    // /api/jobs/<card>/<action> (WGTC, as before) or /api/jobs/<site>/<id>/<action>.
+    const job = /^POST \/api\/jobs\/(?:([a-z]{1,12})\/([A-Za-z0-9]{1,40})|([a-f0-9]{24}))\/(recheck|resend)$/.exec(route);
     if (job) {
-      const { status: code, body } = await worker(`/bridge/jobs/${job[1]}/${job[2]}`, { method: 'POST' });
-      // Clear this bridge's record of the alert so the Worker's retry really sends.
-      if (code === 200 && job[2] === 'resend') ledger.delete(body.key);
-      if (code === 200) { monitorCache = null; events.add(job[2], `${job[2] === 'resend' ? 'Resend' : 'Recheck'} requested for card ${job[1]}`); }
+      const [, site, id = job[3], , action] = job;
+      const { status: code, body } = await worker(`/bridge/jobs/${site ? `${site}/${id}` : id}/${action}`, { method: 'POST' });
+      // Clear this bridge's record of the alert so the retry really sends.
+      if (code === 200 && action === 'resend') ledger.delete(body.key);
+      if (code === 200) { monitorCache = null; events.add(action, `${action === 'resend' ? 'Resend' : 'Recheck'} requested for ${site ? `${site.toUpperCase()} pitch` : 'card'} ${id}`); }
       return [code, body];
     }
     if (route === 'POST /api/test') return [200, await sendTest((await readBody(req)).text)];

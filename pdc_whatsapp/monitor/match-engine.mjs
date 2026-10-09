@@ -34,10 +34,12 @@ function schedTrelloIdToDate(id) {
   return new Date(ts * 1000);
 }
 
+// Also normalizes AotF sheet rows and OS Asana tasks (pitch-sources.mjs),
+// which arrive in the same card shape plus _site and _created (ISO date).
 function schedNormalizeTrello(card, memberMap) {
   const title = String(card.name || '').trim();
   if (!title || title.length < 3) return null;
-  const created = schedTrelloIdToDate(card.id);
+  const created = card._created ? new Date(card._created) : schedTrelloIdToDate(card.id);
   let sourceUrl = '';
   if (card.desc) {
     const m = String(card.desc).match(/(https?:\/\/[^\s"'\)\]]+)/);
@@ -51,7 +53,8 @@ function schedNormalizeTrello(card, memberMap) {
   return {
     date: created,
     dateStr: created ? schedFmtDate(created) : '',
-    site: 'WGTC',
+    dateLabel: card._createdLabel || '', // sheet rows only know the day
+    site: card._site || 'WGTC',
     writer,
     sourceUrl,
     title,

@@ -58,10 +58,12 @@ const VERDICTS = {
   clear: { label: 'Clear', sev: 0 },
   waiting: { label: 'Waiting for AI', sev: -1 },
   baseline: { label: 'Baseline', sev: -2 },
+  gone: { label: 'Removed before check', sev: -3 },
 };
 const FLAGS = ['duplicate', 'same_story', 'near_miss'];
 function outcome(j) {
   if (j.check === 'baseline') return 'baseline';
+  if (j.check === 'gone') return 'gone';
   if (j.check !== 'checked') return 'waiting';
   if (!j.findings.length) return 'clear';
   return j.findings.reduce((a, f) => (VERDICTS[f.verdict]?.sev > VERDICTS[a]?.sev ? f.verdict : a), j.findings[0].verdict);
@@ -89,7 +91,8 @@ const TICK_SVG = {
 const ticks = send => { const t = SEND[send]?.tick || 'none'; return `<span class="ticks ${t === 'ok' ? 'ok' : t === 'warn' ? 'warn' : t === 'bad' ? 'bad' : ''}" title="${esc(SEND[send]?.label || send)}">${TICK_SVG[t]}</span>`; };
 const methodLabel = m => !m ? '—' : m.method === 'exact' ? 'Exact title / link match' : m.method === 'keywords' ? 'No similar keywords' : `AI${m.engine ? ` · ${m.engine}` : ''}`;
 function source(key) {
-  if (key.startsWith('trello:')) return { id: 'pitch', label: 'Pitch alert', c: 'var(--critical)' };
+  if (key.startsWith('trello:')) return { id: 'pitch', label: 'Pitch alert · WGTC', c: 'var(--critical)' };
+  if (key.startsWith('pitch:')) return { id: 'pitch', label: `Pitch alert · ${SITE_LABEL[key.split(':')[1]] || key.split(':')[1]}`, c: 'var(--critical)' };
   if (key.startsWith('health:')) return { id: 'health', label: 'Monitor health', c: 'var(--warning)' };
   if (key.startsWith('netmon-')) return { id: 'netmon', label: 'Net Monitor', c: 'var(--accent-2)' };
   if (key.startsWith('ui-test-')) return { id: 'test', label: 'Test', c: 'var(--accent)' };
@@ -97,16 +100,48 @@ function source(key) {
 }
 
 // ------------------------------------------------------------------ state
-const prefs = Object.assign({ theme: 'auto', refresh: 10, motion: true }, JSON.parse(localStorage.getItem('pdc-prefs') || '{}'));
+const prefs = Object.assign({ theme: 'auto', refresh: 10, motion: true, site: 'all' }, JSON.parse(localStorage.getItem('pdc-prefs') || '{}'));
 const S = {
-  page: 'overview', status: null, monitor: null, monitorError: null, messages: [], events: [],
+  page: 'overview', site: prefs.site, status: null, monitor: null, monitorError: null, messages: [], events: [],
   clockOffset: 0, filter: 'all', q: '', shown: 60, dailyDays: 14, scanHours: 24, msgFilter: 'all', msgShown: 120,
   lists: null, listsError: null, draft: null, bridgeDraft: null, fieldErrors: {}, restarting: false, openJob: null,
   firstPaint: { overview: true },
 };
 const serverNow = () => Date.now() + S.clockOffset;
-const jobs = () => S.monitor?.jobs || [];
-const ledgerKey = j => `trello:${S.monitor?.board}:${j.id}`;
+
+// ------------------------------------------------------------------ sites
+// Three sites, each checked only against its own pitches. The site switcher
+// (S.site) scopes Overview, Pitches and Activity; health always shows all.
+const SITE_LABEL = { wgtc: 'WGTC', aotf: 'AotF', os: 'OS' };
+const SITE_COLOR = { wgtc: 'var(--site-wgtc)', aotf: 'var(--site-aotf)', os: 'var(--site-os)' };
+const ITEMS = { Trello: 'Cards on the board', 'Google Sheet': 'Pitches in the sheet', Asana: 'Tasks in the project' };
+const OPEN_IN = { Trello: 'Open in Trello', 'Google Sheet': 'Open in the sheet', Asana: 'Open in Asana' };
+const sites = () => S.monitor?.sites || [];
+const siteOf = id => sites().find(x => x.id === (id || 'wgtc'));
+const shownSites = () => (S.site === 'all' ? sites() : sites().filter(x => x.id === S.site));
+const siteOn = x => Boolean(x?.enabled && !x.needs); // scanning, or meant to be
+const siteLastOk = x => ms(x?.state?.last_ok);
+const siteTag = id => `<span class="site-tag" style="--sc:${SITE_COLOR[id || 'wgtc'] || 'var(--muted)'}">${esc(SITE_LABEL[id || 'wgtc'] || id)}</span>`;
+const openIn = j => OPEN_IN[siteOf(j.site)?.platform] || 'Open';
+const placeOf = j => siteOf(j.site)?.place || 'List';
+const allJobs = () => S.monitor?.jobs || [];
+const jobs = () => (S.site === 'all' ? allJobs() : allJobs().filter(j => (j.site || 'wgtc') === S.site));
+const jobKey = j => `${j.site || 'wgtc'}:${j.id}`;
+const ledgerKey = j => j.key || `trello:${S.monitor?.board}:${j.id}`;
+// Sheet rows only know the day they were pitched.
+const dayOnly = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+const createdText = p => (!p.created ? '—' : p.createdDay ? dayOnly.format(new Date(p.created * 1000)) : when(ms(p.created)));
+// Hourly scan counters of the shown sites, added up.
+function scansOf(list = shownSites()) {
+  const by = new Map();
+  for (const x of list) for (const sc of x.scans || []) {
+    const a = by.get(sc.hour) || { hour: sc.hour, scans: 0, failures: 0, cards: 0, checks: 0, flagged: 0, sent: 0, last_ms: 0 };
+    a.scans += sc.scans; a.failures += sc.failures; a.cards += sc.cards; a.checks += sc.checks; a.flagged += sc.flagged; a.sent += sc.sent;
+    a.last_ms = Math.max(a.last_ms, sc.last_ms || 0);
+    by.set(sc.hour, a);
+  }
+  return [...by.values()].sort((a, b) => a.hour - b.hour);
+}
 const ledgerByKey = () => new Map(S.messages.map(m => [m.key, m]));
 
 // ------------------------------------------------------------------ theme
@@ -234,10 +269,11 @@ function dailyBuckets(days, pick) {
 
 // ------------------------------------------------------------------ top chrome
 // Why scans are failing right now, in plain words (null while they work).
-function scanTrouble() {
-  const h = S.status?.monitorHealth, m = S.monitor, now = serverNow();
-  if (!h || !m?.settings.values.enabled) return null;
-  const lastOk = ms(m.state?.last_ok) || h.lastOk;
+function scanTrouble(site) {
+  const all = S.status?.monitorHealth, now = serverNow();
+  const h = all?.sites?.[site?.id] || (site?.id === 'wgtc' ? all : null);
+  if (!h || !siteOn(site)) return null;
+  const lastOk = siteLastOk(site) || h.lastOk;
   if (lastOk && now - lastOk <= 5 * 60000) return null; // a one-off failed scan isn't worth a banner
   if (h.problem) return h.problem;
   if (h.running && now - h.running.since > 2 * 60000) return `A scan has been running for ${dur(now - h.running.since)}${h.running.waitingOn ? `, waiting for ${h.running.waitingOn} to answer` : ''}. It will be stopped after 4 minutes.`;
@@ -254,11 +290,12 @@ function renderChrome() {
       : `<span class="pill"><span class="dot bad"></span>WhatsApp offline</span>`);
   }
   if (m) {
-    const s = m.settings.values, lastOk = ms(m.state?.last_ok);
-    const stale = !lastOk || now - lastOk > 5 * 60000;
-    pills.push(!s.enabled ? `<span class="pill"><span class="dot"></span>Monitor paused</span>`
-      : stale ? `<span class="pill"><span class="dot bad"></span>Scans stalled</span>`
-      : `<span class="pill"><span class="dot live"></span>Scanning · <span data-ago="${lastOk}">${ago(lastOk, now)}</span></span>`);
+    const s = m.settings.values, on = sites().filter(siteOn);
+    const stalled = on.filter(x => scanTrouble(x));
+    const oldest = Math.min(...on.map(siteLastOk).filter(Boolean));
+    pills.push(!on.length ? `<span class="pill"><span class="dot"></span>Monitor paused</span>`
+      : stalled.length ? `<span class="pill"><span class="dot bad"></span>${esc(stalled.map(x => x.label).join(' & '))} scans stalled</span>`
+      : `<span class="pill"><span class="dot live"></span>Scanning ${on.length} site${on.length === 1 ? '' : 's'}${Number.isFinite(oldest) ? ` · <span data-ago="${oldest}">${ago(oldest, now)}</span>` : ''}</span>`);
     pills.push(!s.sending ? `<span class="pill"><span class="dot warn"></span>Dry run</span>`
       : m.quietNow ? `<span class="pill"><span class="dot info"></span>Quiet hours</span>`
       : `<span class="pill"><span class="dot live"></span>Alerts live</span>`);
@@ -268,15 +305,33 @@ function renderChrome() {
   const banners = [];
   if (st?.bridge.pairingCode) banners.push(`<div class="banner" style="--c:var(--warning)"><svg viewBox="0 0 16 16"><use href="#v-near_miss"/></svg><div><b>Link WhatsApp:</b> enter code <b class="num">${esc(st.bridge.pairingCode)}</b> on ${esc(st.bridge.sender)} under Linked devices › Link with phone number.</div><a class="btn" href="#settings">Details</a></div>`);
   if (S.monitorError) banners.push(`<div class="banner" style="--c:var(--critical)"><svg viewBox="0 0 16 16"><use href="#v-duplicate"/></svg><div>${esc(S.monitorError)}</div><a class="btn" href="#settings">Open settings</a></div>`);
-  const why = scanTrouble();
-  if (why) banners.push(`<div class="banner" style="--c:var(--critical)"><svg viewBox="0 0 16 16"><use href="#v-duplicate"/></svg><div><b>Scans aren't working.</b> ${esc(why)}</div><a class="btn" href="#activity">Activity</a></div>`);
+  for (const x of sites()) {
+    const why = scanTrouble(x);
+    if (why) banners.push(`<div class="banner" style="--c:var(--critical)"><svg viewBox="0 0 16 16"><use href="#v-duplicate"/></svg><div><b>${esc(x.label)} (${esc(x.platform)}) scans aren't working.</b> ${esc(why)}</div><a class="btn" href="#activity">Activity</a></div>`);
+    if (x.enabled && x.needs) banners.push(`<div class="banner" style="--c:var(--info)"><svg viewBox="0 0 16 16"><use href="#v-waiting"/></svg><div><b>${esc(x.label)} (${esc(x.platform)}) isn't being watched yet.</b> ${esc(x.needs)}.</div><a class="btn" href="#settings">Settings</a></div>`);
+  }
   if (S.restarting) banners.push(`<div class="banner" style="--c:var(--info)"><svg viewBox="0 0 16 16"><use href="#v-waiting"/></svg><div>Restarting the add-on to apply your settings…</div></div>`);
   $('#banner').innerHTML = banners.join('');
 
-  const recent = jobs().filter(j => FLAGS.includes(outcome(j)) && ms(j.checkedAt) > now - 86400000).length;
+  const recent = allJobs().filter(j => FLAGS.includes(outcome(j)) && ms(j.checkedAt) > now - 86400000).length;
   const badge = $('#nav-flagged');
   badge.hidden = !recent; badge.textContent = recent; badge.title = `${recent} flagged in the last 24 hours`;
   $('#rail-foot').innerHTML = st ? `Add-on v${esc(st.version)}<br>Updated <span data-ago="${Date.now()}">just now</span>` : '';
+  renderSitebar();
+}
+
+// The site switcher: All sites, or one site with its scan status.
+function renderSitebar() {
+  const el = $('#sitebar'), list = sites();
+  el.hidden = !list.length || !['overview', 'pitches', 'activity'].includes(S.page);
+  if (el.hidden) return;
+  if (S.site !== 'all' && !siteOf(S.site)) S.site = 'all';
+  const now = serverNow();
+  const state = x => (!x.enabled ? '' : x.needs ? 'warn' : scanTrouble(x) ? 'bad' : siteLastOk(x) && now - siteLastOk(x) < 5 * 60000 ? 'live' : 'warn');
+  const btn = (id, label, sub, dot, color) => `<button data-site="${id}" class="${S.site === id ? 'on' : ''}" style="--sc:${color}">
+    ${dot === null ? '<i class="all-mark"></i>' : `<span class="dot ${dot}"></span>`}<span class="sb-t"><b>${esc(label)}</b><small>${esc(sub)}</small></span></button>`;
+  el.innerHTML = `<div class="sitebar-in" role="group" aria-label="Site">${btn('all', 'All sites', `${list.filter(siteOn).length} of ${list.length} watched`, null, 'var(--accent)')}${
+    list.map(x => btn(x.id, x.label, !x.enabled ? `${x.platform} · paused` : x.needs ? `${x.platform} · needs setup` : x.platform, state(x), SITE_COLOR[x.id])).join('')}</div>`;
 }
 
 // ------------------------------------------------------------------ overview
@@ -288,7 +343,7 @@ const TILE_ICONS = {
 };
 function renderTiles() {
   const m = S.monitor, st = S.status, el = $('#tiles');
-  const count = (pred) => (m?.counts || []).filter(pred).reduce((a, c) => a + c.count, 0);
+  const count = (pred) => shownSites().flatMap(x => x.counts || []).filter(pred).reduce((a, c) => a + c.count, 0);
   const checked = count(c => c.check_status === 'checked');
   const waiting = count(c => c.check_status === 'pending');
   const flagged = count(c => c.check_status === 'checked' && c.send_status !== 'none');
@@ -329,31 +384,45 @@ function renderDaily() {
 function renderPulse() {
   const el = $('#card-pulse'), m = S.monitor;
   if (!m) { el.innerHTML = `<div class="card-head"><h2>Live monitor</h2></div><div class="skel" style="height:168px;width:168px;border-radius:50%;margin:0 auto 18px"></div><div class="skel" style="height:90px"></div>`; return; }
-  const lastScan = m.scans[m.scans.length - 1];
-  const day = m.scans.filter(s => ms(s.hour) > serverNow() - 86400000);
-  const fails = day.reduce((a, s) => a + s.failures, 0), scans = day.reduce((a, s) => a + s.scans, 0);
+  const sel = shownSites(), one = sel.length === 1 ? sel[0] : null, scans = scansOf(sel);
+  const lastScan = one ? (one.scans || [])[(one.scans || []).length - 1] : null;
+  const day = scans.filter(s => ms(s.hour) > serverNow() - 86400000);
+  const fails = day.reduce((a, s) => a + s.failures, 0), scans24 = day.reduce((a, s) => a + s.scans, 0);
   const waiting = jobs().filter(j => j.check === 'pending').length;
   if (!el.querySelector('.ring')) {
     el.innerHTML = `<div class="card-head"><h2>Live monitor</h2><span class="muted small">every minute</span></div>
       <div class="ring-wrap"><svg class="ring" viewBox="0 0 168 168"><circle class="track" cx="84" cy="84" r="74"/><circle class="prog" cx="84" cy="84" r="74" stroke-dasharray="465" stroke-dashoffset="465"/></svg>
       <div class="ring-label"><b id="ring-v">—</b><small id="ring-s">since last scan</small></div></div>
-      <dl class="kv" id="pulse-kv"></dl>`;
+      <div id="pulse-kv"></div>`;
   }
-  $('#pulse-kv').innerHTML = `
-    <dt>Last scan</dt><dd>${m.state?.last_ok ? esc(when(ms(m.state.last_ok))) : 'never'}</dd>
-    <dt>Cards on the board</dt><dd>${lastScan ? fmtN(lastScan.cards) : '—'}</dd>
+  const now = serverNow();
+  // All sites: one line per site. One site: its scan details.
+  $('#pulse-kv').innerHTML = !one ? `<div class="site-rows">${sel.map(x => {
+    const last = siteLastOk(x), trouble = scanTrouble(x), wait = allJobs().filter(j => j.site === x.id && j.check === 'pending').length;
+    const dot = !x.enabled ? '' : x.needs ? 'warn' : trouble ? 'bad' : last ? 'live' : 'warn';
+    const note = !x.enabled ? 'Paused' : x.needs ? 'Needs setup' : last ? `<span data-ago="${last}">${ago(last, now)}</span>` : 'Starting…';
+    return `<button class="site-row" data-site="${x.id}" style="--sc:${SITE_COLOR[x.id]}"><span class="dot ${dot}"></span><span class="sr-t"><b>${esc(x.label)}</b><small>${esc(x.platform)}${wait ? ` · ${wait} waiting for AI` : ''}</small></span><span class="sr-n">${note}</span></button>`;
+  }).join('')}</div><div class="muted small" style="margin-top:10px">${fmtN(scans24)} scans in 24h${fails ? ` · <span style="color:var(--critical-ink)">${fails} failed</span>` : ''}</div>`
+    : `<dl class="kv">
+    <dt>Last scan</dt><dd>${one.state?.last_ok ? esc(when(ms(one.state.last_ok))) : 'never'}</dd>
+    <dt>${esc(ITEMS[one.platform] || 'Pitches read')}</dt><dd>${lastScan ? fmtN(lastScan.cards) : '—'}</dd>
     <dt>Scan time</dt><dd>${lastScan?.last_ms ? `${(lastScan.last_ms / 1000).toFixed(1)}s` : '—'}</dd>
-    <dt>Scans, 24h</dt><dd>${fmtN(scans)}${fails ? ` · <span style="color:var(--critical-ink)">${fails} failed</span>` : ''}</dd>
+    <dt>Scans, 24h</dt><dd>${fmtN(scans24)}${fails ? ` · <span style="color:var(--critical-ink)">${fails} failed</span>` : ''}</dd>
     <dt>Waiting for AI</dt><dd>${waiting}</dd>
-    ${m.state?.last_error ? `<dt>Last error</dt><dd style="color:var(--critical-ink)" title="${esc(m.state.last_error)}">${esc(m.state.last_error)}</dd>` : ''}`;
+    ${one.state?.last_error ? `<dt>Last error</dt><dd style="color:var(--critical-ink)" title="${esc(one.state.last_error)}">${esc(one.state.last_error)}</dd>` : ''}</dl>`;
   tickPulse();
 }
 function tickPulse() {
   const m = S.monitor, v = $('#ring-v'); if (!m || !v) return;
-  const last = ms(m.state?.last_ok), now = serverNow();
+  // The ring follows the most out-of-date of the shown sites.
+  const on = shownSites().filter(siteOn), lasts = on.map(siteLastOk).filter(Boolean);
+  const last = lasts.length ? Math.min(...lasts) : null, now = serverNow();
   const since = last ? now - last : null;
   const prog = $('#card-pulse .prog'), wrap = $('#card-pulse .ring-wrap');
-  if (!m.settings.values.enabled) { v.textContent = 'Paused'; $('#ring-s').textContent = 'monitoring is off'; prog.style.strokeDashoffset = 465; return; }
+  if (!on.length) {
+    const setup = shownSites().some(x => x.enabled && x.needs);
+    v.textContent = setup ? 'Setup' : 'Paused'; $('#ring-s').textContent = setup ? 'needs an access token' : 'monitoring is off'; prog.style.strokeDashoffset = 465; return;
+  }
   v.textContent = since == null ? '—' : since < 3600000 ? `${Math.floor(since / 1000)}s` : ago(last, now).replace(' ago', '');
   $('#ring-s').textContent = since != null && since > 5 * 60000 ? 'since last good scan' : 'since last scan';
   const k = since == null ? 0 : Math.min(1, (since % 60000) / 60000);
@@ -366,9 +435,9 @@ function renderFeed() {
   const list = jobs().filter(j => j.check !== 'baseline').slice(0, 8);
   $('#feed').innerHTML = list.length ? list.map((j, i) => {
     const o = outcome(j), b = j.findings.length ? best(j) : null;
-    return `<div class="feed-item rise v-${o}" style="animation-delay:${i * 40}ms" data-job="${j.id}" tabindex="0" role="button">
+    return `<div class="feed-item rise v-${o}" style="animation-delay:${i * 40}ms" data-job="${esc(jobKey(j))}" tabindex="0" role="button">
       <span class="ic">${vIcon(o)}</span>
-      <div style="min-width:0"><div class="t">${esc(j.name)}</div><div class="s">${esc(VERDICTS[o].label)}${b ? ` · ${b.confidence}% vs “${esc(b.title)}”` : ` · ${esc(j.writer)} · ${esc(j.list)}`}</div></div>
+      <div style="min-width:0"><div class="t">${esc(j.name)}</div><div class="s">${S.site === 'all' ? siteTag(j.site) : ''}${esc(VERDICTS[o].label)}${b ? ` · ${b.confidence}% vs “${esc(b.title)}”` : ` · ${esc(j.writer)} · ${esc(j.list)}`}</div></div>
       ${timeTag(ms(j.checkedAt || j.firstSeen))}</div>`;
   }).join('') : `<div class="empty">No pitches checked yet.</div>`;
 }
@@ -395,16 +464,20 @@ function renderHealth() {
   if (S.monitorError) row('bad', onPi() ? 'Pitch monitor' : 'Pitch-checker Worker', esc(S.monitorError.length > 40 ? (onPi() ? 'Error' : 'Unreachable') : S.monitorError));
   if (m) {
     row('live', onPi() ? 'Pitch monitor' : 'Pitch-checker Worker', onPi() ? 'Running on this Pi' : 'Reachable');
-    const last = ms(m.state?.last_ok);
-    if (!m.settings.values.enabled) row('', 'Trello scans', 'Paused');
-    else if (!last || now - last > 5 * 60000) row('bad', 'Trello scans', `<span title="${esc(scanTrouble() || '')}">Last ${ago(last, now)}</span>`);
-    else row('live', 'Trello scans', `Last ${ago(last, now)}`);
-    const waiting = jobs().filter(j => j.check === 'pending');
+    for (const x of sites()) {
+      const last = siteLastOk(x), trouble = scanTrouble(x), name = `${esc(x.label)} scans <span class="muted small">${esc(x.platform)}</span>`;
+      if (!x.enabled) row('', name, 'Paused');
+      else if (x.needs) row('warn', name, '<a class="link" href="#settings">Needs Asana token</a>');
+      else if (trouble) row('bad', name, `<span title="${esc(trouble)}">${last ? `Last ${ago(last, now)}` : 'Not working'}</span>`);
+      else if (!last) row('warn', name, 'Starting…');
+      else row(now - last > 5 * 60000 ? 'warn' : 'live', name, `Last ${ago(last, now)}`);
+    }
+    const waiting = allJobs().filter(j => j.check === 'pending');
     const stuck = waiting.filter(j => now - ms(j.firstSeen) > 3600000).length;
     const ai = [m.ai.mimo && 'MiMo', m.ai.gemini && 'Gemini'].filter(Boolean).join(' + ') || 'No keys';
     row(stuck ? 'bad' : !(m.ai.mimo || m.ai.gemini) ? 'bad' : waiting.length ? 'warn' : 'live', 'AI verdicts', stuck ? `${stuck} stuck over an hour` : `${ai}${waiting.length ? ` · ${waiting.length} waiting` : ''}`);
-    const bad = jobs().filter(j => j.send === 'failed' || j.send === 'uncertain').length;
-    const queued = jobs().filter(j => j.send === 'pending').length;
+    const bad = allJobs().filter(j => j.send === 'failed' || j.send === 'uncertain').length;
+    const queued = allJobs().filter(j => j.send === 'pending').length;
     row(bad ? 'warn' : !m.settings.values.sending ? 'warn' : 'live', 'Alert delivery',
       !m.settings.values.sending ? 'Dry run (sending off)' : `${m.quietNow ? 'Quiet hours · ' : ''}${queued ? `${queued} queued · ` : ''}${bad ? `${bad} not delivered` : 'All delivered'}`);
   }
@@ -421,7 +494,7 @@ function renderScans24() {
 }
 const scanSeries = () => [{ id: 'ok', label: 'Successful scans', color: 'var(--accent-2)' }, { id: 'fail', label: 'Failed scans', color: 'var(--critical)' }];
 function hourCols(hours) {
-  const byHour = new Map((S.monitor?.scans || []).map(s => [s.hour, s]));
+  const byHour = new Map(scansOf().map(s => [s.hour, s]));
   const now = Math.floor(serverNow() / 1000), top = Math.floor(now / 3600) * 3600, cols = [];
   const group = hours > 72 ? 6 : hours > 24 ? 2 : 1;
   for (let h = top - (hours - 1) * 3600; h <= top; h += 3600 * group) {
@@ -443,7 +516,7 @@ function renderHeatmap() {
   const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
   let max = 0;
   for (const j of jobs()) {
-    if (!j.created) continue;
+    if (!j.created || j.createdDay) continue; // sheet rows have no time of day
     const d = new Date(j.created * 1000), r = (d.getDay() + 6) % 7, c = d.getHours();
     max = Math.max(max, ++grid[r][c]);
   }
@@ -494,18 +567,18 @@ function renderPitches() {
   }).join('');
   const f = FILTERS.find(x => x[0] === S.filter)?.[2] || (() => true);
   const q = S.q.trim().toLowerCase();
-  const rows = all.filter(f).filter(j => !q || [j.name, j.writer, j.list, ...j.findings.map(x => x.title)].join(' ').toLowerCase().includes(q));
+  const rows = all.filter(f).filter(j => !q || [j.name, j.writer, j.list, SITE_LABEL[j.site || 'wgtc'], ...j.findings.map(x => x.title)].join(' ').toLowerCase().includes(q));
   const el = $('#pitch-list');
   if (!S.monitor) { el.innerHTML = Array.from({ length: 8 }, () => '<div class="row"><span class="skel" style="grid-column:1/-1;height:34px"></span></div>').join(''); return; }
   if (!rows.length) { el.innerHTML = `<div class="empty"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg><div>No pitches match.</div></div>`; $('#more').hidden = true; return; }
   el.innerHTML = `<div class="row head"><span></span><span>Pitch</span><span class="c-match">Closest match</span><span class="c-list">How it was checked</span><span class="when">Checked</span><span></span></div>` +
     rows.slice(0, S.shown).map((j, i) => {
       const o = outcome(j), b = j.findings.length ? best(j) : null;
-      return `<div class="row v-${o}" data-job="${j.id}" tabindex="0" role="button" style="animation:rise .4s var(--ease) both;animation-delay:${Math.min(i, 20) * 20}ms">
+      return `<div class="row v-${o}" data-job="${esc(jobKey(j))}" tabindex="0" role="button" style="animation:rise .4s var(--ease) both;animation-delay:${Math.min(i, 20) * 20}ms">
         <span class="ic" title="${VERDICTS[o].label}">${vIcon(o)}</span>
-        <div class="main"><b>${esc(j.name)}</b><small>${esc(VERDICTS[o].label)} · ${esc(j.writer)} · ${esc(j.list)}</small></div>
+        <div class="main"><b>${esc(j.name)}</b><small>${S.site === 'all' ? siteTag(j.site) : ''}${esc(VERDICTS[o].label)} · ${esc(j.writer)} · ${esc(j.list)}</small></div>
         <div class="cell c-match">${b ? `${esc(b.title)}<small>${b.confidence}% · ${esc(VERDICTS[b.verdict].label)}${j.findings.length > 1 ? ` · +${j.findings.length - 1} more` : ''}</small>` : '<span class="muted">—</span>'}</div>
-        <div class="cell c-list">${esc(methodLabel(j.meta))}<small>${j.meta?.compared ? `vs ${fmtN(j.meta.compared)} cards` : o === 'waiting' ? `${j.attempts} attempt${j.attempts === 1 ? '' : 's'}` : ''}</small></div>
+        <div class="cell c-list">${o === 'gone' ? 'Not checked' : esc(methodLabel(j.meta))}<small>${j.meta?.compared ? `vs ${fmtN(j.meta.compared)} pitches` : o === 'waiting' ? `${j.attempts} attempt${j.attempts === 1 ? '' : 's'}` : o === 'gone' ? 'deleted or retitled first' : ''}</small></div>
         <div class="when">${timeTag(ms(j.checkedAt || j.firstSeen))}<small>${esc(when(ms(j.checkedAt || j.firstSeen)))}</small></div>
         ${ticks(j.send)}</div>`;
     }).join('');
@@ -534,33 +607,35 @@ function bubble(m, { collapse = true } = {}) {
     <div class="meta" title="${esc(m.state === 'sent' ? 'Delivered to WhatsApp' : m.state === 'unknown' ? `Not confirmed${m.error ? `: ${m.error}` : ''}` : 'Sending')}">${new Date(m.sentAt || m.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} ${tick}</div></div>`;
 }
 
-function openJob(id) {
-  const j = jobs().find(x => x.id === id); if (!j) return;
-  S.openJob = id;
+function openJob(key) {
+  const j = allJobs().find(x => jobKey(x) === key); if (!j) return;
+  S.openJob = key;
   const o = outcome(j), b = j.findings.length ? best(j) : null, msg = ledgerByKey().get(ledgerKey(j));
+  const site = siteOf(j.site), place = placeOf(j);
   const pcard = (tag, p) => `<div class="pcard"><div class="tag">${tag}</div><p>${esc(p.title || p.name)}</p><dl>
-    <dt>Writer</dt><dd>${esc(p.writer)}</dd><dt>List</dt><dd>${esc(p.list || '—')}</dd><dt>Created</dt><dd>${esc(when(ms(p.created)))}</dd></dl>
-    ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">Open in Trello <svg><use href="#i-ext"/></svg></a>` : ''}</div>`;
+    <dt>Writer</dt><dd>${esc(p.writer)}</dd><dt>${esc(place)}</dt><dd>${esc(p.list || '—')}</dd><dt>Created</dt><dd>${esc(createdText(p))}</dd></dl>
+    ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(openIn(j))} <svg><use href="#i-ext"/></svg></a>` : ''}</div>`;
   const steps = [
-    { c: 'var(--muted)', t: 'Card created', d: when(ms(j.created)) },
+    { c: 'var(--muted)', t: `${site?.item === 'card' ? 'Card' : 'Pitch'} created`, d: createdText(j) },
     { c: 'var(--info)', t: 'Seen by the monitor', d: `${when(ms(j.firstSeen))} · in ${j.list}` },
-    j.check === 'checked' ? { c: `var(--${{ duplicate: 'critical', same_story: 'serious', near_miss: 'warning', clear: 'good' }[o]})`, t: `Checked: ${VERDICTS[o].label}`, d: `${when(ms(j.checkedAt))} · ${methodLabel(j.meta)}` }
+    o === 'gone' ? { c: 'var(--muted)', t: 'Removed before it was checked', d: `${when(ms(j.checkedAt))} · deleted, or its title changed (the new version is checked on its own)` }
+      : j.check === 'checked' ? { c: `var(--${{ duplicate: 'critical', same_story: 'serious', near_miss: 'warning', clear: 'good' }[o]})`, t: `Checked: ${VERDICTS[o].label}`, d: `${when(ms(j.checkedAt))} · ${methodLabel(j.meta)}` }
       : { c: 'var(--info)', t: 'Waiting for an AI verdict', d: `${j.attempts} attempt${j.attempts === 1 ? '' : 's'}${j.nextCheck ? ` · next try ${when(ms(j.nextCheck))}` : ''}` },
     ...(j.send !== 'none' ? [{ c: SEND[j.send]?.tick === 'ok' ? 'var(--good)' : SEND[j.send]?.tick === 'bad' ? 'var(--critical)' : 'var(--warning)', t: SEND[j.send]?.label || j.send, d: msg?.sentAt ? when(msg.sentAt) : j.send === 'pending' && S.monitor.quietNow ? 'Waiting for quiet hours to end' : j.error || '' }] : []),
   ];
   const meta = j.meta || {};
   $('#drawer-body').innerHTML = `
-    <div class="d-head">${chip(o)}<h2 id="drawer-title">${esc(j.name)}</h2>
-      <div class="d-meta"><span>${esc(j.writer)}</span><span>${esc(j.list)}</span><span>${esc(when(ms(j.created)))}</span></div></div>
+    <div class="d-head"><div class="d-chips">${chip(o)}${siteTag(j.site)}</div><h2 id="drawer-title">${esc(j.name)}</h2>
+      <div class="d-meta"><span>${esc(site ? `${site.label} · ${site.platform}` : 'WGTC · Trello')}</span><span>${esc(j.writer)}</span><span>${esc(j.list)}</span><span>${esc(createdText(j))}</span></div></div>
     ${b ? `<div class="d-section"><h3>Closest match</h3><div class="compare">${pcard('New pitch', j)}${pcard('Existing pitch', b)}</div></div>
       <div class="d-section"><h3>${j.findings.length === 1 ? 'Finding' : `${j.findings.length} findings`}</h3>
       ${j.findings.map(f => `<div class="finding v-${f.verdict}">${confRing(f.confidence)}<div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${chip(f.verdict)}<a class="link" href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a></div><p>${esc(f.reason || '')}</p></div></div>`).join('')}</div>`
-      : o === 'clear' ? `<div class="d-section"><div class="finding v-clear"><div class="conf" style="display:grid;place-items:center"><svg class="vi" style="width:30px;height:30px"><use href="#v-clear"/></svg></div><div><b>No duplicates found</b><p>${meta.method === 'keywords' ? 'No other pitch in the reference window shared enough keywords to need an AI comparison.' : `Compared with ${fmtN(meta.compared || 0)} cards${meta.shortlisted ? `; the AI reviewed the ${meta.shortlisted} closest` : ''} and found nothing that overlaps.`}</p></div></div></div>` : ''}
+      : o === 'clear' ? `<div class="d-section"><div class="finding v-clear"><div class="conf" style="display:grid;place-items:center"><svg class="vi" style="width:30px;height:30px"><use href="#v-clear"/></svg></div><div><b>No duplicates found</b><p>${meta.method === 'keywords' ? `No other ${esc(site?.label || '')} pitch in the reference window shared enough keywords to need an AI comparison.` : `Compared with ${fmtN(meta.compared || 0)} ${esc(site?.label || '')} pitches${meta.shortlisted ? `; the AI reviewed the ${meta.shortlisted} closest` : ''} and found nothing that overlaps.`}</p></div></div></div>` : ''}
     <div class="d-section"><h3>Timeline</h3><ol class="steps">${steps.map(s => `<li style="--c:${s.c}">${esc(s.t)}<small>${esc(s.d)}</small></li>`).join('')}</ol></div>
     ${msg ? `<div class="d-section"><h3>WhatsApp message</h3><div class="chat" style="padding:16px">${bubble(msg, { collapse: false })}</div></div>` : ''}
     <div class="d-section"><h3>Check details</h3><dl class="kv">
       <dt>Method</dt><dd>${esc(methodLabel(j.meta))}</dd>
-      <dt>Compared against</dt><dd>${meta.compared != null ? `${fmtN(meta.compared)} cards` : '—'}</dd>
+      <dt>Compared against</dt><dd>${meta.compared != null ? `${fmtN(meta.compared)} pitches` : '—'}</dd>
       <dt>Sent to AI</dt><dd>${meta.shortlisted != null ? `${meta.shortlisted} closest` : '—'}</dd>
       <dt>Took</dt><dd>${meta.ms != null ? `${(meta.ms / 1000).toFixed(1)}s` : '—'}</dd>
       <dt>Alert</dt><dd>${esc(SEND[j.send]?.label || j.send)}</dd>
@@ -568,9 +643,9 @@ function openJob(id) {
       ${j.error ? `<dt>Last error</dt><dd style="color:var(--critical-ink)" title="${esc(j.error)}">${esc(j.error)}</dd>` : ''}
       ${j.source ? `<dt>Source link</dt><dd><a class="link" href="${esc(j.source)}" target="_blank" rel="noopener">${esc(j.source)}</a></dd>` : ''}</dl></div>
     <div class="actions">
-      ${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener"><svg><use href="#i-ext"/></svg>Open in Trello</a>` : ''}
-      <button class="btn" data-act="recheck" data-id="${j.id}"><svg><use href="#i-refresh"/></svg>Check again</button>
-      ${j.findings.length ? `<button class="btn" data-act="resend" data-id="${j.id}"><svg><use href="#i-send"/></svg>${j.send === 'accepted' ? 'Send alert again' : 'Send alert'}</button>` : ''}
+      ${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener"><svg><use href="#i-ext"/></svg>${esc(openIn(j))}</a>` : ''}
+      ${o === 'gone' ? '' : `<button class="btn" data-act="recheck" data-id="${esc(jobKey(j))}"><svg><use href="#i-refresh"/></svg>Check again</button>`}
+      ${j.findings.length ? `<button class="btn" data-act="resend" data-id="${esc(jobKey(j))}"><svg><use href="#i-send"/></svg>${j.send === 'accepted' ? 'Send alert again' : 'Send alert'}</button>` : ''}
     </div>`;
   const d = $('#drawer'); d.classList.add('on'); d.setAttribute('aria-hidden', 'false');
   requestAnimationFrame(() => requestAnimationFrame(() => $$('.conf .p', d).forEach(c => { c.style.strokeDashoffset = c.dataset.to; })));
@@ -579,12 +654,13 @@ function openJob(id) {
 function closeDrawer() { const d = $('#drawer'); d.classList.remove('on'); d.setAttribute('aria-hidden', 'true'); S.openJob = null; }
 
 async function jobAction(btn) {
-  const { act, id } = btn.dataset;
-  const j = jobs().find(x => x.id === id);
+  const { act, id: key } = btn.dataset;
+  const j = allJobs().find(x => jobKey(x) === key);
+  const [site, id] = key.split(':');
   if (act === 'resend' && !confirm(j?.send === 'accepted' ? 'This alert was already sent. Send it to WhatsApp again?' : 'Send this alert to WhatsApp?')) return;
   btn.classList.add('busy');
   try {
-    const r = await api(`api/jobs/${id}/${act}`, { method: 'POST' });
+    const r = await api(`api/jobs/${site}/${id}/${act}`, { method: 'POST' });
     toast(act === 'recheck' ? 'Queued: the monitor checks it again within a minute' : r.sending ? 'Queued: the alert goes out within a minute' : 'Queued, but sending is off (dry run)', 'ok');
     await loadMonitor(true); if (S.openJob) openJob(S.openJob);
   } catch (e) { toast(e.message, 'bad'); } finally { btn.classList.remove('busy'); }
@@ -654,13 +730,14 @@ const err = k => (S.fieldErrors[k] ? `<div class="err">${esc(S.fieldErrors[k])}<
 function monitorDraftFrom(m, lists) {
   const v = m.settings.values;
   return {
-    enabled: v.enabled, sending: v.sending, alert_verdicts: [...v.alert_verdicts], min_confidence: v.min_confidence,
+    enabled: v.enabled, aotf_enabled: v.aotf_enabled, os_enabled: v.os_enabled,
+    sending: v.sending, alert_verdicts: [...v.alert_verdicts], min_confidence: v.min_confidence,
     quiet_hours: v.quiet_hours, health_alerts: v.health_alerts, reference_days: v.reference_days,
     list_ids: lists ? lists.lists.filter(l => l.watched).map(l => l.id) : null,
   };
 }
 function bridgeDraftFrom(s) {
-  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url };
+  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '' };
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function monitorChanges() {
@@ -695,9 +772,14 @@ function renderSettings(force = false) {
     <div class="card s-card rise" style="animation-delay:60ms">
       <div class="s-head"><span class="ico"><svg><use href="#i-layers"/></svg></span><div><h2>Pitch monitor</h2><p>${onPi() ? 'Runs in this add-on on the Pi. Changes apply on its next scan (within a minute).' : 'Runs in the pitch-checker Worker until it moves to this add-on. Changes apply on its next minute tick.'}</p></div></div>
       ${!m ? `<div class="field col"><div class="muted">${esc(S.monitorError || 'Loading…')}</div></div>` : `
-      <div class="field"><div class="fl">Monitoring<small>Scan the Trello board every minute and check new pitches</small></div>${toggle('enabled', d.enabled, 'Monitoring')}</div>
+      <div class="field col"><div class="fl">Sites<small>Each site is scanned every minute, and a new pitch is only compared with that site's own pitches</small></div>
+        <div class="site-toggles">${sites().map(x => {
+          const key = { wgtc: 'enabled', aotf: 'aotf_enabled', os: 'os_enabled' }[x.id];
+          const what = { wgtc: 'Trello board · the watched lists below', aotf: 'Google Sheet · Pitches tab, plus The Archive for earlier pitches', os: 'Asana · OS Curveball project' }[x.id] || x.platform;
+          return `<label class="site-toggle" style="--sc:${SITE_COLOR[x.id]}"><span class="st-mark">${esc(x.label)}</span><span class="st-t"><b>${esc(x.label)} <span class="muted">· ${esc(x.platform)}</span></b><small>${esc(what)}${x.needs ? `<em>${esc(x.needs)}, under WhatsApp bridge below</em>` : ''}</small></span>${toggle(key, d[key], `Watch ${x.label}`)}</label>`;
+        }).join('')}</div></div>
       <div class="field"><div class="fl">Send WhatsApp alerts<small>When off, findings are recorded as a dry run and nothing is sent</small></div>${toggle('sending', d.sending, 'Send WhatsApp alerts')}</div>
-      <div class="field col"><div class="fl">Watched lists<small>A pitch is checked the first time it appears in one of these lists</small></div>
+      <div class="field col"><div class="fl">WGTC watched lists<small>A Trello card is checked the first time it appears in one of these lists</small></div>
         <div class="chips" id="lists">${S.lists ? S.lists.lists.map(l => `<label class="chk"><input type="checkbox" name="list" value="${l.id}" ${d.list_ids?.includes(l.id) ? 'checked' : ''}><span><i class="mark"></i>${esc(l.name)}</span></label>`).join('') : `<span class="muted">${esc(S.listsError || 'Loading lists from Trello…')}</span>`}</div>${err('list_ids')}</div>
       <div class="field col"><div class="fl">Alert me for<small>Other findings are still shown here but don't send a message</small></div>
         <div class="chips">${FLAGS.map(v => `<label class="chk"><input type="checkbox" name="verdict" value="${v}" ${d.alert_verdicts.includes(v) ? 'checked' : ''}><span class="v-${v}"><svg style="fill:currentColor;stroke:none"><use href="#v-${v}"/></svg><span style="color:var(--ink)">${VERDICTS[v].label}</span></span></label>`).join('')}</div>${err('alert_verdicts')}</div>
@@ -706,7 +788,7 @@ function renderSettings(force = false) {
       <div class="field"><div class="fl">Quiet hours<small>Hold alerts overnight and send them when the window ends (Bangladesh time)</small></div>
         <div class="pair">${toggle('quiet_on', quietOn, 'Quiet hours')}<input class="input time" type="time" name="q_from" value="${qFrom}" ${quietOn ? '' : 'disabled'} aria-label="From"><span class="muted">to</span><input class="input time" type="time" name="q_to" value="${qTo}" ${quietOn ? '' : 'disabled'} aria-label="To"></div>${err('quiet_hours')}</div>
       <div class="field"><div class="fl">Health alerts<small>WhatsApp you if scans stall, the AI fails, or an alert isn't delivered</small></div>${toggle('health_alerts', d.health_alerts, 'Health alerts')}</div>
-      <div class="field"><div class="fl">Reference window<small>How far back to look for earlier pitches on the board</small></div>
+      <div class="field"><div class="fl">Reference window<small>How far back to look for earlier pitches on each site</small></div>
         <div class="range"><input type="range" name="reference_days" min="1" max="14" step="1" value="${d.reference_days}"><output>${d.reference_days} d</output></div></div>`}
     </div>
 
@@ -717,6 +799,8 @@ function renderSettings(force = false) {
       <div class="field"><label for="f-sender">Sender number<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Changing it needs a new pairing</small></label><input class="input" id="f-sender" name="sender_number" value="${esc(bd.sender_number)}" inputmode="tel" autocomplete="off">${err('sender_number')}</div>
       <div class="field"><div class="fl">Home Assistant notifications<small>Warn in Home Assistant when WhatsApp is unlinked or offline</small></div>${toggle('ha_notifications', bd.ha_notifications, 'Home Assistant notifications')}</div>
       <div class="field"><label for="f-off">Offline warning after<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Minutes disconnected before warning</small></label><input class="input" id="f-off" type="number" min="1" max="1440" name="offline_notify_minutes" value="${bd.offline_notify_minutes}">${err('offline_notify_minutes')}</div>
+      <div class="field col"><label for="f-asana">Asana access token<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${st.settings.asana_token_set ? 'Saved. Paste a new one only to replace it.' : 'Needed to watch OS (Asana). In Asana: profile picture › Settings › Apps › Developer apps › Create new token.'} Only used to read the OS Curveball project.</small></label>
+        <input class="input wide" id="f-asana" name="asana_token" type="password" value="" placeholder="${st.settings.asana_token_set ? '•••••••• saved' : 'Paste your Asana personal access token'}" autocomplete="off" spellcheck="false">${err('asana_token')}</div>
       <div class="field col"><label for="f-worker">Pitch-checker Worker address</label><input class="input wide" id="f-worker" name="worker_url" value="${esc(bd.worker_url)}" placeholder="https://name.account.workers.dev" autocomplete="off">
         <div class="help">${onPi() ? 'Only used to move the pitch monitor here from the Worker, which is already done.' : 'The pitch monitor moves here from this Worker on the next start. It signs in with this add-on’s api_token.'}</div>${err('worker_url')}</div>`}
     </div>
@@ -762,7 +846,7 @@ function onSettingsInput(e) {
   const t = e.target, d = S.draft, bd = S.bridgeDraft;
   if (t.name === 'pref_motion') { prefs.motion = t.checked; savePrefs(); return; }
   if (d) {
-    if (['enabled', 'sending', 'health_alerts'].includes(t.name)) d[t.name] = t.checked;
+    if (['enabled', 'aotf_enabled', 'os_enabled', 'sending', 'health_alerts'].includes(t.name)) d[t.name] = t.checked;
     if (t.name === 'list') d.list_ids = $$('input[name=list]:checked').map(x => x.value);
     if (t.name === 'verdict') d.alert_verdicts = $$('input[name=verdict]:checked').map(x => x.value);
     if (t.name === 'min_confidence') { d.min_confidence = Number(t.value); t.nextElementSibling.textContent = `${t.value}%`; }
@@ -856,6 +940,7 @@ function go() {
   $$('[data-page]').forEach(a => a.classList.toggle('on', a.dataset.page === page));
   const sec = $(`#page-${page}`);
   $('#page-title').textContent = sec.dataset.title; $('#page-sub').textContent = sec.dataset.sub;
+  $('#card-pulse').innerHTML = ''; // rebuilt for the current site selection
   document.title = `${sec.dataset.title} · PDC Monitor`;
   if (page === 'settings') { $('#settings').dataset.built = ''; if (!S.lists) loadLists(); }
   if (page === 'activity') loadEvents();
@@ -869,6 +954,12 @@ addEventListener('hashchange', go);
 document.addEventListener('click', async e => {
   const t = e.target.closest('button, [data-job], [data-close]'); if (!t) return;
   if (t.dataset.job) return openJob(t.dataset.job);
+  if (t.dataset.site) {
+    S.site = prefs.site = t.dataset.site; localStorage.setItem('pdc-prefs', JSON.stringify(prefs));
+    S.shown = 60; $('#tiles').innerHTML = ''; $('#card-pulse').innerHTML = '';
+    if (S.page === 'overview' && t.closest('#card-pulse')) scrollTo({ top: 0, behavior: 'smooth' });
+    return renderPage();
+  }
   if (t.hasAttribute('data-close')) return closeDrawer();
   if (t.dataset.act) return jobAction(t);
   if (t.dataset.days) { S.dailyDays = Number(t.dataset.days); $$('#daily-range button').forEach(b => b.classList.toggle('on', b === t)); return renderDaily(); }

@@ -147,3 +147,29 @@ test('dashboard script parses (a syntax error leaves every page blank)', async (
   const r = spawnSync(process.execPath, ['--check', fileURLToPath(new URL('./www/app.js', import.meta.url))], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
 });
+
+test('AotF and OS pitches are rechecked and resent through their own site route', async () => {
+  const key = 'pitch:aotf:p0123456789abcdef0123x2';
+  const s = await serve({ worker: async () => Response.json({ ok: true, key, sending: true }) });
+  s.ledger.set(key, { state: 'sent', id: 'OLD' });
+  const r = await s.post('/api/jobs/aotf/p0123456789abcdef0123x2/resend');
+  assert.equal(r.status, 200); assert.equal(s.ledger.get(key), undefined);
+  assert.equal(s.calls[0].url, 'https://w.example.dev/bridge/jobs/aotf/p0123456789abcdef0123x2/resend');
+  assert.equal((await s.post('/api/jobs/os/1211995119491663/recheck')).status, 200);
+  assert.equal(s.calls[1].url, 'https://w.example.dev/bridge/jobs/os/1211995119491663/recheck');
+  assert.equal((await s.post('/api/jobs/os/bad-id!/recheck')).status, 404);
+  s.close();
+});
+
+test('the Asana token is saved to the add-on but never shown back', async () => {
+  assert.equal(validateBridgeSettings({ asana_token: 'short' }).errors.asana_token, 'Paste the whole Asana personal access token');
+  const s = await serve();
+  const tok = 'fake-asana-token-for-tests-only-123';
+  assert.equal((await (await s.get('/api/settings')).json()).asana_token_set, false);
+  const r = await (await s.post('/api/settings', { changes: { asana_token: ` ${tok} ` } })).json();
+  assert.deepEqual(r, { ok: true, changed: ['asana_token'], restart: true });
+  assert.equal(JSON.parse(readFileSync(s.optionsFile, 'utf8')).asana_token, tok);
+  const listed = JSON.stringify([await (await s.get('/api/settings')).json(), await (await s.get('/api/status')).json(), await (await s.get('/api/events')).json()]);
+  assert.equal(listed.includes(tok), false);
+  s.close();
+});

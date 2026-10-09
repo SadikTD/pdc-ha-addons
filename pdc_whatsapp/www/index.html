@@ -28,14 +28,15 @@
       <header class="topbar">
         <div>
           <h1 id="page-title">Overview</h1>
-          <p id="page-sub" class="muted">Everything the pitch monitor checked and sent</p>
+          <p id="page-sub" class="muted">Pitches checked on WGTC, AotF and OS, and the alerts sent</p>
         </div>
         <div class="pills" id="pills"></div>
       </header>
+      <div class="sitebar" id="sitebar" hidden></div>
       <div id="banner"></div>
 
       <!-- ============================== OVERVIEW ============================== -->
-      <section class="page" id="page-overview" data-title="Overview" data-sub="Everything the pitch monitor checked and sent">
+      <section class="page" id="page-overview" data-title="Overview" data-sub="Pitches checked on WGTC, AotF and OS, and the alerts sent">
         <div class="tiles" id="tiles"></div>
 
         <div class="grid g-2-1">
@@ -80,7 +81,7 @@
       <!-- ============================== PITCHES ============================== -->
       <section class="page" id="page-pitches" data-title="Pitches" data-sub="Every pitch the monitor checked, and what it found">
         <div class="toolbar">
-          <label class="search"><svg><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search titles, writers, lists…" autocomplete="off"></label>
+          <label class="search"><svg><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search titles, writers, sites, statuses…" autocomplete="off"></label>
           <div class="seg scroll" id="filters" role="group" aria-label="Filter"></div>
         </div>
         <div class="card flush"><div class="table" id="pitch-list"></div></div>
@@ -155,6 +156,7 @@
       <symbol id="v-near_miss" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.8v3.6M8 10.8v.1" stroke="var(--on-status)" stroke-width="1.8" stroke-linecap="round"/></symbol>
       <symbol id="v-clear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="m5 8.2 2 2 4-4.2" fill="none" stroke="var(--on-status)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="v-waiting" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2.2"/></symbol>
+      <symbol id="v-gone" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.2 8h5.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
       <symbol id="v-baseline" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="2"/></symbol>
     </defs>
   </svg>

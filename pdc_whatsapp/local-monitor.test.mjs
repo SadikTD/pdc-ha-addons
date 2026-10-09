@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openD1, createLocalMonitor, guardedFetch } from './local-monitor.mjs';
+import { openD1, createLocalMonitor, guardedFetch, SITES } from './local-monitor.mjs';
 import { createOutboxPoller, createLedger } from './bridge.mjs';
-import { runTrelloMonitor, withMonitorSettings } from './monitor/trello-monitor.mjs';
+import { runTrelloMonitor, withMonitorSettings, TRELLO_SITE } from './monitor/trello-monitor.mjs';
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
 
 const board = 'a'.repeat(24), lists = ['1'.repeat(24)], token = 't'.repeat(40);
@@ -25,7 +25,9 @@ function setup(extra = {}) {
   const events = [];
   const options = { token, recipient: '15551234567', workerUrl: 'https://worker.example' };
   const monitor = createLocalMonitor({ options, events: { add: (type, detail) => events.push({ type, detail }) }, fetcher, engine,
-    dependencies: { load }, file: join(dir, 'monitor.db'), configFile: join(dir, 'monitor.json'), watchFile: join(dir, 'watch.json'), ...extra });
+    file: join(dir, 'monitor.db'), configFile: join(dir, 'monitor.json'), watchFile: join(dir, 'watch.json'),
+    sites: [TRELLO_SITE], ...extra, dependencies: { load, ...extra.dependencies },
+    limits: { fetch: async url => { throw new Error(`test tried the network: ${url}`); }, ...extra.limits } });
   const sent = [];
   const wa = { status: () => ({ connected: true, accountOk: true }), send: async (_jid, text) => { sent.push(text); return `WA${sent.length}`; } };
   const poller = createOutboxPoller({ options, ledger: createLedger(join(dir, 'sent.json')), wa, api: monitor.api, spacingMs: 0, sleep: async () => {} });
@@ -145,4 +147,37 @@ test('an outside call that never finishes its reply is cut off', async () => {
   assert.equal(inFlight.size, 0);
   const ok = guardedFetch(async () => new Response('{"a":1}', { status: 200 }), inFlight, 1000);
   assert.deepEqual(await (await ok('https://example.test/')).json(), { a: 1 });
+});
+
+test('the sheet and Asana sites scan beside Trello, each on its own, and a stuck one alerts by name', async () => {
+  let sheetHang = false;
+  const alerts = [], settle = () => new Promise(r => setImmediate(r));
+  const sheetRows = [{ id: 'p1', name: 'An AotF pitch', idList: 'pitches', closed: false, shortUrl: '', _site: 'AotF' }];
+  const osTasks = [{ id: '11', name: 'An OS pitch', idList: 'open', closed: false, shortUrl: '', _site: 'OS' }];
+  const loaders = {
+    aotf: async () => (sheetHang ? new Promise(() => {}) : { cards: sheetRows, watched: ['pitches'] }),
+    os: async () => ({ cards: osTasks, watched: ['open'] }),
+  };
+  // Real clock (scan times are stored in real seconds); "stale" after 1.5 s.
+  const s = setup({ sites: SITES, limits: { stale: 1500 }, dependencies: { loaders }, onAlert: async (text, recovered, site) => { alerts.push({ text, recovered, site: site?.id }); return true; } });
+  await runTrelloMonitor(s.worker, engine, { load: s.load });
+  await s.monitor.tick();
+  const dash = async () => s.monitor.api('/bridge/dashboard').then(r => r.json());
+  let d = await dash();
+  assert.deepEqual(d.sites.map(x => [x.id, x.state?.initialized ?? null]), [['wgtc', 1], ['aotf', 1], ['os', null]], 'OS waits for its token');
+  assert.equal(d.sites.find(x => x.id === 'os').needs, 'Add your Asana access token in Settings to start');
+
+  // A hung sheet read never holds up Trello.
+  sheetHang = true; s.setCards([card(1), card(2)]);
+  s.monitor.tick(); await settle(); await new Promise(r => setTimeout(r, 300));
+  d = await dash();
+  assert.equal(d.jobs.find(j => j.id === card(2).id)?.check, 'checked', 'Trello carried on');
+  assert.notEqual(s.monitor.health().sites.aotf.running, null);
+  await new Promise(r => setTimeout(r, 2000));
+  await s.monitor.tick(); // Trello keeps scanning meanwhile
+  await s.monitor.watch();
+  assert.deepEqual(alerts.map(a => a.site), ['aotf'], 'only AotF is stale');
+  assert.match(alerts[0].text, /stopped scanning · AotF/);
+  assert.match(alerts[0].text, /AotF \(Google Sheet\)/);
+  s.monitor.stop();
 });
