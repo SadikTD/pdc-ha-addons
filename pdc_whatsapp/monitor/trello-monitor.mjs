@@ -202,7 +202,7 @@ export async function loadMonitorCards(env, get = monitorTrelloGet) {
 // version: rows and tasks are typed in place, unlike Trello cards. A pitch
 // that disappears meanwhile is marked 'gone' and never checked.
 export const TRELLO_SITE = {
-  id: 'wgtc', label: 'WGTC', platform: 'Trello', place: 'List', item: 'card', settle: 0,
+  id: 'wgtc', label: 'WGTC', emoji: '🟧', platform: 'Trello', place: 'List', item: 'card', settle: 0,
   board: env => env.TRELLO_MONITOR_BOARD_ID,
   enabled: env => env.TRELLO_MONITOR_ENABLED === 'true',
   validate(env) {
@@ -300,6 +300,9 @@ export function formatPitchTime(value, cardId) {
   if (!date || !Number.isFinite(date.getTime())) return 'Unknown';
   return BDT_FORMAT.format(date) + ' (BDT)';
 }
+// "09 Oct 2026, 06:29 pm (BDT)" or "9 Oct 2026" -> "9 Oct" (year kept if not this year).
+export const shortDay = label => String(label || 'Unknown').replace(/,.*$/, '').replace(/^0/, '')
+  .replace(new RegExp(` ${new Date().getFullYear()}$`), '');
 const BDT_FORMAT = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Dhaka', day: '2-digit', month: 'short', year: 'numeric',
   hour: '2-digit', minute: '2-digit', hour12: true,
@@ -313,34 +316,30 @@ export function buildMonitorAlert(job, qualifies = () => true, site = TRELLO_SIT
   if (!findings.length) throw new Error('No findings to notify');
   const best = findings[0];
   const heading = {
-    duplicate: '🔴 *Duplicate pitch found',
-    same_story: '🟠 *Similar story found',
-    near_miss: '🟡 *Possible pitch overlap',
-  }[best.verdict] || '🟡 *Possible pitch overlap';
+    duplicate: '🚨 *Duplicate*',
+    same_story: '⚠️ *Similar story*',
+    near_miss: '💡 *Possible overlap*',
+  }[best.verdict] || '💡 *Possible overlap*';
   const sameTitle = titleKey(card.name) === titleKey(best.candidate.title);
-  const existingList = clean(best.candidate.status, 100);
-  const link = (label, url) => clean(url, 300) ? ['', `🔗 *${label}*`, clean(url, 300)] : [];
+  const title = s => { const t = clean(s, 500); return t.length > 120 ? t.slice(0, 119).trimEnd() + '…' : t; };
+  const details = (writer, status, day) => [clean(writer || 'Unassigned', 60), clean(status || 'Unknown', 60), shortDay(day)].join(' · ');
+  const links = [['New', card.shortUrl], ['Existing', best.candidate.editLink]]
+    .filter(([, url]) => clean(url, 300)).map(([label, url]) => `👉 ${label}: ${clean(url, 300)}`);
+  const more = findings.length - 1;
   return [
-    `${heading} · ${site.label}*`,
+    `${site.emoji || '▪️'} *${site.label}* · ${heading}`,
     '',
-    '📝 *New pitch*',
-    clean(card.name, 450),
-    `👤 *Writer:* ${clean(card._writer || 'Unassigned', 180)}`,
-    `📍 *${site.place}:* ${clean(card._listName || 'Unknown', 100)}`,
-    `🕒 *Created:* ${card._createdLabel || formatPitchTime(card._created || null, card.id)}`,
+    '🆕 *New pitch*',
+    title(card.name),
+    details(card._writer, card._listName, card._createdLabel || formatPitchTime(card._created || null, card.id)),
     '',
-    '📌 *Existing pitch*',
-    sameTitle ? 'Same title as above.' : clean(best.candidate.title, 450),
-    `👤 *Writer:* ${clean(best.candidate.writer || 'Unassigned', 180)}`,
-    `📍 *${site.place}:* ${existingList || 'Unknown'}`,
-    `🕒 *Created:* ${best.candidate.dateLabel || formatPitchTime(best.candidate.date, best.candidate.cardId)}`,
+    '📌 *Already pitched*',
+    sameTitle ? 'Same title as above.' : title(best.candidate.title),
+    details(best.candidate.writer, best.candidate.status, best.candidate.dateLabel || formatPitchTime(best.candidate.date, best.candidate.cardId)),
     '',
-    '*Why it matched*',
-    clean(best.reason, 280),
-    `Confidence: ${best.confidence}%`,
-    ...link(`Open new ${site.item}`, card.shortUrl),
-    ...link(`Open existing ${site.item}`, best.candidate.editLink),
-    ...(findings.length > 1 ? ['', `*Also found:* ${findings.length - 1} more possible match${findings.length === 2 ? '' : 'es'}.`] : []),
+    `💬 ${clean(best.reason, 280)}`,
+    ...(links.length ? ['', ...links] : []),
+    ...(more ? ['', `➕ ${more} more possible match${more === 1 ? '' : 'es'}`] : []),
   ].join('\n');
 }
 export function sendMonitorAlert(job, env, site = TRELLO_SITE) {

@@ -116,7 +116,7 @@ export async function loadAotfRows(env, fetcher = fetch, clock = Date.now) {
 }
 
 export const AOTF_SITE = {
-  id: 'aotf', label: 'AotF', platform: 'Google Sheet', place: 'Status', item: 'pitch', settle: 45,
+  id: 'aotf', label: 'AotF', emoji: '🟦', platform: 'Google Sheet', place: 'Status', item: 'pitch', settle: 45,
   board: () => 'aotf',
   enabled: env => effectiveSettings(env).aotf_enabled,
   validate() {},
@@ -188,7 +188,7 @@ export async function loadOsTasks(env, fetcher = fetch, clock = Date.now) {
 }
 
 export const OS_SITE = {
-  id: 'os', label: 'OS', platform: 'Asana', place: 'Status', item: 'task', settle: 45,
+  id: 'os', label: 'OS', emoji: '⬛', platform: 'Asana', place: 'Status', item: 'task', settle: 45,
   board: () => 'os',
   enabled: env => effectiveSettings(env).os_enabled,
   validate(env) { if (!env.ASANA_TOKEN) throw new Error('Asana access token missing; add it in PDC Monitor Settings'); },
