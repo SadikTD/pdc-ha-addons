@@ -261,7 +261,7 @@ export async function monitorLLM(prompt, env, fetcher = fetch, meta = {}) {
   const attempts = [];
   // MiMo needs ~12 s for a few candidates and over 30 s for a full shortlist of 25.
   if (mimo) attempts.push({ name: 'MiMo', timeout: 55000, url: 'https://api.xiaomimimo.com/v1/chat/completions', headers: { 'api-key': mimo }, body: {
-    model: 'mimo-v2.5', messages: [{ role: 'user', content: prompt }], temperature: 0.1,
+    model: 'mimo-v2.6-flash', messages: [{ role: 'user', content: prompt }], temperature: 0.1,
     max_completion_tokens: 4096, response_format: { type: 'json_object' }, thinking: { type: 'disabled' },
   }, extract: j => j.choices?.[0]?.message?.content });
   if (gemini) attempts.push({ name: 'Gemini', timeout: 30000, url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
