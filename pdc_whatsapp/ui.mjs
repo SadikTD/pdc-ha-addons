@@ -22,9 +22,9 @@ const STARTED = Date.now().toString(36);
 // Made-up duplicate for the "Send test" button under Settings › Alert message.
 const SAMPLE_SHEET = 'https://docs.google.com/spreadsheets/d/example/edit#gid=0';
 const SAMPLE_ALERT = {
-  card_json: JSON.stringify({ name: 'A Bronx mother was allegedly pushed off a 15th-floor balcony holding her baby, and a neighbor says she heard someone plead', _writer: 'Kelsey', _listName: 'Approved', _createdLabel: '9 Oct 2026', shortUrl: `${SAMPLE_SHEET}&range=F12` }),
+  card_json: JSON.stringify({ name: 'A Bronx mother was allegedly pushed off a 15th-floor balcony holding her baby, and a neighbor says she heard someone plead', _writer: 'Kelsey', _listName: 'Approved', _created: '2026-10-09T14:49:00Z', shortUrl: `${SAMPLE_SHEET}&range=F12` }),
   result_json: JSON.stringify([
-    { verdict: 'duplicate', confidence: 92, reason: 'Same event: woman and baby found below a high-rise balcony.', candidate: { title: "A New York witness says she heard a woman yell 'please don't do this!' before a woman and a baby were found below a balcony", writer: 'Abdul', status: 'Submitted (archived)', dateLabel: '6 Oct 2026', editLink: `${SAMPLE_SHEET}&range=F7` } },
+    { verdict: 'duplicate', confidence: 92, reason: 'Same event: woman and baby found below a high-rise balcony.', candidate: { title: "A New York witness says she heard a woman yell 'please don't do this!' before a woman and a baby were found below a balcony", writer: 'Abdul', status: 'Submitted (archived)', date: '2026-10-06T03:12:00Z', editLink: `${SAMPLE_SHEET}&range=F7` } },
     { verdict: 'same_story', confidence: 70, reason: 'x', candidate: { title: 'Another pitch' } },
   ]),
 };

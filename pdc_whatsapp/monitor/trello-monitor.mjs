@@ -301,9 +301,20 @@ export function formatPitchTime(value, cardId) {
   if (!date || !Number.isFinite(date.getTime())) return 'Unknown';
   return BDT_FORMAT.format(date) + ' (BDT)';
 }
-// "09 Oct 2026, 06:29 pm (BDT)" or "9 Oct 2026" -> "9 Oct" (year kept if not this year).
+// "9 Oct 2026" -> "9 Oct" (year kept if not this year).
 export const shortDay = label => String(label || 'Unknown').replace(/,.*$/, '').replace(/^0/, '')
   .replace(new RegExp(` ${new Date().getFullYear()}$`), '');
+// For alerts: "9 Oct, 8:49 PM" in Bangladesh time (year added if not this
+// year), or just the day when only that is known (`dayLabel`, sheet rows).
+const BDT_PARTS = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Dhaka', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+export function alertWhen(value, cardId, dayLabel, clock = Date.now) {
+  if (dayLabel) return shortDay(dayLabel);
+  const date = value ? new Date(value) : ID.test(cardId || '') ? new Date(parseInt(cardId.slice(0, 8), 16) * 1000) : null;
+  if (!date || !Number.isFinite(date.getTime())) return 'Unknown';
+  const p = Object.fromEntries(BDT_PARTS.formatToParts(date).map(x => [x.type, x.value]));
+  const thisYear = BDT_PARTS.formatToParts(clock()).find(x => x.type === 'year').value;
+  return `${p.day} ${p.month}${p.year === thisYear ? '' : ` ${p.year}`}, ${p.hour}:${p.minute} ${p.dayPeriod}`;
+}
 const BDT_FORMAT = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Dhaka', day: '2-digit', month: 'short', year: 'numeric',
   hour: '2-digit', minute: '2-digit', hour12: true,
@@ -360,10 +371,10 @@ export function buildMonitorAlert(job, qualifies = () => true, site = TRELLO_SIT
     reason: clean(best.reason, 280),
     more: findings.length > 1 ? `➕ ${findings.length - 1} more possible match${findings.length === 2 ? '' : 'es'}` : '',
     new_title: title(card.name), new_writer: clean(card._writer || 'Unassigned', 60), new_status: clean(card._listName || 'Unknown', 60),
-    new_date: shortDay(card._createdLabel || formatPitchTime(card._created || null, card.id)), new_link: clean(card.shortUrl, 300),
+    new_date: alertWhen(card._created, card.id, card._createdLabel), new_link: clean(card.shortUrl, 300),
     old_title: titleKey(card.name) === titleKey(old.title) ? 'Same title as above.' : title(old.title),
     old_writer: clean(old.writer || 'Unassigned', 60), old_status: clean(old.status || 'Unknown', 60),
-    old_date: shortDay(old.dateLabel || formatPitchTime(old.date, old.cardId)), old_link: clean(old.editLink, 300),
+    old_date: alertWhen(old.date, old.cardId, old.dateLabel), old_link: clean(old.editLink, 300),
   };
   v.new_details = [v.new_writer, v.new_status, v.new_date].join(' · ');
   v.old_details = [v.old_writer, v.old_status, v.old_date].join(' · ');

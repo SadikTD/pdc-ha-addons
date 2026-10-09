@@ -30,7 +30,7 @@ export const AOTF_TABS = { pitches: '1645815743', archive: '6476884' };
 // Read by column position like the browser checker (headers have changed before).
 const COL = { date: 0, writer: 2, source: 3, source2: 4, title: 5, status: 6 };
 const SHEET_URL = `https://docs.google.com/spreadsheets/d/${AOTF_SHEET_ID}`;
-const DATE_CELL = /^Date\((\d{4}),(\d{1,2}),(\d{1,2})/;
+const DATE_CELL = /^Date\((\d{4}),(\d{1,2}),(\d{1,2})(?:,(\d{1,2}),(\d{1,2}),(\d{1,2}))?/;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export async function sheetQuery(gid, query, fetcher = fetch) {
@@ -57,12 +57,72 @@ export async function sheetQuery(gid, query, fetcher = fetch) {
 }
 
 const cellText = c => (c?.v == null ? '' : clean(c.v, 2000));
-function cellDate(c) {
+// The spreadsheet's own time zone (File › Settings): every time in it is
+// California time, e.g. 9:04 PM in Bangladesh is typed in as 8:04 AM.
+// ponytail: fixed here; update it if the sheet's time zone setting ever changes.
+export const SHEET_TZ = 'America/Los_Angeles';
+const TZ_PARTS = new Intl.DateTimeFormat('en-US', { timeZone: SHEET_TZ, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+const tzOffset = t => {
+  const p = Object.fromEntries(TZ_PARTS.formatToParts(t).map(x => [x.type, Number(x.value)]));
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(t / 1000) * 1000;
+};
+// Sheet wall-clock time -> the real moment (daylight saving included).
+export function sheetTime(y, mo, d, h = 0, mi = 0, s = 0) {
+  const wall = Date.UTC(y, mo, d, h, mi, s);
+  const first = wall - tzOffset(wall);
+  return wall - tzOffset(first);
+}
+// A gviz date cell. The Archive tab has the time of day; the Pitches tab's
+// cells are formatted as day only, so their time comes from `times` (below).
+function cellDate(c, time) {
   const m = DATE_CELL.exec(String(c?.v ?? ''));
   if (!m) return null;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]; // month is 0-based
-  const t = Date.UTC(y, mo, d);
-  return Number.isFinite(t) ? { t, label: `${d} ${MONTHS[mo]} ${y}` } : null;
+  if (!Number.isFinite(Date.UTC(y, mo, d))) return null;
+  const hms = m[4] != null ? [Number(m[4]), Number(m[5]), Number(m[6])]
+    : time && time.y === y && time.mo === mo && time.d === d ? [time.h, time.mi, time.s] : null;
+  if (hms) return { t: sheetTime(y, mo, d, ...hms), label: '' };
+  return { t: Date.UTC(y, mo, d), label: `${d} ${MONTHS[mo]} ${y}` };
+}
+
+// The Pitches tab's times, read from its .xlsx download (the gviz feed drops
+// them because column A is formatted as day only). Returns sheet row ->
+// { y, mo, d, h, mi, s } in sheet time. Any failure just means no times.
+export async function loadPitchTimes(fetcher = fetch) {
+  try {
+    const res = await fetcher(`${SHEET_URL}/export?format=xlsx&gid=${AOTF_TABS.pitches}`, { method: 'GET', signal: AbortSignal.timeout(20000) });
+    if (res.status !== 200) return new Map();
+    const xml = await unzipEntry(new Uint8Array(await res.arrayBuffer()), 'xl/worksheets/sheet1.xml');
+    const times = new Map();
+    for (const [, row, v] of (xml || '').matchAll(/<c r="A(\d+)"[^>]*>(?:<f>[^<]*<\/f>)?<v>([\d.]+)<\/v>/g)) {
+      // Spreadsheet serial: days since 30 Dec 1899, the fraction is the time.
+      const w = new Date(Math.round((Number(v) - 25569) * 86400) * 1000);
+      times.set(Number(row), { y: w.getUTCFullYear(), mo: w.getUTCMonth(), d: w.getUTCDate(), h: w.getUTCHours(), mi: w.getUTCMinutes(), s: w.getUTCSeconds() });
+    }
+    return times;
+  } catch { return new Map(); }
+}
+// One file out of a .zip, without a zip library.
+async function unzipEntry(zip, name) {
+  const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  let eocd = zip.length - 22;
+  while (eocd >= 0 && view.getUint32(eocd, true) !== 0x06054b50) eocd--;
+  if (eocd < 0) return null;
+  let p = view.getUint32(eocd + 16, true);
+  for (let i = view.getUint16(eocd + 10, true); i > 0; i--) {
+    const method = view.getUint16(p + 10, true), size = view.getUint32(p + 20, true);
+    const nameLen = view.getUint16(p + 28, true), extra = view.getUint16(p + 30, true), comment = view.getUint16(p + 32, true);
+    const local = view.getUint32(p + 42, true);
+    if (new TextDecoder().decode(zip.subarray(p + 46, p + 46 + nameLen)) === name) {
+      const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+      const data = zip.subarray(start, start + size);
+      if (method === 0) return new TextDecoder().decode(data);
+      if (method !== 8) return null;
+      return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+    }
+    p += 46 + nameLen + extra + comment;
+  }
+  return null;
 }
 
 export async function loadAotfRows(env, fetcher = fetch, clock = Date.now) {
@@ -71,14 +131,16 @@ export async function loadAotfRows(env, fetcher = fetch, clock = Date.now) {
   const bdtToday = Math.floor((clock() + 6 * 3600000) / DAY) * DAY;
   const cutoff = bdtToday - historyDays(env) * DAY;
   const since = new Date(cutoff).toISOString().slice(0, 10);
-  const [pitches, archive] = await Promise.all([
+  const [pitches, archive, times] = await Promise.all([
     sheetQuery(AOTF_TABS.pitches, null, fetcher),
     sheetQuery(AOTF_TABS.archive, `select * where A >= date '${since}'`, fetcher),
+    loadPitchTimes(fetcher),
   ]);
   const read = (cells, tab, row) => {
     const name = cellText(cells[COL.title]);
     if (!name || titleKey(name) === 'proposed title') return null; // blank row, or a header that slipped through
-    const date = cellDate(cells[COL.date]);
+    // A time is only used when its day matches the row's, in case rows moved between the two reads.
+    const date = cellDate(cells[COL.date], row && times.get(row));
     const status = cellText(cells[COL.status]);
     return {
       name, date, tab, row,
@@ -108,7 +170,7 @@ export async function loadAotfRows(env, fetcher = fetch, clock = Date.now) {
       name: r.name, desc: r.desc, idList: r.tab, closed: false,
       shortUrl: r.row ? `${SHEET_URL}/edit#gid=${AOTF_TABS.pitches}&range=F${r.row}` : `${SHEET_URL}/edit#gid=${AOTF_TABS.archive}`,
       _listName: r.status, _writer: r.writer || 'Unassigned', _site: 'AotF',
-      _created: r.date ? new Date(r.date.t).toISOString() : null, _createdLabel: r.date ? r.date.label : 'Unknown',
+      _created: r.date ? new Date(r.date.t).toISOString() : null, _createdLabel: r.date ? r.date.label : 'Unknown', // '' when the time is known
     });
   }
   // Every row still on the Pitches tab is a current pitch, whatever its date.
