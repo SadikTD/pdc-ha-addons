@@ -1,5 +1,5 @@
 name: PDC WhatsApp Bridge
-version: "3.6.0"
+version: "3.6.1"
 slug: pdc_whatsapp
 description: Pitch Duplicate Checker monitor for WGTC (Trello), AotF (Google Sheet) and OS (Asana) with self-hosted WhatsApp alerts and a sidebar dashboard
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/pdc_whatsapp

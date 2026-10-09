@@ -560,10 +560,12 @@ const FILTERS = [
   ['problems', 'Problems', j => j.send === 'failed' || j.send === 'uncertain' || Boolean(j.error)],
 ];
 // Sorting and the date range are remembered in this browser.
-S.sort = prefs.pitchSort || 'created'; S.dir = prefs.pitchDir || -1;
-S.writer = 'all'; S.range = prefs.pitchRange || '7'; S.unfolded = new Set();
+// Default: the latest checked first, so the top of the list is what's being pitched now.
+S.sort = prefs.pitchOrder || 'checked'; S.dir = prefs.pitchOrderDir || -1;
+S.writer = 'all'; S.range = prefs.pitchRange || '7';
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
 const pitchedAt = j => ms(j.created || j.firstSeen);
+const checkedAt = j => ms(j.checkedAt || j.firstSeen);
 const dayDiff = (a, b) => Math.round((startOfDay(a) - startOfDay(b)) / 86400000);
 // When the closest match was pitched, compared with this one: "2 days earlier", "same day".
 function gapText(j, b) {
@@ -575,15 +577,17 @@ function dayTitle(t) {
   const n = dayDiff(serverNow(), t);
   return `${n === 0 ? 'Today · ' : n === 1 ? 'Yesterday · ' : ''}${dayFmt.format(t)}`;
 }
-function pitchedText(j, grouped) {
+// Under a day heading only the time is shown, unless the pitch is from another day.
+function pitchedText(j, day) {
   const t = pitchedAt(j); if (!t) return '—';
-  if (j.createdDay) return grouped ? 'Day only' : dayOnly.format(t);
-  return grouped ? timeFmt.format(t) : when(t);
+  if (j.createdDay) return dayOnly.format(t);
+  return day != null && startOfDay(t) === day ? timeFmt.format(t) : when(t);
 }
 const SORTS = {
   name: j => j.name.toLowerCase(),
   writer: j => j.writer.toLowerCase(),
   created: j => pitchedAt(j) || 0,
+  checked: j => checkedAt(j) || 0,
   list: j => (j.list || '').toLowerCase(),
   match: j => (j.findings.length ? VERDICTS[best(j).verdict].sev * 1000 + best(j).confidence : -1),
   send: j => SEND[j.send]?.label || j.send,
@@ -596,56 +600,47 @@ function renderPitches() {
   $('#p-writer').innerHTML = `<option value="all">All writers</option>${writers.map(w => `<option value="${esc(w)}" ${w === S.writer ? 'selected' : ''}>${esc(w)}</option>`).join('')}`;
   $('#p-range').value = S.range;
   const since = S.range === 'all' ? 0 : startOfDay(serverNow()) - (Number(S.range) - 1) * 86400000;
-  const all = base.filter(j => (S.writer === 'all' || j.writer === S.writer) && (!since || (pitchedAt(j) || 0) >= since));
+  const all = base.filter(j => (S.writer === 'all' || j.writer === S.writer) && (!since || (checkedAt(j) || 0) >= since));
   $('#filters').innerHTML = FILTERS.map(([id, label, f]) => {
     const n = all.filter(f).length;
     return (id === 'problems' || id === 'waiting') && !n ? '' : `<button data-f="${id}" class="${S.filter === id ? 'on' : ''}">${id in VERDICTS ? `<svg class="vi v-${id}"><use href="#v-${id}"/></svg>` : ''}${label}<span class="n">${n}</span></button>`;
   }).join('');
   const f = FILTERS.find(x => x[0] === S.filter)?.[2] || (() => true);
   const q = S.q.trim().toLowerCase();
-  const key = SORTS[S.sort] || SORTS.created;
-  const cmp = (a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * S.dir || (pitchedAt(b) || 0) - (pitchedAt(a) || 0); };
+  const key = SORTS[S.sort] || SORTS.checked;
+  const cmp = (a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * S.dir || (checkedAt(b) || 0) - (checkedAt(a) || 0); };
   const rows = all.filter(f).filter(j => !q || [j.name, j.writer, j.list, SITE_LABEL[j.site || 'wgtc'], ...j.findings.map(x => x.title)].join(' ').toLowerCase().includes(q)).sort(cmp);
   const el = $('#pitch-list');
   if (!S.monitor) { el.innerHTML = Array.from({ length: 8 }, () => '<div class="row"><span class="skel" style="grid-column:1/-1;height:34px"></span></div>').join(''); return; }
   if (!rows.length) { el.innerHTML = `<div class="empty"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg><div>No pitches match.</div></div>`; $('#more').hidden = true; return; }
 
-  // Sorted by pitch time: rows go under day headings with flagged ones first,
-  // and clear ones fold away unless you're searching or filtering for them.
-  const grouped = S.sort === 'created', fold = grouped && S.filter === 'all' && !q;
+  // Sorted by time (checked or pitched), rows sit under day headings in that order.
+  const dayOf = S.sort === 'checked' ? checkedAt : S.sort === 'created' ? pitchedAt : null;
   const items = [];
-  if (!grouped) items.push(...rows.map(j => ({ j })));
-  else {
-    const days = new Map();
-    for (const j of rows) { const d = startOfDay(pitchedAt(j) || 0); if (!days.has(d)) days.set(d, []); days.get(d).push(j); }
-    for (const [d, list] of days) {
-      const flagged = list.filter(j => FLAGS.includes(outcome(j))).sort((a, b) => VERDICTS[outcome(b)].sev - VERDICTS[outcome(a)].sev || cmp(a, b));
-      const clear = fold ? list.filter(j => outcome(j) === 'clear') : [];
-      const rest = list.filter(j => !flagged.includes(j) && !clear.includes(j));
-      items.push({ day: d, n: list.length, flagged: flagged.length }, ...flagged.map(j => ({ j })), ...rest.map(j => ({ j })));
-      if (!clear.length) continue;
-      const open = S.unfolded.has(d);
-      if (open) items.push(...clear.map(j => ({ j })));
-      items.push({ fold: d, n: clear.length, open });
+  let last = null;
+  for (const j of rows) {
+    if (dayOf) {
+      const d = startOfDay(dayOf(j) || 0);
+      if (d !== last) { const list = rows.filter(x => startOfDay(dayOf(x) || 0) === d); items.push({ day: d, n: list.length, flagged: list.filter(x => FLAGS.includes(outcome(x))).length }); last = d; }
     }
+    items.push({ j, day: dayOf ? last : null });
   }
   const head = (k, label, cls = '') => `<button class="sort${S.sort === k ? ' on' : ''}${cls ? ` ${cls}` : ''}" data-sort="${k}">${label}${S.sort === k ? `<span aria-hidden="true">${S.dir < 0 ? '↓' : '↑'}</span>` : ''}</button>`;
-  let html = `<div class="row head"><span></span>${head('name', 'Pitch')}${head('writer', 'Writer', 'c-writer')}${head('created', 'Pitched')}${head('list', 'Status', 'c-list')}${head('match', 'Match', 'c-match')}${head('send', 'Alert', 'c-alert')}</div>`;
+  let html = `<div class="row head"><span></span>${head('name', 'Pitch')}${head('writer', 'Writer', 'c-writer')}${head('created', 'Pitched')}${head('list', 'Status', 'c-list')}${head('match', 'Match', 'c-match')}${head('checked', 'Checked', 'c-when')}${head('send', 'Alert', 'c-alert')}</div>`;
   let shown = 0, i = 0;
-  const plural = n => `${n} clear pitch${n === 1 ? '' : 'es'}`;
   for (const it of items) {
     if (shown >= S.shown) break;
-    if (it.day != null) { html += `<div class="row day"><b>${esc(dayTitle(it.day))}</b><span>${it.n} pitch${it.n === 1 ? '' : 'es'}${it.flagged ? ` · ${it.flagged} flagged` : ''}</span></div>`; continue; }
-    if (it.fold != null) { html += `<button class="row fold" data-fold="${it.fold}">${it.open ? `Hide ${plural(it.n)}` : `Show ${plural(it.n)}`}</button>`; continue; }
+    if (!it.j) { html += `<div class="row day"><b>${esc(dayTitle(it.day))}</b><span>${it.n} pitch${it.n === 1 ? '' : 'es'}${it.flagged ? ` · ${it.flagged} flagged` : ''}</span></div>`; continue; }
     const j = it.j, o = outcome(j), b = j.findings.length ? best(j) : null;
     shown++;
     html += `<div class="row v-${o}" data-job="${esc(jobKey(j))}" tabindex="0" role="button" style="animation:rise .4s var(--ease) both;animation-delay:${Math.min(i++, 20) * 20}ms">
       <span class="ic" title="${VERDICTS[o].label}">${vIcon(o)}</span>
       <div class="main"><b>${esc(j.name)}</b><small>${S.site === 'all' ? siteTag(j.site) : ''}${esc(VERDICTS[o].label)}</small></div>
       <div class="cell c-writer">${esc(j.writer)}</div>
-      <div class="cell" title="${esc(createdText(j))}">${esc(pitchedText(j, grouped))}</div>
+      <div class="cell" title="${esc(createdText(j))}">${esc(pitchedText(j, it.day))}</div>
       <div class="cell c-list">${esc(j.list || '—')}</div>
       <div class="cell c-match">${b ? `${b.confidence}% <span class="muted">· ${esc(b.writer)}</span><small>${esc(gapText(j, b) || VERDICTS[b.verdict].label)}${j.findings.length > 1 ? ` · +${j.findings.length - 1} more` : ''}</small>` : '<span class="muted">—</span>'}</div>
+      <div class="when c-when">${timeTag(checkedAt(j))}</div>
       ${ticks(j.send)}</div>`;
   }
   el.innerHTML = html;
@@ -1065,10 +1060,9 @@ document.addEventListener('click', async e => {
   if (t.dataset.f) { S.filter = t.dataset.f; S.shown = 60; return renderPitches(); }
   if (t.dataset.sort) {
     const k = t.dataset.sort;
-    S.dir = S.sort === k ? -S.dir : k === 'created' || k === 'match' ? -1 : 1; S.sort = k;
-    prefs.pitchSort = S.sort; prefs.pitchDir = S.dir; savePrefs(); S.shown = 60; return renderPitches();
+    S.dir = S.sort === k ? -S.dir : ['checked', 'created', 'match'].includes(k) ? -1 : 1; S.sort = k;
+    prefs.pitchOrder = S.sort; prefs.pitchOrderDir = S.dir; savePrefs(); S.shown = 60; return renderPitches();
   }
-  if (t.dataset.fold) { const d = Number(t.dataset.fold); if (S.unfolded.has(d)) S.unfolded.delete(d); else S.unfolded.add(d); return renderPitches(); }
   if (t.dataset.mf) { S.msgFilter = t.dataset.mf; S.msgShown = 120; $('#chat').dataset.ready = ''; return renderMessages(); }
   if (t.id === 'earlier') { S.msgShown += 120; const y = document.body.scrollHeight - scrollY; renderMessages(); scrollTo({ top: document.body.scrollHeight - y }); return; }
   if (t.dataset.expand) { const m = S.messages.find(x => x.key === t.dataset.expand); if (m) t.closest('.bubble').outerHTML = bubble(m, { collapse: false }); return; }

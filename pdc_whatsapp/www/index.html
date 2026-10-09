@@ -81,9 +81,11 @@
       <!-- ============================== PITCHES ============================== -->
       <section class="page" id="page-pitches" data-title="Pitches" data-sub="Every pitch the monitor checked, and what it found">
         <div class="toolbar">
-          <label class="search"><svg><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search titles, writers, sites, statuses…" autocomplete="off"></label>
-          <select class="input pick" id="p-writer" aria-label="Writer"><option value="all">All writers</option></select>
-          <select class="input pick" id="p-range" aria-label="Date range"><option value="1">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="all">All time</option></select>
+          <div class="tb-row">
+            <label class="search"><svg><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search titles, writers, sites, statuses…" autocomplete="off"></label>
+            <select class="input pick" id="p-writer" aria-label="Writer"><option value="all">All writers</option></select>
+            <select class="input pick" id="p-range" aria-label="Date range"><option value="1">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="all">All time</option></select>
+          </div>
           <div class="seg scroll" id="filters" role="group" aria-label="Filter"></div>
         </div>
         <div class="card flush"><div class="table" id="pitch-list"></div></div>
