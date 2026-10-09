@@ -37,6 +37,7 @@ export const MONITOR_SETTINGS = {
     return v;
   } },
   health_alerts: { env: 'MONITOR_HEALTH_ALERTS', fallback: 'true', parse: v => v !== 'false', store: bool },
+  alert_template: { env: 'MONITOR_ALERT_TEMPLATE', fallback: '', parse: v => v, store: v => checkAlertTemplate(v) },
   reference_days: { env: 'MONITOR_REFERENCE_DAYS', fallback: '7', parse: v => Math.min(14, Math.max(1, Number(v) || 7)), store: int(1, 14) },
   // The AotF sheet and OS Asana monitors (pitch-sources.mjs, add-on only).
   // `enabled` above stays the WGTC Trello switch.
@@ -308,42 +309,68 @@ const BDT_FORMAT = new Intl.DateTimeFormat('en-GB', {
   hour: '2-digit', minute: '2-digit', hour12: true,
 });
 
+// The alert layout, editable from the dashboard (Settings › Alert message).
+// A line whose {placeholders} all come out empty is dropped, so "👉 New: {new_link}"
+// disappears when there's no link and "{more}" when there's only one match.
+export const DEFAULT_ALERT_TEMPLATE = `{site_emoji} *{site}* · {match}
+
+🆕 *New pitch*
+{new_title}
+{new_details}
+
+📌 *Already pitched*
+{old_title}
+{old_details}
+
+💬 {reason}
+
+👉 New: {new_link}
+👉 Existing: {old_link}
+
+{more}`;
+export const ALERT_PLACEHOLDERS = ['site', 'site_emoji', 'match', 'confidence', 'reason', 'more',
+  'new_title', 'new_writer', 'new_status', 'new_date', 'new_details', 'new_link',
+  'old_title', 'old_writer', 'old_status', 'old_date', 'old_details', 'old_link'];
+const PLACEHOLDER = /\{([a-z_]+)\}/g;
+export function checkAlertTemplate(v) {
+  if (typeof v !== 'string' || v.length > 1500) throw new Error('must be text of up to 1,500 characters');
+  const unknown = [...new Set([...v.matchAll(PLACEHOLDER)].map(m => m[1]).filter(k => !ALERT_PLACEHOLDERS.includes(k)))];
+  if (unknown.length) throw new Error(`unknown placeholder ${unknown.map(k => `{${k}}`).join(', ')}`);
+  return v;
+}
+export function fillAlertTemplate(template, values) {
+  return (template.trim() ? template : DEFAULT_ALERT_TEMPLATE).replace(/\r/g, '').split('\n')
+    .filter(line => { const keys = [...line.matchAll(PLACEHOLDER)].map(m => m[1]); return !keys.length || keys.some(k => values[k]); })
+    .map(line => line.replace(PLACEHOLDER, (m, k) => values[k] ?? m))
+    .join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000);
+}
+
 // `qualifies` picks the findings the dashboard's alert rules allow; if the
 // rules changed after the alert was queued, all findings are used instead.
-export function buildMonitorAlert(job, qualifies = () => true, site = TRELLO_SITE) {
+export function buildMonitorAlert(job, qualifies = () => true, site = TRELLO_SITE, template = '') {
   const card = JSON.parse(job.card_json), all = JSON.parse(job.result_json);
   const findings = all.some(qualifies) ? all.filter(qualifies) : all;
   if (!findings.length) throw new Error('No findings to notify');
-  const best = findings[0];
-  const heading = {
-    duplicate: '🚨 *Duplicate*',
-    same_story: '⚠️ *Similar story*',
-    near_miss: '💡 *Possible overlap*',
-  }[best.verdict] || '💡 *Possible overlap*';
-  const sameTitle = titleKey(card.name) === titleKey(best.candidate.title);
+  const best = findings[0], old = best.candidate;
   const title = s => { const t = clean(s, 500); return t.length > 120 ? t.slice(0, 119).trimEnd() + '…' : t; };
-  const details = (writer, status, day) => [clean(writer || 'Unassigned', 60), clean(status || 'Unknown', 60), shortDay(day)].join(' · ');
-  const links = [['New', card.shortUrl], ['Existing', best.candidate.editLink]]
-    .filter(([, url]) => clean(url, 300)).map(([label, url]) => `👉 ${label}: ${clean(url, 300)}`);
-  const more = findings.length - 1;
-  return [
-    `${site.emoji || '▪️'} *${site.label}* · ${heading}`,
-    '',
-    '🆕 *New pitch*',
-    title(card.name),
-    details(card._writer, card._listName, card._createdLabel || formatPitchTime(card._created || null, card.id)),
-    '',
-    '📌 *Already pitched*',
-    sameTitle ? 'Same title as above.' : title(best.candidate.title),
-    details(best.candidate.writer, best.candidate.status, best.candidate.dateLabel || formatPitchTime(best.candidate.date, best.candidate.cardId)),
-    '',
-    `💬 ${clean(best.reason, 280)}`,
-    ...(links.length ? ['', ...links] : []),
-    ...(more ? ['', `➕ ${more} more possible match${more === 1 ? '' : 'es'}`] : []),
-  ].join('\n');
+  const v = {
+    site: site.label, site_emoji: site.emoji || '▪️',
+    match: { duplicate: '🚨 *Duplicate*', same_story: '⚠️ *Similar story*' }[best.verdict] || '💡 *Possible overlap*',
+    confidence: Number.isFinite(best.confidence) ? `${best.confidence}%` : '',
+    reason: clean(best.reason, 280),
+    more: findings.length > 1 ? `➕ ${findings.length - 1} more possible match${findings.length === 2 ? '' : 'es'}` : '',
+    new_title: title(card.name), new_writer: clean(card._writer || 'Unassigned', 60), new_status: clean(card._listName || 'Unknown', 60),
+    new_date: shortDay(card._createdLabel || formatPitchTime(card._created || null, card.id)), new_link: clean(card.shortUrl, 300),
+    old_title: titleKey(card.name) === titleKey(old.title) ? 'Same title as above.' : title(old.title),
+    old_writer: clean(old.writer || 'Unassigned', 60), old_status: clean(old.status || 'Unknown', 60),
+    old_date: shortDay(old.dateLabel || formatPitchTime(old.date, old.cardId)), old_link: clean(old.editLink, 300),
+  };
+  v.new_details = [v.new_writer, v.new_status, v.new_date].join(' · ');
+  v.old_details = [v.old_writer, v.old_status, v.old_date].join(' · ');
+  return fillAlertTemplate(template, v);
 }
 export function sendMonitorAlert(job, env, site = TRELLO_SITE) {
-  return sendWhatsAppText(buildMonitorAlert(job, alertFilter(env), site), site.alertKey(job.board_id, job.card_id), env);
+  return sendWhatsAppText(buildMonitorAlert(job, alertFilter(env), site, effectiveSettings(env).alert_template), site.alertKey(job.board_id, job.card_id), env);
 }
 
 // Queues the message once per idempotency key and reports what the bridge has

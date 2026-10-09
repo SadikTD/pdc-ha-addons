@@ -111,6 +111,19 @@ test('test message goes to the recipient and is recorded', async () => {
   t.close();
 });
 
+test('alert message test sends a made-up pitch in the given layout, and rejects unknown placeholders', async () => {
+  const s = await serve();
+  assert.match((await (await s.get('/api/status')).json()).alertTemplate.default, /\{new_title\}/);
+  assert.equal((await s.post('/api/test-alert', {})).status, 200);
+  assert.match(s.sent[0][1], /^🧪 \*Test alert\* \(made-up pitch\)\n\n🟦 \*AotF\* · 🚨 \*Duplicate\*\n/);
+  assert.equal((await s.post('/api/test-alert', { template: '{site}: {new_title} ({confidence})\nExtra: {old_link}' })).status, 200);
+  assert.ok(s.sent[1][1].endsWith('AotF: A Bronx mother was allegedly pushed off a 15th-floor balcony holding her baby, and a neighbor says she heard someone pl… (92%)\nExtra: https://docs.google.com/spreadsheets/d/example/edit#gid=0&range=F7'));
+  const bad = await s.post('/api/test-alert', { template: 'Hi {writer}' });
+  assert.equal(bad.status, 400); assert.match((await bad.json()).error, /unknown placeholder \{writer\}/);
+  assert.equal(s.sent.length, 2);
+  s.close();
+});
+
 test('bridge settings are validated; a recipient change updates the Worker first', async () => {
   assert.deepEqual(Object.keys(validateBridgeSettings({ recipient_number: '123', worker_url: 'http://x', bogus: 1, offline_notify_minutes: 0 }).errors).sort(),
     ['bogus', 'offline_notify_minutes', 'recipient_number', 'worker_url']);

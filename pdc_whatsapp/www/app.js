@@ -732,7 +732,7 @@ function monitorDraftFrom(m, lists) {
   return {
     enabled: v.enabled, aotf_enabled: v.aotf_enabled, os_enabled: v.os_enabled,
     sending: v.sending, alert_verdicts: [...v.alert_verdicts], min_confidence: v.min_confidence,
-    quiet_hours: v.quiet_hours, health_alerts: v.health_alerts, reference_days: v.reference_days,
+    quiet_hours: v.quiet_hours, health_alerts: v.health_alerts, reference_days: v.reference_days, alert_template: v.alert_template || '',
     list_ids: lists ? lists.lists.filter(l => l.watched).map(l => l.id) : null,
   };
 }
@@ -789,7 +789,11 @@ function renderSettings(force = false) {
         <div class="pair">${toggle('quiet_on', quietOn, 'Quiet hours')}<input class="input time" type="time" name="q_from" value="${qFrom}" ${quietOn ? '' : 'disabled'} aria-label="From"><span class="muted">to</span><input class="input time" type="time" name="q_to" value="${qTo}" ${quietOn ? '' : 'disabled'} aria-label="To"></div>${err('quiet_hours')}</div>
       <div class="field"><div class="fl">Health alerts<small>WhatsApp you if scans stall, the AI fails, or an alert isn't delivered</small></div>${toggle('health_alerts', d.health_alerts, 'Health alerts')}</div>
       <div class="field"><div class="fl">Reference window<small>How far back to look for earlier pitches on each site</small></div>
-        <div class="range"><input type="range" name="reference_days" min="1" max="14" step="1" value="${d.reference_days}"><output>${d.reference_days} d</output></div></div>`}
+        <div class="range"><input type="range" name="reference_days" min="1" max="14" step="1" value="${d.reference_days}"><output>${d.reference_days} d</output></div></div>
+      ${st?.alertTemplate ? `<div class="field col"><label for="f-tpl">Alert message<small class="help" style="display:block;margin:2px 0 0;font-weight:400">How each WhatsApp alert looks. Words in {braces} are filled in for each pitch, and a line is left out when its {braces} come out empty. *Stars* make text bold.</small></label>
+        <textarea class="input wide tpl" id="f-tpl" name="alert_template" rows="16" spellcheck="false">${esc(d.alert_template || st.alertTemplate.default)}</textarea>
+        <div class="help">You can use: ${st.alertTemplate.placeholders.map(k => `<code>{${k}}</code>`).join(' ')}</div>${err('alert_template')}
+        <div class="pair" style="flex-wrap:wrap"><button class="btn" id="btn-test-alert" type="button"><svg><use href="#i-send"/></svg>Send test</button><button class="btn ghost" id="btn-tpl-reset" type="button">Reset to default</button><span class="muted small">The test uses a made-up pitch and what's in the box, saved or not.</span></div></div>` : ''}`}
     </div>
 
     <div class="card s-card rise" style="animation-delay:120ms">
@@ -870,6 +874,7 @@ function onSettingsInput(e) {
       d.quiet_hours = on ? `${$('input[name=q_from]').value}-${$('input[name=q_to]').value}` : '';
     }
   }
+  if (d && t.name === 'alert_template') { const def = S.status?.alertTemplate?.default || ''; d.alert_template = t.value.trim() === def.trim() ? '' : t.value; }
   if (bd && t.name in bd) bd[t.name] = t.type === 'checkbox' ? t.checked : t.type === 'number' ? Number(t.value) : t.value.trim();
   updateSavebar();
 }
@@ -995,6 +1000,16 @@ document.addEventListener('click', async e => {
     try { await api('api/test', { method: 'POST', body: {} }); toast('Test message sent. Check WhatsApp', 'ok'); loadMessages(); }
     catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
     return;
+  }
+  if (t.id === 'btn-test-alert') {
+    t.classList.add('busy');
+    try { await api('api/test-alert', { method: 'POST', body: { template: $('#f-tpl').value } }); toast('Test alert sent. Check WhatsApp', 'ok'); loadMessages(); }
+    catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
+    return;
+  }
+  if (t.id === 'btn-tpl-reset') {
+    const box = $('#f-tpl'); box.value = S.status.alertTemplate.default;
+    box.dispatchEvent(new Event('input', { bubbles: true })); return;
   }
   if (t.id === 'btn-relink') {
     if (!confirm('Unlink this bridge from WhatsApp and get a new pairing code?\n\nAlerts pause until you enter the new code on the sender phone.')) return;

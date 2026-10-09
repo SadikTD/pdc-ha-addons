@@ -390,6 +390,8 @@ svg.vi { width: 16px; height: 16px; stroke: none; fill: currentColor; }
 .input { height: 38px; padding: 0 12px; border-radius: 11px; border: 1px solid var(--hair-2); background: var(--surface-2); outline: none; min-width: 220px; transition: border-color .2s, box-shadow .2s; }
 .input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-wash); }
 .input.wide { width: 100%; }
+.input.tpl { height: auto; padding: 10px 12px; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; white-space: pre-wrap; }
+.field .help code { font-size: 12px; padding: 1px 5px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hair); }
 .input.time { min-width: 0; width: 120px; }
 .toggle { position: relative; width: 46px; height: 28px; flex: none; }
 .toggle input { position: absolute; inset: 0; opacity: 0; cursor: pointer; margin: 0; z-index: 1; }

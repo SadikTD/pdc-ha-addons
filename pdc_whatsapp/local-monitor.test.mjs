@@ -63,6 +63,7 @@ test('the monitor moves from the Worker once, keeps its history and alerts from 
   assert.equal(s.sent.length, 2);
   assert.equal(s.sent[0], 'Queued on the Worker');
   assert.match(s.sent[1], /🚨 \*Duplicate\*/);
+  assert.ok(!s.sent[1].includes('➕'), 'the {more} line is left out for a single match');
   assert.ok(s.events.some(e => e.type === 'monitor_moved'));
   // The next run records the delivery and does not send again.
   await s.monitor.tick(); await s.poller.poll();

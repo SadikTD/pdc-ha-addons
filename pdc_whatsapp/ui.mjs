@@ -7,6 +7,8 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DATA, log, remoteApi, alertTarget } from './bridge.mjs';
+import { buildMonitorAlert, checkAlertTemplate, DEFAULT_ALERT_TEMPLATE, ALERT_PLACEHOLDERS } from './monitor/trello-monitor.mjs';
+import { AOTF_SITE } from './monitor/pitch-sources.mjs';
 
 const WWW = fileURLToPath(new URL('./www/', import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
@@ -16,6 +18,17 @@ const PHONE = /^\+[1-9]\d{7,14}$/;
 const GROUP = /^[\d-]{5,40}@g\.us$/;
 const MONITOR_CACHE_MS = 8000;
 const STARTED = Date.now().toString(36);
+
+// Made-up duplicate for the "Send test" button under Settings › Alert message.
+const SAMPLE_SHEET = 'https://docs.google.com/spreadsheets/d/example/edit#gid=0';
+const SAMPLE_ALERT = {
+  card_json: JSON.stringify({ name: 'A Bronx mother was allegedly pushed off a 15th-floor balcony holding her baby, and a neighbor says she heard someone plead', _writer: 'Kelsey', _listName: 'Approved', _createdLabel: '9 Oct 2026', shortUrl: `${SAMPLE_SHEET}&range=F12` }),
+  result_json: JSON.stringify([
+    { verdict: 'duplicate', confidence: 92, reason: 'Same event: woman and baby found below a high-rise balcony.', candidate: { title: "A New York witness says she heard a woman yell 'please don't do this!' before a woman and a baby were found below a balcony", writer: 'Abdul', status: 'Submitted (archived)', dateLabel: '6 Oct 2026', editLink: `${SAMPLE_SHEET}&range=F7` } },
+    { verdict: 'same_story', confidence: 70, reason: 'x', candidate: { title: 'Another pitch' } },
+  ]),
+};
+export const sampleAlert = template => buildMonitorAlert(SAMPLE_ALERT, () => true, AOTF_SITE, template);
 
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 
@@ -95,7 +108,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
   const status = () => {
     const messages = ledger.list(), day = Date.now() - 86400000;
     return {
-      version, now: Date.now(), bridge: wa.status(), settings: safeOptions(), monitorHost: localMonitor() ? 'pi' : 'worker',
+      version, now: Date.now(), bridge: wa.status(), settings: safeOptions(), alertTemplate: { default: DEFAULT_ALERT_TEMPLATE, placeholders: ALERT_PLACEHOLDERS }, monitorHost: localMonitor() ? 'pi' : 'worker',
       monitorHealth: monitorHealth(),
       messages: {
         total: messages.length,
@@ -147,7 +160,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     const s = wa.status();
     if (!s.connected || !s.accountOk) throw new HttpError(409, 'WhatsApp is not connected right now');
     const key = `ui-test-${Date.now()}`;
-    const t = await target(String(text || '').trim().slice(0, 1000) || '🧪 *Test message*\n\nPDC Monitor can reach you on WhatsApp.');
+    const t = await target(String(text || '').trim().slice(0, 4000) || '🧪 *Test message*\n\nPDC Monitor can reach you on WhatsApp.');
     ledger.set(key, { state: 'sending', text: t.text, to: t.to, sentAt: null, error: null });
     try {
       const id = await wa.send(t.jid, t.text);
@@ -185,6 +198,13 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       return [code, body];
     }
     if (route === 'POST /api/test') return [200, await sendTest((await readBody(req)).text)];
+    if (route === 'POST /api/test-alert') {
+      const { template = '' } = await readBody(req);
+      try { checkAlertTemplate(template); } catch (e) { throw new HttpError(400, `Alert message ${e.message}`); }
+      return [200, await sendTest(`🧪 *Test alert* (made-up pitch)
+
+${sampleAlert(template)}`)];
+    }
     if (route === 'POST /api/relink') { await wa.relink(); return [200, { ok: true }]; }
     if (route === 'GET /api/settings') return [200, safeOptions()];
     // Chats alerts can go to: the recipient number and the groups the sender is in.
