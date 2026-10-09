@@ -559,29 +559,96 @@ const FILTERS = [
   ['waiting', 'Waiting', j => outcome(j) === 'waiting'],
   ['problems', 'Problems', j => j.send === 'failed' || j.send === 'uncertain' || Boolean(j.error)],
 ];
+// Sorting and the date range are remembered in this browser.
+S.sort = prefs.pitchSort || 'created'; S.dir = prefs.pitchDir || -1;
+S.writer = 'all'; S.range = prefs.pitchRange || '7'; S.unfolded = new Set();
+const timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+const pitchedAt = j => ms(j.created || j.firstSeen);
+const dayDiff = (a, b) => Math.round((startOfDay(a) - startOfDay(b)) / 86400000);
+// When the closest match was pitched, compared with this one: "2 days earlier", "same day".
+function gapText(j, b) {
+  if (!b?.created || !j.created) return '';
+  const n = dayDiff(ms(j.created), ms(b.created));
+  return n === 0 ? 'same day' : `${Math.abs(n)} day${Math.abs(n) === 1 ? '' : 's'} ${n > 0 ? 'earlier' : 'later'}`;
+}
+function dayTitle(t) {
+  const n = dayDiff(serverNow(), t);
+  return `${n === 0 ? 'Today · ' : n === 1 ? 'Yesterday · ' : ''}${dayFmt.format(t)}`;
+}
+function pitchedText(j, grouped) {
+  const t = pitchedAt(j); if (!t) return '—';
+  if (j.createdDay) return grouped ? 'Day only' : dayOnly.format(t);
+  return grouped ? timeFmt.format(t) : when(t);
+}
+const SORTS = {
+  name: j => j.name.toLowerCase(),
+  writer: j => j.writer.toLowerCase(),
+  created: j => pitchedAt(j) || 0,
+  list: j => (j.list || '').toLowerCase(),
+  match: j => (j.findings.length ? VERDICTS[best(j).verdict].sev * 1000 + best(j).confidence : -1),
+  send: j => SEND[j.send]?.label || j.send,
+};
 function renderPitches() {
-  const all = jobs().filter(j => j.check !== 'baseline');
+  const base = jobs().filter(j => j.check !== 'baseline');
+  // Writer and date range narrow everything below, including the filter counts.
+  const writers = [...new Set(base.map(j => j.writer))].sort((a, b) => a.localeCompare(b));
+  if (S.writer !== 'all' && !writers.includes(S.writer)) S.writer = 'all';
+  $('#p-writer').innerHTML = `<option value="all">All writers</option>${writers.map(w => `<option value="${esc(w)}" ${w === S.writer ? 'selected' : ''}>${esc(w)}</option>`).join('')}`;
+  $('#p-range').value = S.range;
+  const since = S.range === 'all' ? 0 : startOfDay(serverNow()) - (Number(S.range) - 1) * 86400000;
+  const all = base.filter(j => (S.writer === 'all' || j.writer === S.writer) && (!since || (pitchedAt(j) || 0) >= since));
   $('#filters').innerHTML = FILTERS.map(([id, label, f]) => {
     const n = all.filter(f).length;
     return (id === 'problems' || id === 'waiting') && !n ? '' : `<button data-f="${id}" class="${S.filter === id ? 'on' : ''}">${id in VERDICTS ? `<svg class="vi v-${id}"><use href="#v-${id}"/></svg>` : ''}${label}<span class="n">${n}</span></button>`;
   }).join('');
   const f = FILTERS.find(x => x[0] === S.filter)?.[2] || (() => true);
   const q = S.q.trim().toLowerCase();
-  const rows = all.filter(f).filter(j => !q || [j.name, j.writer, j.list, SITE_LABEL[j.site || 'wgtc'], ...j.findings.map(x => x.title)].join(' ').toLowerCase().includes(q));
+  const key = SORTS[S.sort] || SORTS.created;
+  const cmp = (a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * S.dir || (pitchedAt(b) || 0) - (pitchedAt(a) || 0); };
+  const rows = all.filter(f).filter(j => !q || [j.name, j.writer, j.list, SITE_LABEL[j.site || 'wgtc'], ...j.findings.map(x => x.title)].join(' ').toLowerCase().includes(q)).sort(cmp);
   const el = $('#pitch-list');
   if (!S.monitor) { el.innerHTML = Array.from({ length: 8 }, () => '<div class="row"><span class="skel" style="grid-column:1/-1;height:34px"></span></div>').join(''); return; }
   if (!rows.length) { el.innerHTML = `<div class="empty"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg><div>No pitches match.</div></div>`; $('#more').hidden = true; return; }
-  el.innerHTML = `<div class="row head"><span></span><span>Pitch</span><span class="c-match">Closest match</span><span class="c-list">How it was checked</span><span class="when">Checked</span><span></span></div>` +
-    rows.slice(0, S.shown).map((j, i) => {
-      const o = outcome(j), b = j.findings.length ? best(j) : null;
-      return `<div class="row v-${o}" data-job="${esc(jobKey(j))}" tabindex="0" role="button" style="animation:rise .4s var(--ease) both;animation-delay:${Math.min(i, 20) * 20}ms">
-        <span class="ic" title="${VERDICTS[o].label}">${vIcon(o)}</span>
-        <div class="main"><b>${esc(j.name)}</b><small>${S.site === 'all' ? siteTag(j.site) : ''}${esc(VERDICTS[o].label)} · ${esc(j.writer)} · ${esc(j.list)}</small></div>
-        <div class="cell c-match">${b ? `${esc(b.title)}<small>${b.confidence}% · ${esc(VERDICTS[b.verdict].label)}${j.findings.length > 1 ? ` · +${j.findings.length - 1} more` : ''}</small>` : '<span class="muted">—</span>'}</div>
-        <div class="cell c-list">${o === 'gone' ? 'Not checked' : esc(methodLabel(j.meta))}<small>${j.meta?.compared ? `vs ${fmtN(j.meta.compared)} pitches` : o === 'waiting' ? `${j.attempts} attempt${j.attempts === 1 ? '' : 's'}` : o === 'gone' ? 'deleted or retitled first' : ''}</small></div>
-        <div class="when">${timeTag(ms(j.checkedAt || j.firstSeen))}<small>${esc(when(ms(j.checkedAt || j.firstSeen)))}</small></div>
-        ${ticks(j.send)}</div>`;
-    }).join('');
+
+  // Sorted by pitch time: rows go under day headings with flagged ones first,
+  // and clear ones fold away unless you're searching or filtering for them.
+  const grouped = S.sort === 'created', fold = grouped && S.filter === 'all' && !q;
+  const items = [];
+  if (!grouped) items.push(...rows.map(j => ({ j })));
+  else {
+    const days = new Map();
+    for (const j of rows) { const d = startOfDay(pitchedAt(j) || 0); if (!days.has(d)) days.set(d, []); days.get(d).push(j); }
+    for (const [d, list] of days) {
+      const flagged = list.filter(j => FLAGS.includes(outcome(j))).sort((a, b) => VERDICTS[outcome(b)].sev - VERDICTS[outcome(a)].sev || cmp(a, b));
+      const clear = fold ? list.filter(j => outcome(j) === 'clear') : [];
+      const rest = list.filter(j => !flagged.includes(j) && !clear.includes(j));
+      items.push({ day: d, n: list.length, flagged: flagged.length }, ...flagged.map(j => ({ j })), ...rest.map(j => ({ j })));
+      if (!clear.length) continue;
+      const open = S.unfolded.has(d);
+      if (open) items.push(...clear.map(j => ({ j })));
+      items.push({ fold: d, n: clear.length, open });
+    }
+  }
+  const head = (k, label, cls = '') => `<button class="sort${S.sort === k ? ' on' : ''}${cls ? ` ${cls}` : ''}" data-sort="${k}">${label}${S.sort === k ? `<span aria-hidden="true">${S.dir < 0 ? '↓' : '↑'}</span>` : ''}</button>`;
+  let html = `<div class="row head"><span></span>${head('name', 'Pitch')}${head('writer', 'Writer', 'c-writer')}${head('created', 'Pitched')}${head('list', 'Status', 'c-list')}${head('match', 'Match', 'c-match')}${head('send', 'Alert', 'c-alert')}</div>`;
+  let shown = 0, i = 0;
+  const plural = n => `${n} clear pitch${n === 1 ? '' : 'es'}`;
+  for (const it of items) {
+    if (shown >= S.shown) break;
+    if (it.day != null) { html += `<div class="row day"><b>${esc(dayTitle(it.day))}</b><span>${it.n} pitch${it.n === 1 ? '' : 'es'}${it.flagged ? ` · ${it.flagged} flagged` : ''}</span></div>`; continue; }
+    if (it.fold != null) { html += `<button class="row fold" data-fold="${it.fold}">${it.open ? `Hide ${plural(it.n)}` : `Show ${plural(it.n)}`}</button>`; continue; }
+    const j = it.j, o = outcome(j), b = j.findings.length ? best(j) : null;
+    shown++;
+    html += `<div class="row v-${o}" data-job="${esc(jobKey(j))}" tabindex="0" role="button" style="animation:rise .4s var(--ease) both;animation-delay:${Math.min(i++, 20) * 20}ms">
+      <span class="ic" title="${VERDICTS[o].label}">${vIcon(o)}</span>
+      <div class="main"><b>${esc(j.name)}</b><small>${S.site === 'all' ? siteTag(j.site) : ''}${esc(VERDICTS[o].label)}</small></div>
+      <div class="cell c-writer">${esc(j.writer)}</div>
+      <div class="cell" title="${esc(createdText(j))}">${esc(pitchedText(j, grouped))}</div>
+      <div class="cell c-list">${esc(j.list || '—')}</div>
+      <div class="cell c-match">${b ? `${b.confidence}% <span class="muted">· ${esc(b.writer)}</span><small>${esc(gapText(j, b) || VERDICTS[b.verdict].label)}${j.findings.length > 1 ? ` · +${j.findings.length - 1} more` : ''}</small>` : '<span class="muted">—</span>'}</div>
+      ${ticks(j.send)}</div>`;
+  }
+  el.innerHTML = html;
   $('#more').hidden = rows.length <= S.shown;
   $('#more').textContent = `Show more (${rows.length - S.shown} left)`;
 }
@@ -607,6 +674,12 @@ function bubble(m, { collapse = true } = {}) {
     <div class="meta" title="${esc(m.state === 'sent' ? 'Delivered to WhatsApp' : m.state === 'unknown' ? `Not confirmed${m.error ? `: ${m.error}` : ''}` : 'Sending')}">${new Date(m.sentAt || m.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} ${tick}</div></div>`;
 }
 
+// "Pitched 2 days after Abdul's." (empty when either time is unknown).
+function gapNote(j, b) {
+  if (!b.created || !j.created) return '';
+  const n = dayDiff(ms(j.created), ms(b.created)), who = b.writer && b.writer !== 'Unassigned' ? `${b.writer}'s` : 'the earlier one';
+  return n === 0 ? `Pitched the same day as ${who}.` : `Pitched ${Math.abs(n)} day${Math.abs(n) === 1 ? '' : 's'} ${n > 0 ? 'after' : 'before'} ${who}.`;
+}
 function openJob(key) {
   const j = allJobs().find(x => jobKey(x) === key); if (!j) return;
   S.openJob = key;
@@ -626,8 +699,15 @@ function openJob(key) {
   const meta = j.meta || {};
   $('#drawer-body').innerHTML = `
     <div class="d-head"><div class="d-chips">${chip(o)}${siteTag(j.site)}</div><h2 id="drawer-title">${esc(j.name)}</h2>
-      <div class="d-meta"><span>${esc(site ? `${site.label} · ${site.platform}` : 'WGTC · Trello')}</span><span>${esc(j.writer)}</span><span>${esc(j.list)}</span><span>${esc(createdText(j))}</span></div></div>
-    ${b ? `<div class="d-section"><h3>Closest match</h3><div class="compare">${pcard('New pitch', j)}${pcard('Existing pitch', b)}</div></div>
+      <div class="d-meta"><span>${esc(site ? `${site.label} · ${site.platform}` : 'WGTC · Trello')}</span><span>${esc(j.writer)}</span><span>${esc(j.list)}</span><span>${esc(createdText(j))}</span></div>
+      <div class="actions top">
+        ${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener" title="${esc(openIn(j))}"><svg><use href="#i-ext"/></svg>Open pitch</a>` : ''}
+        ${b?.url ? `<a class="btn" href="${esc(b.url)}" target="_blank" rel="noopener" title="${esc(openIn(j))}"><svg><use href="#i-ext"/></svg>Open match</a>` : ''}
+        ${j.findings.length ? `<button class="btn" data-act="resend" data-id="${esc(jobKey(j))}"><svg><use href="#i-send"/></svg>${j.send === 'accepted' ? 'Send alert again' : 'Send alert'}</button>` : ''}
+        ${o === 'gone' ? '' : `<button class="btn" data-act="recheck" data-id="${esc(jobKey(j))}"><svg><use href="#i-refresh"/></svg>Check again</button>`}
+      </div></div>
+    ${b ? `<div class="d-section"><h3>Closest match</h3><div class="compare">${pcard('New pitch', j)}${pcard('Already pitched', b)}</div>
+      ${gapNote(j, b) ? `<p class="gap-note">${esc(gapNote(j, b))}</p>` : ''}</div>
       <div class="d-section"><h3>${j.findings.length === 1 ? 'Finding' : `${j.findings.length} findings`}</h3>
       ${j.findings.map(f => `<div class="finding v-${f.verdict}">${confRing(f.confidence)}<div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${chip(f.verdict)}<a class="link" href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a></div><p>${esc(f.reason || '')}</p></div></div>`).join('')}</div>`
       : o === 'clear' ? `<div class="d-section"><div class="finding v-clear"><div class="conf" style="display:grid;place-items:center"><svg class="vi" style="width:30px;height:30px"><use href="#v-clear"/></svg></div><div><b>No duplicates found</b><p>${meta.method === 'keywords' ? `No other ${esc(site?.label || '')} pitch in the reference window shared enough keywords to need an AI comparison.` : `Compared with ${fmtN(meta.compared || 0)} ${esc(site?.label || '')} pitches${meta.shortlisted ? `; the AI reviewed the ${meta.shortlisted} closest` : ''} and found nothing that overlaps.`}</p></div></div></div>` : ''}
@@ -642,11 +722,7 @@ function openJob(key) {
       ${j.sid ? `<dt>WhatsApp ID</dt><dd class="num">${esc(j.sid)}</dd>` : ''}
       ${j.error ? `<dt>Last error</dt><dd style="color:var(--critical-ink)" title="${esc(j.error)}">${esc(j.error)}</dd>` : ''}
       ${j.source ? `<dt>Source link</dt><dd><a class="link" href="${esc(j.source)}" target="_blank" rel="noopener">${esc(j.source)}</a></dd>` : ''}</dl></div>
-    <div class="actions">
-      ${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener"><svg><use href="#i-ext"/></svg>${esc(openIn(j))}</a>` : ''}
-      ${o === 'gone' ? '' : `<button class="btn" data-act="recheck" data-id="${esc(jobKey(j))}"><svg><use href="#i-refresh"/></svg>Check again</button>`}
-      ${j.findings.length ? `<button class="btn" data-act="resend" data-id="${esc(jobKey(j))}"><svg><use href="#i-send"/></svg>${j.send === 'accepted' ? 'Send alert again' : 'Send alert'}</button>` : ''}
-    </div>`;
+`;
   const d = $('#drawer'); d.classList.add('on'); d.setAttribute('aria-hidden', 'false');
   requestAnimationFrame(() => requestAnimationFrame(() => $$('.conf .p', d).forEach(c => { c.style.strokeDashoffset = c.dataset.to; })));
   $('.drawer-x').focus();
@@ -987,6 +1063,12 @@ document.addEventListener('click', async e => {
   if (t.dataset.days) { S.dailyDays = Number(t.dataset.days); $$('#daily-range button').forEach(b => b.classList.toggle('on', b === t)); return renderDaily(); }
   if (t.dataset.hours) { S.scanHours = Number(t.dataset.hours); $$('#scan-range button').forEach(b => b.classList.toggle('on', b === t)); return renderActivity(); }
   if (t.dataset.f) { S.filter = t.dataset.f; S.shown = 60; return renderPitches(); }
+  if (t.dataset.sort) {
+    const k = t.dataset.sort;
+    S.dir = S.sort === k ? -S.dir : k === 'created' || k === 'match' ? -1 : 1; S.sort = k;
+    prefs.pitchSort = S.sort; prefs.pitchDir = S.dir; savePrefs(); S.shown = 60; return renderPitches();
+  }
+  if (t.dataset.fold) { const d = Number(t.dataset.fold); if (S.unfolded.has(d)) S.unfolded.delete(d); else S.unfolded.add(d); return renderPitches(); }
   if (t.dataset.mf) { S.msgFilter = t.dataset.mf; S.msgShown = 120; $('#chat').dataset.ready = ''; return renderMessages(); }
   if (t.id === 'earlier') { S.msgShown += 120; const y = document.body.scrollHeight - scrollY; renderMessages(); scrollTo({ top: document.body.scrollHeight - y }); return; }
   if (t.dataset.expand) { const m = S.messages.find(x => x.key === t.dataset.expand); if (m) t.closest('.bubble').outerHTML = bubble(m, { collapse: false }); return; }
@@ -1027,6 +1109,8 @@ document.addEventListener('keydown', e => {
   if (e.key === '/' && S.page === 'pitches' && document.activeElement !== $('#q')) { e.preventDefault(); $('#q').focus(); }
 });
 $('#q').addEventListener('input', e => { S.q = e.target.value; S.shown = 60; renderPitches(); });
+$('#p-writer').addEventListener('change', e => { S.writer = e.target.value; S.shown = 60; renderPitches(); });
+$('#p-range').addEventListener('change', e => { S.range = prefs.pitchRange = e.target.value; savePrefs(); S.shown = 60; renderPitches(); });
 $('#settings').addEventListener('input', onSettingsInput);
 $('#settings').addEventListener('change', onSettingsInput);
 let resizeT; addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(renderPage, 150); });
