@@ -4,7 +4,7 @@ import http from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadOptions, createLedger, createHandler, createUpstreamWatchdog, createOutboxPoller } from './bridge.mjs';
+import { loadOptions, createLedger, createHandler, createUpstreamWatchdog, createOutboxPoller, alertTarget } from './bridge.mjs';
 
 const token = 'x'.repeat(40);
 const options = { token, sender: '15550000001', recipient: '15550000002' };
@@ -79,10 +79,10 @@ test('rejects malformed bodies and keys', async () => {
 test('options require a long token and international numbers', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pdc-')), file = join(dir, 'options.json');
   writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002' }));
-  assert.deepEqual(loadOptions(file), { ...options, notifications: true, offlineMinutes: 10, workerUrl: '', asanaToken: '', upstreamMinutes: 15 });
+  assert.deepEqual(loadOptions(file), { ...options, notifications: true, offlineMinutes: 10, workerUrl: '', asanaToken: '', alertGroup: '', upstreamMinutes: 15 });
   writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002',
-    ha_notifications: false, offline_notify_minutes: 30, worker_url: 'https://w.example.dev/', upstream_alert_minutes: 0, asana_token: ' 2/123/456:abc ' }));
-  assert.deepEqual(loadOptions(file), { ...options, notifications: false, offlineMinutes: 30, workerUrl: 'https://w.example.dev', asanaToken: '2/123/456:abc', upstreamMinutes: 0 });
+    ha_notifications: false, offline_notify_minutes: 30, worker_url: 'https://w.example.dev/', upstream_alert_minutes: 0, asana_token: ' 2/123/456:abc ', alert_group: '120363012345678901@g.us' }));
+  assert.deepEqual(loadOptions(file), { ...options, notifications: false, offlineMinutes: 30, workerUrl: 'https://w.example.dev', asanaToken: '2/123/456:abc', alertGroup: '120363012345678901@g.us', upstreamMinutes: 0 });
   writeFileSync(file, JSON.stringify({ api_token: 'short', sender_number: '+15550000001', recipient_number: '+15550000002' }));
   assert.throws(() => loadOptions(file));
 });
@@ -221,4 +221,25 @@ test('a send into a dead connection (ping failed) stays queued and goes out afte
   assert.deepEqual(acks, []); assert.equal(ledger.get('trello:b:c9'), undefined);
   alive = true; await p.poll();
   assert.deepEqual(acks, [{ key: 'trello:b:c9', status: 'sent', id: 'WA10' }]);
+});
+
+test('alerts go to the chosen group, and to the number (saying why) once the sender has left it', async () => {
+  const group = '120363012345678901@g.us', sent = [], events = [];
+  let groups = [{ id: group, name: 'Pitch alerts', size: 3 }];
+  const wa = { status: () => ({ connected: true, accountOk: true }), groups: async () => groups, send: async (jid, text) => { sent.push([jid, text]); return 'WA' + sent.length; } };
+  const opts = { ...options, alertGroup: group };
+  assert.deepEqual(await alertTarget(options, wa)('hi'), { jid: '15550000002@s.whatsapp.net', to: '15550000002', text: 'hi' });
+  assert.deepEqual(await alertTarget(opts, wa)('hi'), { jid: group, to: group, text: 'hi' });
+  const dir = mkdtempSync(join(tmpdir(), 'pdc-')), ledger = createLedger(join(dir, 'sent.json'));
+  let queue = [{ key: 'pitch:aotf:p1', to: '+15550000002', text: 'Duplicate pitch found' }];
+  const api = async path => (path === '/bridge/outbox' ? Response.json({ messages: queue.splice(0) }) : Response.json({ ok: true }));
+  const poller = createOutboxPoller({ options: opts, ledger, wa, api, events: { add: (t, d) => events.push(t) }, sleep: async () => {} });
+  await poller.poll();
+  assert.deepEqual(sent[0], [group, 'Duplicate pitch found']); assert.equal(ledger.get('pitch:aotf:p1').to, group);
+  groups = []; queue = [{ key: 'pitch:os:2', to: '+15550000002', text: 'Similar story found' }];
+  await poller.poll();
+  assert.equal(sent[1][0], '15550000002@s.whatsapp.net'); assert.match(sent[1][1], /^Similar story found\n\n_\(This was meant for the WhatsApp group/);
+  assert.deepEqual(events, ['group_missing']);
+  // Offline (groups unknown): it keeps aiming at the group; the send itself waits for the reconnect.
+  assert.equal((await alertTarget(opts, { groups: async () => { throw new Error('not connected'); } })('x')).jid, group);
 });

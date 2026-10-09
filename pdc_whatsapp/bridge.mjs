@@ -21,6 +21,8 @@ export function loadOptions(file = `${DATA}/options.json`) {
     workerUrl: String(o.worker_url || '').trim().replace(/\/+$/, ''),
     // Read-only access to the OS Curveball Asana project; the OS monitor waits until it's set.
     asanaToken: String(o.asana_token || '').trim(),
+    // A WhatsApp group for PDC alerts instead of the recipient number ('' = the number).
+    alertGroup: /^[\d-]{5,40}@g\.us$/.test(String(o.alert_group || '')) ? o.alert_group : '',
     // 0 turns the "Worker can't reach this bridge" watchdog off.
     upstreamMinutes: Math.min(1440, Math.max(0, Number(o.upstream_alert_minutes ?? 15) || 0)),
   };
@@ -151,13 +153,29 @@ export function remoteApi(options, fetcher = fetch) {
   });
 }
 
+// Where PDC alerts go: the WhatsApp group picked in Settings, or else the
+// recipient number. If the bridge has left that group (or it was deleted), the
+// alert goes to the number instead, saying so, so it is never lost.
+// Returns { jid, to, text }; `to` is what the ledger records.
+export function alertTarget(options, wa, events) {
+  return async text => {
+    const number = { jid: `${options.recipient}@s.whatsapp.net`, to: options.recipient, text };
+    if (!options.alertGroup) return number;
+    const groups = await wa.groups().catch(() => null); // unknown (offline): try the group
+    if (!groups || groups.some(g => g.id === options.alertGroup)) return { jid: options.alertGroup, to: options.alertGroup, text };
+    log('Not in the chosen WhatsApp group any more; sending to the recipient number');
+    events?.add('group_missing', 'Not in the chosen WhatsApp group any more, so an alert went to the number instead');
+    return { ...number, text: `${text}\n\n_(This was meant for the WhatsApp group, but the sender isn't in it any more. Pick a chat again in PDC Monitor › Settings.)_` };
+  };
+}
+
 // Collects queued pitch alerts (GET /bridge/outbox), sends each through the
 // idempotency ledger, and reports the result (POST /bridge/outbox/ack). `api`
 // answers those routes: the monitor in this add-on (local-monitor.mjs), or the
 // Worker until the monitor has moved here. A key already in the ledger is
 // re-reported, never re-sent, so a lost ack or a restart can't cause a
 // duplicate. `upstream` is told about each successful poll.
-export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, api = null, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)) }) {
+export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, api = null, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)), target = alertTarget(options, wa, events) }) {
   let busy = false, failing = false;
   const call = api || remoteApi(options, fetcher);
   const ack = (key, status, extra = {}) => call('/bridge/outbox/ack', { method: 'POST', body: JSON.stringify({ key, status, ...extra }) })
@@ -192,9 +210,11 @@ export function createOutboxPoller({ options, ledger, wa, events, upstream, fetc
           }
           const s = wa.status();
           if (!s.connected || !s.accountOk) break; // stays queued; the next poll retries
-          ledger.set(m.key, { state: 'sending', text: m.text, to: options.recipient, sentAt: null, error: null });
+          // Queued for the recipient number; delivered to the chosen group, if any.
+          const t = await target(m.text);
+          ledger.set(m.key, { state: 'sending', text: t.text, to: t.to, sentAt: null, error: null });
           try {
-            const id = await wa.send(`${options.recipient}@s.whatsapp.net`, m.text);
+            const id = await wa.send(t.jid, t.text);
             ledger.set(m.key, { state: 'sent', id, sentAt: Date.now() });
             log(`sent ${m.key}`);
             await ack(m.key, 'sent', { id });

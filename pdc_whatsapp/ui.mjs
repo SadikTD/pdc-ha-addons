@@ -6,13 +6,14 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA, log, remoteApi } from './bridge.mjs';
+import { DATA, log, remoteApi, alertTarget } from './bridge.mjs';
 
 const WWW = fileURLToPath(new URL('./www/', import.meta.url));
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 // The Supervisor's ingress proxy; loopback is allowed for local development.
 const ALLOWED = new Set(['172.30.32.2', '127.0.0.1', '::1']);
 const PHONE = /^\+[1-9]\d{7,14}$/;
+const GROUP = /^[\d-]{5,40}@g\.us$/;
 const MONITOR_CACHE_MS = 8000;
 const STARTED = Date.now().toString(36);
 
@@ -41,6 +42,9 @@ export function validateBridgeSettings(changes) {
       if (typeof value === 'boolean') clean[key] = value; else errors[key] = 'Must be on or off';
     } else if (key === 'offline_notify_minutes') {
       if (Number.isInteger(value) && value >= 1 && value <= 1440) clean[key] = value; else errors[key] = 'Whole minutes from 1 to 1440';
+    } else if (key === 'alert_group') {
+      // '' sends alerts to the recipient number.
+      if (value === '' || GROUP.test(String(value))) clean[key] = String(value); else errors[key] = 'Pick your number or one of the groups';
     } else if (key === 'asana_token') {
       // Asana personal access tokens are printable ASCII with no spaces (e.g. 2/123…/456…:abc…).
       const v = String(value ?? '').trim();
@@ -54,7 +58,7 @@ export function validateBridgeSettings(changes) {
 }
 
 // `localMonitor()` returns the in-add-on monitor's API, or null before it has moved.
-export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, optionsFile = `${DATA}/options.json` }) {
+export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, optionsFile = `${DATA}/options.json`, target = alertTarget(options, wa, events) }) {
   let monitorCache = null;
   const remote = remoteApi(options, fetcher);
 
@@ -85,6 +89,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     ha_notifications: options.notifications, offline_notify_minutes: options.offlineMinutes,
     worker_url: options.workerUrl, api_token_set: options.token.length >= 32,
     asana_token_set: Boolean(options.asanaToken), // never the token itself
+    alert_group: options.alertGroup,
   });
 
   const status = () => {
@@ -108,6 +113,12 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     const current = safeOptions();
     const changed = Object.fromEntries(Object.entries(clean).filter(([k, v]) => (k === 'asana_token' ? v !== options.asanaToken : v !== current[k])));
     if (!Object.keys(changed).length) return [200, { ok: true, changed: [], restart: false }];
+    // Only a group the sender is in right now (WhatsApp would refuse the rest).
+    if (changed.alert_group) {
+      const groups = await wa.groups().catch(() => null);
+      if (!groups) return [409, { errors: { alert_group: "WhatsApp isn't connected, so the group can't be checked; try again in a minute" } }];
+      if (!groups.some(g => g.id === changed.alert_group)) return [400, { errors: { alert_group: 'The sender number is not in that group' } }];
+    }
     // The Worker addresses alerts to its own recipient setting and this bridge
     // only messages its configured recipient, so both must change together.
     if (changed.recipient_number) {
@@ -125,7 +136,8 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       await writeFile(optionsFile + '.tmp', JSON.stringify({ ...stored, ...changed }, null, 2));
       await rename(optionsFile + '.tmp', optionsFile);
     }
-    events.add('settings', `Changed ${Object.keys(changed).map(k => (k === 'asana_token' ? 'Asana token' : k)).join(', ')}; restarting to apply`);
+    const label = k => ({ asana_token: 'Asana token', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
+    events.add('settings', `Changed ${Object.keys(changed).map(label).join(', ')}; restarting to apply`);
     log('Settings changed:', Object.keys(changed).join(', '));
     restart();
     return [200, { ok: true, changed: Object.keys(changed), restart: true }];
@@ -135,10 +147,10 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     const s = wa.status();
     if (!s.connected || !s.accountOk) throw new HttpError(409, 'WhatsApp is not connected right now');
     const key = `ui-test-${Date.now()}`;
-    const body = String(text || '').trim().slice(0, 1000) || '🧪 *Test message*\n\nPDC Monitor can reach you on WhatsApp.';
-    ledger.set(key, { state: 'sending', text: body, to: options.recipient, sentAt: null, error: null });
+    const t = await target(String(text || '').trim().slice(0, 1000) || '🧪 *Test message*\n\nPDC Monitor can reach you on WhatsApp.');
+    ledger.set(key, { state: 'sending', text: t.text, to: t.to, sentAt: null, error: null });
     try {
-      const id = await wa.send(`${options.recipient}@s.whatsapp.net`, body);
+      const id = await wa.send(t.jid, t.text);
       ledger.set(key, { state: 'sent', id, sentAt: Date.now() });
       events.add('test', 'Test message sent from the dashboard');
       return { ok: true, key, id };
@@ -175,6 +187,12 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     if (route === 'POST /api/test') return [200, await sendTest((await readBody(req)).text)];
     if (route === 'POST /api/relink') { await wa.relink(); return [200, { ok: true }]; }
     if (route === 'GET /api/settings') return [200, safeOptions()];
+    // Chats alerts can go to: the recipient number and the groups the sender is in.
+    if (route === 'GET /api/chats') {
+      const groups = await wa.groups().catch(() => null);
+      if (!groups) throw new HttpError(409, "WhatsApp isn't connected, so the groups can't be listed right now");
+      return [200, { recipient: `+${options.recipient}`, groups: groups.map(g => ({ id: g.id, name: g.name, size: g.size })).sort((a, b) => a.name.localeCompare(b.name)) }];
+    }
     if (route === 'POST /api/settings') return saveBridgeSettings((await readBody(req)).changes);
     throw new HttpError(404, 'Not found');
   }

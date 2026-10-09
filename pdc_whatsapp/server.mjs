@@ -4,7 +4,7 @@ import http from 'node:http';
 import { rm, mkdir, readFile } from 'node:fs/promises';
 import makeWASocket, { DisconnectReason, Browsers, fetchLatestBaileysVersion } from 'baileys';
 import pino from 'pino';
-import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, createOutboxPoller, remoteApi, log } from './bridge.mjs';
+import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, createOutboxPoller, remoteApi, alertTarget, log } from './bridge.mjs';
 import { useAtomicAuthState } from './auth-state.mjs';
 import { createUiHandler } from './ui.mjs';
 import { createLocalMonitor } from './local-monitor.mjs';
@@ -252,6 +252,7 @@ const events = createEventLog();
 events.add('started', `Add-on ${version} started`);
 const ledger = createLedger();
 const wa = startWhatsApp(options, events);
+const target = alertTarget(options, wa, events); // the chosen group, or the recipient number
 // Alerts the recipient directly if the Worker can't be reached for a while.
 const upstream = createUpstreamWatchdog({
   minutes: options.upstreamMinutes, events,
@@ -259,9 +260,9 @@ const upstream = createUpstreamWatchdog({
   async send(text) {
     const s = wa.status();
     if (!s.connected || !s.accountOk) return false; // retried next minute
-    const key = `watchdog:${Date.now()}`;
-    ledger.set(key, { state: 'sending', text, to: options.recipient, sentAt: null, error: null });
-    try { ledger.set(key, { state: 'sent', id: await wa.send(`${options.recipient}@s.whatsapp.net`, text), sentAt: Date.now() }); return true; }
+    const key = `watchdog:${Date.now()}`, t = await target(text);
+    ledger.set(key, { state: 'sending', text: t.text, to: t.to, sentAt: null, error: null });
+    try { ledger.set(key, { state: 'sent', id: await wa.send(t.jid, t.text), sentAt: Date.now() }); return true; }
     catch (e) { if (e?.notSent) ledger.delete(key); else ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
   },
 });
@@ -278,9 +279,9 @@ async function monitorAlert(text, recovered, site) {
   await haNotify(options, recovered ? null : text.replace(/\*/g, ''), id);
   const s = wa.status();
   if (!s.connected || !s.accountOk) return false; // retried next minute
-  const key = `monitor-watch:${Date.now()}`;
-  ledger.set(key, { state: 'sending', text, to: options.recipient, sentAt: null, error: null });
-  try { ledger.set(key, { state: 'sent', id: await wa.send(`${options.recipient}@s.whatsapp.net`, text), sentAt: Date.now() }); log(`sent ${key}`); return true; }
+  const key = `monitor-watch:${Date.now()}`, t = await target(text);
+  ledger.set(key, { state: 'sending', text: t.text, to: t.to, sentAt: null, error: null });
+  try { ledger.set(key, { state: 'sent', id: await wa.send(t.jid, t.text), sentAt: Date.now() }); log(`sent ${key}`); return true; }
   catch (e) { if (e?.notSent) ledger.delete(key); else ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
 }
 const monitor = createLocalMonitor({
@@ -290,7 +291,7 @@ const monitor = createLocalMonitor({
   onStuck: () => shutdown?.('monitor stuck', 1),
 });
 const alertApi = (path, init) => (monitor.active() ? monitor.api : remoteApi(options))(path, init);
-outbox = createOutboxPoller({ options, ledger, wa, events, upstream, api: alertApi });
+outbox = createOutboxPoller({ options, ledger, wa, events, upstream, api: alertApi, target });
 setInterval(() => outbox.poll().catch(e => log('Outbox poll failed:', e?.message || e)), 15000);
 monitor.start();
 const server = http.createServer(createHandler({ options, ledger, wa, events }));
@@ -299,7 +300,7 @@ server.listen(PORT, () => log(`Bridge listening on :${PORT}`));
 
 // Sidebar dashboard (Ingress). Only the Supervisor's ingress proxy may connect.
 const ui = http.createServer(createUiHandler({
-  options, ledger, wa, events, version, supervisor, localMonitor: () => (monitor.active() ? monitor.api : null),
+  options, ledger, wa, events, version, supervisor, target, localMonitor: () => (monitor.active() ? monitor.api : null),
   monitorHealth: () => (monitor.active() ? monitor.health() : null),
   restart: () => setTimeout(() => supervisor('POST', '/addons/self/restart'), 1500),
 }));

@@ -737,7 +737,7 @@ function monitorDraftFrom(m, lists) {
   };
 }
 function bridgeDraftFrom(s) {
-  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '' };
+  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '' };
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function monitorChanges() {
@@ -759,7 +759,7 @@ function renderSettings(force = false) {
   if (!force && el.dataset.built && (Object.keys(monitorChanges()).length || Object.keys(bridgeChanges()).length || el.contains(document.activeElement))) { renderConnection(); return; }
   const st = S.status, m = S.monitor;
   // Only rebuild when the saved settings themselves changed, not on every poll.
-  const sig = JSON.stringify([m?.settings, S.lists, S.listsError, st?.settings, S.monitorError, prefs, S.fieldErrors]);
+  const sig = JSON.stringify([m?.settings, S.lists, S.listsError, st?.settings, S.monitorError, prefs, S.fieldErrors, S.chats, S.chatsError]);
   if (!force && el.dataset.built && el.dataset.sig === sig) { renderConnection(); return; }
   el.dataset.sig = sig;
   if (st) S.bridgeDraft = bridgeDraftFrom(st.settings);
@@ -795,7 +795,8 @@ function renderSettings(force = false) {
     <div class="card s-card rise" style="animation-delay:120ms">
       <div class="s-head"><span class="ico"><svg><use href="#i-chat"/></svg></span><div><h2>WhatsApp bridge</h2><p>This add-on's options. Saving restarts the add-on (about 10 seconds).</p></div></div>
       ${!bd ? '<div class="field col"><div class="muted">Loading…</div></div>' : `
-      <div class="field"><label for="f-rcpt">Send alerts to<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Updates the pitch monitor too</small></label><input class="input" id="f-rcpt" name="recipient_number" value="${esc(bd.recipient_number)}" inputmode="tel" autocomplete="off">${err('recipient_number')}</div>
+      <div class="field"><label for="f-target">Send alerts to<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${S.chatsError ? esc(S.chatsError) : 'Duplicate alerts and monitor warnings. Only groups the sender number is in are listed.'}</small></label>${chatPicker(bd.alert_group)}${err('alert_group')}</div>
+      <div class="field"><label for="f-rcpt">Your WhatsApp number<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Gets the alerts when no group is picked, and if the group stops working</small></label><input class="input" id="f-rcpt" name="recipient_number" value="${esc(bd.recipient_number)}" inputmode="tel" autocomplete="off">${err('recipient_number')}</div>
       <div class="field"><label for="f-sender">Sender number<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Changing it needs a new pairing</small></label><input class="input" id="f-sender" name="sender_number" value="${esc(bd.sender_number)}" inputmode="tel" autocomplete="off">${err('sender_number')}</div>
       <div class="field"><div class="fl">Home Assistant notifications<small>Warn in Home Assistant when WhatsApp is unlinked or offline</small></div>${toggle('ha_notifications', bd.ha_notifications, 'Home Assistant notifications')}</div>
       <div class="field"><label for="f-off">Offline warning after<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Minutes disconnected before warning</small></label><input class="input" id="f-off" type="number" min="1" max="1440" name="offline_notify_minutes" value="${bd.offline_notify_minutes}">${err('offline_notify_minutes')}</div>
@@ -814,6 +815,18 @@ function renderSettings(force = false) {
     <div class="savebar" id="savebar"><span id="save-text">Unsaved changes</span><button class="btn ghost" id="discard">Discard</button><button class="btn primary" id="save">Save changes</button></div>`;
   el.dataset.built = '1';
   renderConnection(); updateSavebar();
+}
+
+// "Send alerts to": the recipient number or one of the sender's groups.
+function chatPicker(current) {
+  const groups = S.chats?.groups || [];
+  const missing = current && S.chats && !groups.some(g => g.id === current);
+  const opt = (value, label) => `<option value="${esc(value)}" ${value === current ? 'selected' : ''}>${esc(label)}</option>`;
+  return `<select class="input" id="f-target" name="alert_group">
+    ${opt('', `Your number (${S.status?.settings.recipient_number || ''})`)}
+    ${groups.map(g => opt(g.id, `Group: ${g.name}${g.size ? ` (${g.size} members)` : ''}`)).join('')}
+    ${missing ? opt(current, 'A group the sender is no longer in') : ''}
+    ${current && !S.chats ? opt(current, 'The chosen group') : ''}</select>`;
 }
 
 function renderConnection() {
@@ -917,6 +930,10 @@ async function loadEvents() {
   try { S.events = (await api('api/events')).events; } catch { /* keep last */ }
   if (S.page === 'activity') renderActivity();
 }
+async function loadChats() {
+  try { S.chats = await api('api/chats'); S.chatsError = null; } catch (e) { S.chatsError = e.message; }
+  if (S.page === 'settings') renderSettings();
+}
 async function loadLists() {
   try { S.lists = await api('api/lists'); S.listsError = S.lists.error; } catch (e) { S.listsError = e.message; }
   if (S.page === 'settings') renderSettings(true);
@@ -942,7 +959,7 @@ function go() {
   $('#page-title').textContent = sec.dataset.title; $('#page-sub').textContent = sec.dataset.sub;
   $('#card-pulse').innerHTML = ''; // rebuilt for the current site selection
   document.title = `${sec.dataset.title} · PDC Monitor`;
-  if (page === 'settings') { $('#settings').dataset.built = ''; if (!S.lists) loadLists(); }
+  if (page === 'settings') { $('#settings').dataset.built = ''; if (!S.lists) loadLists(); loadChats(); }
   if (page === 'activity') loadEvents();
   if (page === 'messages') { $('#chat').dataset.ready = ''; loadMessages(); }
   scrollTo({ top: 0 });

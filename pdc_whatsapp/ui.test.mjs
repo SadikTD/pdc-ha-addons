@@ -10,7 +10,7 @@ import { createUiHandler, validateBridgeSettings } from './ui.mjs';
 const token = 'x'.repeat(40);
 const board = 'b'.repeat(24), card = 'c'.repeat(24);
 
-async function serve({ worker = async () => Response.json({}), connected = true, remote } = {}) {
+async function serve({ worker = async () => Response.json({}), connected = true, remote, groups = [] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pdc-ui-'));
   const optionsFile = join(dir, 'options.json');
   writeFileSync(optionsFile, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002' }));
@@ -18,7 +18,8 @@ async function serve({ worker = async () => Response.json({}), connected = true,
   const ledger = createLedger(join(dir, 'sent.json')), events = createEventLog(join(dir, 'events.json'));
   const calls = [], sent = [];
   let restarted = 0;
-  const wa = { status: () => ({ connected, accountOk: connected, paired: true }), send: async (jid, text) => { sent.push([jid, text]); return 'WA9'; }, relink: async () => {} };
+  const wa = { status: () => ({ connected, accountOk: connected, paired: true }), send: async (jid, text) => { sent.push([jid, text]); return 'WA9'; }, relink: async () => {},
+    groups: async () => { if (!connected) throw new Error('not connected'); return groups; } };
   const handler = createUiHandler({
     options, ledger, wa, events, version: '9.9.9', optionsFile, supervisor: async () => ({ status: null }), restart: () => { restarted++; },
     fetcher: async (url, init) => { calls.push({ url, init }); return worker(url, init); },
@@ -172,4 +173,20 @@ test('the Asana token is saved to the add-on but never shown back', async () => 
   const listed = JSON.stringify([await (await s.get('/api/settings')).json(), await (await s.get('/api/status')).json(), await (await s.get('/api/events')).json()]);
   assert.equal(listed.includes(tok), false);
   s.close();
+});
+
+test('alerts can be pointed at a group the sender is in, and only such a group', async () => {
+  const group = '120363012345678901@g.us';
+  assert.equal(validateBridgeSettings({ alert_group: 'someone@s.whatsapp.net' }).errors.alert_group, 'Pick your number or one of the groups');
+  const s = await serve({ groups: [{ id: group, name: 'Pitch alerts', size: 4 }, { id: '1203630999@g.us', name: 'Another', size: 9 }] });
+  assert.deepEqual(await (await s.get('/api/chats')).json(), { recipient: '+15550000002', groups: [{ id: '1203630999@g.us', name: 'Another', size: 9 }, { id: group, name: 'Pitch alerts', size: 4 }] });
+  assert.equal((await s.post('/api/settings', { changes: { alert_group: '1203639999999@g.us' } })).status, 400, 'not a member');
+  assert.equal(s.restarts(), 0);
+  assert.deepEqual(await (await s.post('/api/settings', { changes: { alert_group: group } })).json(), { ok: true, changed: ['alert_group'], restart: true });
+  assert.equal(JSON.parse(readFileSync(s.optionsFile, 'utf8')).alert_group, group);
+  s.close();
+  const off = await serve({ connected: false });
+  assert.equal((await off.get('/api/chats')).status, 409);
+  assert.equal((await off.post('/api/settings', { changes: { alert_group: group } })).status, 409);
+  off.close();
 });
