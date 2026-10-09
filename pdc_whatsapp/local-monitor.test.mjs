@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openD1, createLocalMonitor, guardedFetch, SITES } from './local-monitor.mjs';
+import { openD1, createLocalMonitor, guardedFetch, retryReads, SITES } from './local-monitor.mjs';
 import { createOutboxPoller, createLedger } from './bridge.mjs';
 import { runTrelloMonitor, withMonitorSettings, TRELLO_SITE } from './monitor/trello-monitor.mjs';
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
@@ -180,4 +180,41 @@ test('the sheet and Asana sites scan beside Trello, each on its own, and a stuck
   assert.match(alerts[0].text, /stopped scanning · AotF/);
   assert.match(alerts[0].text, /AotF \(Google Sheet\)/);
   s.monitor.stop();
+});
+
+test('a read that times out, drops or gets a server error is tried once more; others are not', async () => {
+  const calls = [], sleep = async () => {};
+  const flaky = answers => async (url, init) => { calls.push(init); const a = answers.shift(); if (a instanceof Error) throw a; return new Response('{}', { status: a }); };
+  const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  assert.equal((await retryReads(flaky([timeout, 200]), { sleep })('https://api.trello.com/1/x', { method: 'GET', signal: AbortSignal.timeout(1) })).status, 200);
+  assert.equal(calls[1].signal.aborted, false, 'the retry gets a fresh deadline');
+  assert.equal((await retryReads(flaky([503, 200]), { sleep })('https://api.trello.com/1/x', {})).status, 200);
+  assert.equal((await retryReads(flaky([new TypeError('fetch failed'), 429]), { sleep })('https://x', {})).status, 429, 'only one retry');
+  calls.length = 0;
+  assert.equal((await retryReads(flaky([401]), { sleep })('https://x', {})).status, 401); assert.equal(calls.length, 1, 'a refusal is final');
+  await assert.rejects(retryReads(flaky([timeout]), { sleep })('https://ai', { method: 'POST' })); assert.equal(calls.length, 2, 'AI requests are never repeated');
+});
+
+test('one failed scan stays out of the Activity page; three in a row are reported, then the recovery', async () => {
+  let fail = false;
+  const s = setup();
+  const failing = { load: async () => { if (fail) throw new Error('fetch failed'); return { cards: [card(1)], watched: lists }; } };
+  const m = createLocalMonitor({ options: { token, recipient: '15551234567', workerUrl: 'https://worker.example' }, events: { add: (type, detail) => s.events.push({ type, detail }) },
+    fetcher: (url, init) => handleBridgeApi(new Request(url, { method: init.method, body: init.body, headers: init.headers }), s.worker), engine, dependencies: failing,
+    file: join(s.dir, 'm2.db'), configFile: join(s.dir, 'm2.json'), watchFile: join(s.dir, 'w2.json'), sites: [TRELLO_SITE], limits: { fetch: async () => { throw new Error('network'); } } });
+  await runTrelloMonitor(s.worker, engine, { load: s.load });
+  await m.tick();
+  const errors = () => s.events.filter(e => e.type === 'monitor_error' || e.type === 'monitor_ok').map(e => e.type);
+  fail = true; await m.tick(); await m.tick();
+  assert.deepEqual(errors(), [], 'two blips are not news');
+  fail = false; await m.tick(); fail = true; await m.tick(); await m.tick();
+  assert.deepEqual(errors(), [], 'a success in between starts the count again');
+  await m.tick();
+  assert.deepEqual(errors(), ['monitor_error']);
+  assert.match(s.events.find(e => e.type === 'monitor_error').detail, /^WGTC: Scan failed 3 times in a row: fetch failed/);
+  await m.tick(); await m.tick();
+  assert.deepEqual(errors(), ['monitor_error'], 'an outage is reported once, not every minute');
+  fail = false; await m.tick();
+  assert.deepEqual(errors(), ['monitor_error', 'monitor_ok']);
+  m.stop(); s.monitor.stop();
 });

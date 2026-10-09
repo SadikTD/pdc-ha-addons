@@ -63,6 +63,22 @@ export function guardedFetch(fetcher, inFlight, limit = CALL_LIMIT) {
   };
 }
 
+// Reads (GET) that hit a timeout, a network drop or a server error (429/5xx)
+// are tried once more after a short pause, with a fresh deadline. Before this,
+// one slow Trello reply or a few seconds of the Pi's internet dropping failed
+// the whole scan. Refusals (401/403/404) and AI requests (POST) are final.
+export function retryReads(fetcher, { pause = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+  return async (url, init = {}) => {
+    if ((init.method || 'GET') !== 'GET') return fetcher(url, init);
+    try {
+      const res = await fetcher(url, init);
+      if (res.status !== 429 && res.status < 500) return res;
+    } catch { /* tried again below */ }
+    await sleep(pause);
+    return fetcher(url, { ...init, signal: AbortSignal.timeout(20000) });
+  };
+}
+
 // Cloudflare D1's API (prepare/bind/run/first/all/batch) over node:sqlite.
 export function openD1(file) {
   const sqlite = new DatabaseSync(file);
@@ -126,7 +142,7 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
   const runLimit = limits.run ?? RUN_LIMIT, staleAlert = limits.stale ?? STALE_ALERT;
   // Each site's calls are tracked on their own, so a stall names the right service.
   const inFlight = Object.fromEntries(sites.map(s => [s.id, new Set()]));
-  const guard = id => guardedFetch(limits.fetch || fetch, inFlight[id], limits.call ?? CALL_LIMIT);
+  const guard = id => guardedFetch(retryReads(limits.fetch || fetch), inFlight[id], limits.call ?? CALL_LIMIT);
   const guarded = Object.fromEntries(sites.map(s => [s.id, guard(s.id)]));
   const engineFor = site => engine || { ...monitorEngine, call: (prompt, e, _fetcher, meta) => monitorLLM(prompt, e, guarded[site.id], meta) };
   const loaders = {
@@ -137,7 +153,7 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
   let general = null, moving = false, timer = null, watchTimer = null;
   // Per site: the run in progress, hangs in a row, the current problem, and
   // when this add-on first tried it (so a site that has never worked alerts too).
-  const runs = Object.fromEntries(sites.map(s => [s.id, { running: null, stalls: 0, problem: null, problemSince: null, firstTry: null }]));
+  const runs = Object.fromEntries(sites.map(s => [s.id, { running: null, stalls: 0, failures: 0, lastError: null, problem: null, problemSince: null, firstTry: null }]));
   // Per site { at, lastOk } while a "scans stopped" alert is out. Before 3.1
   // the file held the Trello alert only, as `alerted`.
   let alerted = {};
@@ -229,12 +245,17 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
       const report = await runPitchMonitor(settings, engineFor(site), depsFor(site), site);
       if (r.running !== run) return; // abandoned meanwhile
       r.stalls = 0;
-      if (!report?.busy) siteProblem(site, null);
+      if (!report?.busy) { r.failures = 0; r.lastError = null; siteProblem(site, null); }
       await onRun(report);
     } catch (e) {
       if (r.running !== run) return;
       r.stalls = 0;
-      siteProblem(site, `Scan failed: ${String(e?.message || e).slice(0, 200)}`);
+      // A one-off failure fixes itself on the next scan a minute later (the
+      // Pi's internet pausing, Trello having a bad second), so it is only
+      // reported once scans have failed three times in a row.
+      r.failures++; r.lastError = String(e?.message || e).slice(0, 200);
+      if (r.failures >= 3) siteProblem(site, `Scan failed 3 times in a row: ${r.lastError}`); // same text while it lasts: logged once
+      else log(`${site.label}: scan failed (${r.lastError}); trying again next minute`);
       await onRun(null);
     } finally { if (r.running === run) r.running = null; }
   }
@@ -270,7 +291,7 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
       const stale = Boolean(on && since && now - since > staleAlert);
       if (stale && (!sent || now - sent.at >= ALERT_REPEAT)) {
         const waiting = waitingOn(site);
-        const reason = r.problem || (r.running ? `A scan has been running for ${minutes(now - r.running.since)}${waiting ? `, waiting for ${waiting} to answer` : ''}.` : 'Unknown; see the add-on log.');
+        const reason = r.problem || (r.lastError && `Scan failed: ${r.lastError}`) || (r.running ? `A scan has been running for ${minutes(now - r.running.since)}${waiting ? `, waiting for ${waiting} to answer` : ''}.` : 'Unknown; see the add-on log.');
         const text = [`⚠️ *Pitch monitor stopped scanning · ${site.label}*`, '',
           lastOk ? `No ${siteName(site)} scan has finished since ${formatPitchTime(new Date(lastOk).toISOString())}, so new ${site.label} pitches aren't being checked.`
             : `${siteName(site)} scans haven't worked once since ${formatPitchTime(new Date(r.firstTry).toISOString())}, so new ${site.label} pitches aren't being checked.`, '',
