@@ -78,6 +78,8 @@ SETTINGS = {**DEFAULT_SETTINGS, **read_json(SETTINGS_PATH, {})}
 AUTH = read_json(AUTH_PATH, {})  # {"cookies": {...}, "puuid", "name", "region", "saved_at", "state"}
 OWNED_PATH = os.path.join(DATA_DIR, "owned.json")
 OWNED = read_json(OWNED_PATH, {"at": 0, "levels": []})  # skin level uuids the account owns
+PRICES_PATH = os.path.join(DATA_DIR, "prices.json")
+PRICES = read_json(PRICES_PATH, {"at": 0, "vp": {}})  # item uuid -> VP price in the store
 auth_lock = threading.Lock()
 
 
@@ -282,6 +284,30 @@ def fetch_owned(session):
         return
     OWNED.update(at=time.time(), levels=levels)
     write_json(OWNED_PATH, OWNED)
+
+
+def fetch_prices(session):
+    """VP price of every item sold in the store, refreshed daily. Optional, like the collection."""
+    if time.time() - PRICES.get("at", 0) < 86400 and PRICES.get("vp"):
+        return
+    try:
+        body = _check(*http("GET", f"https://pd.{session['shard']}.a.pvp.net/store/v1/offers/", session["headers"]),
+                      "Prices")
+        vp = {o["OfferID"]: o["Cost"][VP] for o in body.get("Offers") or [] if VP in (o.get("Cost") or {})}
+    except (RiotError, AttributeError, TypeError, KeyError) as e:
+        log.warning("Couldn't read store prices: %s", e)
+        return
+    PRICES.update(at=time.time(), vp=vp)
+    write_json(PRICES_PATH, PRICES)
+
+
+def skin_price(skin, levels=None):
+    """A skin's VP price: the price of its base level (owned levels are checked first)."""
+    prices = PRICES.get("vp", {})
+    for lv in levels or ():
+        if lv in prices:
+            return prices[lv]
+    return next((prices[lv] for lv, s in catalog.data.get("levels", {}).items() if s == skin and lv in prices), None)
 
 
 def forget_collection():
@@ -632,6 +658,7 @@ def check(reason="scheduled"):
             session = sign_in()
             store, wallet = fetch_store(session)
             fetch_owned(session)
+            fetch_prices(session)
             if any(not catalog.known(o) for o in (store.get("SkinsPanelLayout") or {}).get("SingleItemOffers") or []):
                 catalog.ensure(force=True)  # a new skin line came out today
             snap = resolve(store, wallet)
@@ -763,11 +790,16 @@ def history_payload():
 
 
 def collection_payload():
-    items = catalog.data.get("items", {})
-    skins = [{"u": u, "n": items[u]["n"], "i": items[u]["i"], "t": items[u].get("t"), "w": items[u].get("w") or ""}
+    items, levels = catalog.data.get("items", {}), catalog.data.get("levels", {})
+    owned_levels = {}
+    for lv in OWNED.get("levels", []):
+        owned_levels.setdefault(levels.get(lv), []).append(lv)
+    skins = [{"u": u, "n": items[u]["n"], "i": items[u]["i"], "t": items[u].get("t"), "w": items[u].get("w") or "",
+              "vp": skin_price(u, owned_levels.get(u))}
              for u in owned_skins() if u in items]
+    priced = [s["vp"] for s in skins if s["vp"]]
     return {"skins": sorted(skins, key=lambda s: s["n"]), "at": OWNED.get("at"),
-            "tiers": catalog.data.get("tiers", {})}
+            "value": sum(priced), "unpriced": len(skins) - len(priced), "tiers": catalog.data.get("tiers", {})}
 
 
 def catalog_payload():

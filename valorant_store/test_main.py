@@ -159,6 +159,11 @@ def test_owned_skins_are_not_alerted():
     main.http = lambda *a, **k: (500, Message(), {})
     main.fetch_owned({"shard": "ap", "puuid": "P", "headers": {}})
     assert main.owned_skins() == {KNIFE}
+    # collection value: priced skins add up, unpriced ones are counted separately
+    main.PRICES.update(at=main.time.time(), vp={KNIFE_LVL: 5350})
+    main.OWNED.update(levels=[KNIFE_LVL, VANDAL_LVL])
+    col = main.collection_payload()
+    assert col["value"] == 5350 and col["unpriced"] == 1
     main.forget_collection()
     assert main.owned_skins() == set()
 

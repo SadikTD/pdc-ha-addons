@@ -13,7 +13,7 @@ let H = null;          // /api/history (loaded when the tab opens)
 let C = null;          // /api/catalog (loaded when the wishlist tab opens)
 let O = null;          // /api/collection (loaded when the collection tab opens)
 let stripAnimated = false;
-const ui = { historyQuery: "", wishQuery: "", weapon: "All", shown: 48, colWeapon: "All", colQuery: "" };
+const ui = { historyQuery: "", wishQuery: "", weapon: "All", shown: 48, colWeapon: "All", colQuery: "", colSort: "price" };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -310,11 +310,19 @@ function renderCollection() {
   const count = (w) => O.skins.filter((s) => w === "All" || s.w === w).length;
   v.innerHTML = `
     <h2>Your collection <small>${num(O.skins.length)} skins${O.at ? `, updated ${ago(O.at)}` : ""}</small></h2>
+    <div class="worth">
+      <div><b>${vp(O.value)}</b><span>store value of your skins</span></div>
+      ${O.unpriced ? `<div><b>${num(O.unpriced)}</b><span>${O.unpriced === 1 ? "skin isn't" : "skins aren't"} sold for VP (battle pass, agent contracts, events)</span></div>` : ""}
+      <label class="sort">Sort by <select id="col-sort">
+        ${[["name", "Name"], ["price", "Price, highest first"], ["weapon", "Weapon"]].map(([k, l]) =>
+          `<option value="${k}" ${ui.colSort === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    </div>
     <div class="wish-search"><input type="search" id="col-q" placeholder="Search your skins" value="${esc(ui.colQuery)}" aria-label="Search your skins"></div>
     <div class="chips" role="group" aria-label="Weapon">${["All", ...weapons].map((w) =>
       `<button type="button" data-col-weapon="${esc(w)}" aria-pressed="${ui.colWeapon === w}">${esc(w)} <span class="count">${count(w)}</span></button>`).join("")}</div>
     <div id="col-results"></div>`;
   $("#col-q").addEventListener("input", (ev) => { ui.colQuery = ev.target.value; renderCollectionResults(); });
+  $("#col-sort").addEventListener("change", (ev) => { ui.colSort = ev.target.value; renderCollectionResults(); });
   v.onclick = (ev) => {
     const b = ev.target.closest("[data-col-weapon]");
     if (!b) return;
@@ -328,10 +336,13 @@ function renderCollection() {
 function renderCollectionResults() {
   const q = ui.colQuery.trim().toLowerCase();
   const list = O.skins.filter((s) => (ui.colWeapon === "All" || s.w === ui.colWeapon) && (!q || s.n.toLowerCase().includes(q)));
+  const by = { name: (a, b) => a.n.localeCompare(b.n), price: (a, b) => (b.vp || 0) - (a.vp || 0) || a.n.localeCompare(b.n),
+    weapon: (a, b) => a.w.localeCompare(b.w) || a.n.localeCompare(b.n) }[ui.colSort];
+  list.sort(by);
   $("#col-results").innerHTML = list.length ? `<div class="grid six">${list.map((s) => `<div class="card"${tierStyle(s.t)}>
       ${tierIcon(s.t)}
       <div class="art">${s.i ? `<img src="${esc(s.i)}" alt="" loading="lazy">` : ""}</div>
-      <div class="name" style="font-size:17px">${esc(s.n)}</div>
+      <div class="meta"><div class="name" style="font-size:17px">${esc(s.n)}</div><div class="prices">${s.vp ? vp(s.vp) : `<span class="muted" style="font-size:13px">Not sold</span>`}</div></div>
     </div>`).join("")}</div>` : `<p class="muted">None of your ${ui.colWeapon === "All" ? "" : esc(ui.colWeapon) + " "}skins match "${esc(ui.colQuery)}".</p>`;
 }
 

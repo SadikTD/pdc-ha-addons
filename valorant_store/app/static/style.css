@@ -236,3 +236,14 @@ textarea:focus, input[type=search]:focus { border-color: var(--dust); outline: n
 .bundle-items div.owned span::after { content: " (owned)"; color: var(--ok); }
 .chips .count { color: inherit; opacity: .6; font-weight: 500; margin-left: 2px; }
 .card.owned .badge { top: 40px; }
+
+/* ---------- collection value */
+.worth { display: flex; gap: 36px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 18px; }
+.worth > div { display: flex; flex-direction: column; }
+.worth b { font: 700 34px/1 var(--display); }
+.worth b .price { font: inherit; gap: 8px; color: var(--bone); }
+.worth b .price img { width: 26px; height: 26px; }
+.worth b .price small { font: 600 16px var(--body); }
+.worth span { color: var(--dust); font-size: 14px; max-width: 32ch; }
+.sort { margin-left: auto; color: var(--dust); font-size: 14px; display: flex; gap: 8px; align-items: center; }
+.sort select { background: var(--ink); color: var(--bone); border: 1px solid var(--line); padding: 7px 10px; font: inherit; }
