@@ -54,6 +54,39 @@ def test_resolve_and_hits():
     assert main.next_check_at(snap, now) == snap["expires_at"] + 90
 
 
+def test_sign_in_and_fetch():
+    """The whole Riot round trip, with Riot faked: cookie -> token -> entitlements -> store."""
+    from email.message import Message
+    redirect = Message()
+    redirect["Location"] = "https://playvalorant.com/opt_in#access_token=AT&id_token=IT&token_type=Bearer"
+    redirect["Set-Cookie"] = "ssid=NEW; Path=/; Secure"
+    ok = Message()
+    answers = {
+        "auth.riotgames.com/authorize": (303, redirect, b""),
+        "entitlements": (200, ok, {"entitlements_token": "ENT"}),
+        "userinfo": (200, ok, {"sub": "PUUID", "acct": {"game_name": "Sadik", "tag_line": "AP1"}}),
+        "riot-geo": (200, ok, {"affinities": {"live": "ap"}}),
+        "valorant-api.com/v1/version": (200, ok, {"data": {"riotClientVersion": "release-x"}}),
+        "storefront": (200, ok, {"SkinsPanelLayout": {"SingleItemOffers": [KNIFE_LVL],
+                                                      "SingleItemOffersRemainingDurationInSeconds": 60}}),
+        "wallet": (200, ok, {"Balances": {main.VP: 5}}),
+    }
+    seen = []
+
+    def fake_http(method, url, headers=None, body=None, timeout=30):
+        seen.append(url)
+        return next(v for k, v in answers.items() if k in url)
+
+    main.http, main.save_auth = fake_http, lambda: None
+    main.AUTH.update(cookies={"ssid": "OLD"})
+    session = main.sign_in()
+    assert main.AUTH["cookies"]["ssid"] == "NEW" and main.AUTH["name"] == "Sadik#AP1"
+    assert session["shard"] == "ap" and session["headers"]["X-Riot-Entitlements-JWT"] == "ENT"
+    store, wallet = main.fetch_store(session)
+    assert any("pd.ap.a.pvp.net/store/v3/storefront/PUUID" in u for u in seen)
+    assert main.wishlist_hits(main.resolve(store, wallet), [KNIFE])
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

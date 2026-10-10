@@ -199,7 +199,7 @@ def reauth(cookies):
     return frag["access_token"], frag.get("id_token", ""), merge_set_cookies(cookies, headers)
 
 
-def _check(status, body, what):
+def _check(status, _headers, body, what):
     if status == 200:
         return body
     err = body if isinstance(body, dict) else {}
