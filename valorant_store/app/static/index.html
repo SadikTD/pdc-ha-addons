@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valorant Store</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23ff4655' d='M2 5l17 22h-8L2 15zM30 5L21 17h-7l16-12z'/%3E%3C/svg%3E">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 5l17 22h-8L2 15zM30 5L21 17h-7l16-12z"/></svg>
+    <span>Store Tracker</span>
+  </div>
+  <div class="account" id="account"></div>
+  <div class="wallet" id="wallet" aria-label="Wallet"></div>
+  <button class="btn ghost" id="refresh" type="button">Check now</button>
+</header>
+
+<nav class="tabs" role="tablist">
+  <a href="#today" role="tab" data-tab="today">Today</a>
+  <a href="#history" role="tab" data-tab="history">History</a>
+  <a href="#wishlist" role="tab" data-tab="wishlist">Wishlist</a>
+  <a href="#settings" role="tab" data-tab="settings">Settings</a>
+</nav>
+
+<main>
+  <section id="view-today" class="view" hidden></section>
+  <section id="view-history" class="view" hidden></section>
+  <section id="view-wishlist" class="view" hidden></section>
+  <section id="view-settings" class="view" hidden></section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

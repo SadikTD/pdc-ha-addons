@@ -54,3 +54,13 @@ Tracks the **international** internet connection (not BDIX / in-country caches).
 - Alexa announces when the internet drops and returns (60% volume, then restored; phone fallback when Amazon is unreachable), and a detailed outage report arrives on WhatsApp via the PDC WhatsApp Bridge, plus a monthly ISP report card (speed vs what you pay for, uptime, outages).
 
 See [net_monitor/DOCS.md](net_monitor/DOCS.md) for options.
+
+## Valorant Store Tracker
+
+Checks the Valorant daily store right after it resets and WhatsApps you (through the PDC WhatsApp Bridge, no setup needed) when a wishlist skin shows up.
+
+- Signs in with a pasted Riot `ssid` session cookie (Riot's sign-in has a captcha), renewed on every check; a WhatsApp message asks for a new one if Riot ends the session.
+- Sidebar app: the main wishlist target with a 60-day strip, today's four skins, featured bundles, the Night Market, and VP / Radianite / Kingdom Credits; every past store, searchable; a wishlist built from the full skin catalog; settings and an activity log.
+- Checks after the 00:00 UTC reset and every 6 hours (Night Market, bundles); each wishlist skin is alerted once per store.
+
+See [valorant_store/DOCS.md](valorant_store/DOCS.md). Riot's store API is unofficial and can change without notice.

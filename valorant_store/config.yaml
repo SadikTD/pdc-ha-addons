@@ -1,0 +1,35 @@
+name: Valorant Store Tracker
+version: "1.0.0"
+slug: valorant_store
+description: Tracks your Valorant daily store, Night Market and bundles, and WhatsApps you when a wishlist skin shows up
+url: https://github.com/SadikTD/pdc-ha-addons/tree/main/valorant_store
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+ingress: true
+ingress_port: 38766
+panel_icon: mdi:knife-military
+panel_title: Valorant Store
+# Raises a Home Assistant notification when a wishlist skin appears or Riot signs the tracker out.
+homeassistant_api: true
+# Finds the PDC WhatsApp Bridge add-on: its internal IP, recipient number and api_token
+# (reading another add-on's options needs the manager role).
+hassio_api: true
+hassio_role: manager
+options:
+  # Leave empty to use the PDC WhatsApp Bridge's own recipient_number and api_token.
+  whatsapp_to: ""
+  whatsapp_api_token: ""
+  # Only needed if the bridge can't be found automatically, e.g. http://172.30.33.6:8787
+  whatsapp_bridge_url: ""
+  # Besides right after the daily reset, also check this often (Night Market, bundles,
+  # keeping the Riot session fresh).
+  check_every_hours: 6
+schema:
+  whatsapp_to: match(^(\+[1-9]\d{7,14})?$)?
+  whatsapp_api_token: password?
+  whatsapp_bridge_url: str?
+  check_every_hours: int(1,24)
