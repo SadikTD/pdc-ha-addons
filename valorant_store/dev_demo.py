@@ -52,6 +52,10 @@ main.AUTH.update(cookies={"ssid": "demo"}, puuid="demo", name="Sadik#AP1", regio
                  saved_at=time.time() - 86400 * 3, refreshed_at=time.time() - 1800)
 main.STATUS.update(last_ok=time.time() - 1800, next_check=reset + 90)
 main.event("signed_in", "Signed in with a new session cookie")
+main.OWNED.update(at=time.time() - 1800, levels=[lv for lv, sk in list(main.catalog.data["levels"].items())[::40]][:60]
+                 + [next(lv for lv, sk in main.catalog.data["levels"].items()
+                         if sk == snap["offers"][0]["skin"])])  # includes one of today's skins
+main.write_json = lambda *a: None
 main.checker_loop = lambda: None  # no Riot calls in the demo
 main.save_auth = lambda: None
 main.main()

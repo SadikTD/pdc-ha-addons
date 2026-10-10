@@ -76,6 +76,8 @@ def write_json(path, obj):
 OPTS = {**DEFAULT_OPTIONS, **{k: v for k, v in read_json(OPTIONS_PATH, {}).items() if v is not None}}
 SETTINGS = {**DEFAULT_SETTINGS, **read_json(SETTINGS_PATH, {})}
 AUTH = read_json(AUTH_PATH, {})  # {"cookies": {...}, "puuid", "name", "region", "saved_at", "state"}
+OWNED_PATH = os.path.join(DATA_DIR, "owned.json")
+OWNED = read_json(OWNED_PATH, {"at": 0, "levels": []})  # skin level uuids the account owns
 auth_lock = threading.Lock()
 
 
@@ -264,6 +266,33 @@ def fetch_store(session):
         log.warning("Couldn't read the wallet: %s", e)
         wallet = {}
     return store, wallet
+
+
+SKIN_LEVEL_TYPE = "e7c63390-eda7-46e0-bb7a-a6abdacd2433"
+
+
+def fetch_owned(session):
+    """Saves the skin levels the account owns. Optional: a failure keeps the last known list."""
+    url = f"https://pd.{session['shard']}.a.pvp.net/store/v1/entitlements/{session['puuid']}/{SKIN_LEVEL_TYPE}"
+    try:
+        body = _check(*http("GET", url, session["headers"]), "Collection")
+        levels = sorted({e["ItemID"] for e in body.get("Entitlements") or [] if e.get("ItemID")})
+    except (RiotError, AttributeError, TypeError) as e:
+        log.warning("Couldn't read your collection: %s", e)
+        return
+    OWNED.update(at=time.time(), levels=levels)
+    write_json(OWNED_PATH, OWNED)
+
+
+def forget_collection():
+    OWNED.update(at=0, levels=[])
+    write_json(OWNED_PATH, OWNED)
+
+
+def owned_skins():
+    """Skin uuids owned (level uuids mapped through the catalog, so new skins resolve later)."""
+    levels = catalog.data.get("levels", {})
+    return {levels[lv] for lv in OWNED.get("levels", []) if lv in levels}
 
 
 # ------------------------------------------------------------------ catalog
@@ -567,7 +596,10 @@ def digest_text(snap):
 
 
 def after_check(snap):
+    owned = owned_skins()
     for place, offer in wishlist_hits(snap, SETTINGS["wishlist"]):
+        if offer["skin"] in owned:
+            continue  # already bought it
         if place == "night" and not SETTINGS["night_market_alerts"]:
             continue
         when = snap["day"] if place == "store" else store_day(snap["night"]["expires_at"])
@@ -599,6 +631,7 @@ def check(reason="scheduled"):
             catalog.ensure()
             session = sign_in()
             store, wallet = fetch_store(session)
+            fetch_owned(session)
             if any(not catalog.known(o) for o in (store.get("SkinsPanelLayout") or {}).get("SingleItemOffers") or []):
                 catalog.ensure(force=True)  # a new skin line came out today
             snap = resolve(store, wallet)
@@ -713,6 +746,7 @@ def state_payload():
         "settings": {k: SETTINGS[k] for k in ("daily_digest", "night_market_alerts")},
         "whatsapp": {"ready": whatsapp_ready(), "to": whatsapp_config()[0]},
         "events": db.q("SELECT ts, kind, text FROM events ORDER BY ts DESC LIMIT 25"),
+        "owned": sorted(owned_skins()),
     }
 
 
@@ -726,6 +760,14 @@ def history_payload():
     return {"days": [{"day": s["day"], "offers": s["offers"], "night": bool(s.get("night"))} for s in snaps],
             "most_seen": sorted(counts.values(), key=lambda c: (-c["times"], c["name"]))[:12],
             "tiers": catalog.data.get("tiers", {}), "wishlist": SETTINGS["wishlist"]}
+
+
+def collection_payload():
+    items = catalog.data.get("items", {})
+    skins = [{"u": u, "n": items[u]["n"], "i": items[u]["i"], "t": items[u].get("t"), "w": items[u].get("w") or ""}
+             for u in owned_skins() if u in items]
+    return {"skins": sorted(skins, key=lambda s: s["n"]), "at": OWNED.get("at"),
+            "tiers": catalog.data.get("tiers", {})}
 
 
 def catalog_payload():
@@ -752,6 +794,7 @@ def action_login(body):
         AUTH.clear()
         AUTH.update(cookies=cookies, saved_at=time.time(), state="ok")
         save_auth()
+    forget_collection()  # it may be a different account
     event("signed_in", "Signed in with a new session cookie")
     ha_dismiss("valorant_store_auth")
     snap = check("sign-in")
@@ -765,6 +808,7 @@ def action_logout(_body):
     with auth_lock:
         AUTH.clear()
         save_auth()
+    forget_collection()
     event("signed_out", "Signed out from the dashboard")
     return 200, {"ok": True}
 
@@ -873,6 +917,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, state_payload())
         if path == "/api/history":
             return self._send(200, history_payload())
+        if path == "/api/collection":
+            return self._send(200, collection_payload())
         if path == "/api/catalog":
             return self._send(200, catalog_payload())
         name = "index.html" if path in ("", "/") else path.lstrip("/")

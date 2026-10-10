@@ -11,8 +11,9 @@ const CURRENCY = {
 let S = null;          // /api/state
 let H = null;          // /api/history (loaded when the tab opens)
 let C = null;          // /api/catalog (loaded when the wishlist tab opens)
+let O = null;          // /api/collection (loaded when the collection tab opens)
 let stripAnimated = false;
-const ui = { historyQuery: "", wishQuery: "", weapon: "All", shown: 48 };
+const ui = { historyQuery: "", wishQuery: "", weapon: "All", shown: 48, colWeapon: "All", colQuery: "" };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -62,6 +63,7 @@ const tierStyle = (uuid) => (tierOf(uuid) ? ` style="--tier:${tierOf(uuid).c}"` 
 const tierIcon = (uuid) => (tierOf(uuid)?.i ? `<img class="tier-icon" src="${esc(tierOf(uuid).i)}" alt="${esc(tierOf(uuid).n)} edition" title="${esc(tierOf(uuid).n)} edition">` : "");
 const vp = (n) => (n == null ? "" : `<span class="price" title="${num(n)} Valorant Points"><img src="${CURRENCY.vp}" alt="">${num(n)} <small>VP</small></span>`);
 const wanted = (skin) => (S?.wishlist || []).some((w) => w.skin === skin);
+const owned = (skin) => (S?.owned || []).includes(skin);
 
 // ---------- header
 
@@ -90,7 +92,8 @@ function huntPanel() {
   const inNight = t?.night?.offers.find((o) => o.skin === target.skin);
   const found = !!(inStore || inNight);
   let status;
-  if (inStore) status = `It's in your store right now for ${num(inStore.cost)} VP. It leaves in ${left(t.expires_at)}.`;
+  if (owned(target.skin)) status = "It's in your collection, so no more alerts for it. Pick a new main target on the Wishlist tab.";
+  else if (inStore) status = `It's in your store right now for ${num(inStore.cost)} VP. It leaves in ${left(t.expires_at)}.`;
   else if (inNight) status = `It's in your Night Market for ${num(inNight.cost)} VP (${inNight.percent}% off). The Night Market ends in ${left(t.night.expires_at)}.`;
   else if (t) status = `Not in today's store. The next store opens in ${left(t.expires_at)}, at ${clock(t.expires_at)}.`;
   else status = "Waiting for the first store check.";
@@ -127,7 +130,8 @@ function huntPanel() {
 }
 
 function skinCard(o, extra = "") {
-  return `<div class="card${wanted(o.skin) ? " wanted" : ""}"${tierStyle(o.tier)}>
+  const cls = owned(o.skin) ? " owned" : wanted(o.skin) ? " wanted" : "";
+  return `<div class="card${cls}"${tierStyle(o.tier)}>
     ${tierIcon(o.tier)}${extra}
     <div class="art">${o.icon ? `<img src="${esc(o.icon)}" alt="" loading="lazy">` : ""}</div>
     <div class="meta"><div class="name">${esc(o.name)}</div><div class="prices">${o.was ? `<span class="price"><s>${num(o.was)}</s></span>` : ""}${vp(o.cost)}</div></div>
@@ -135,7 +139,7 @@ function skinCard(o, extra = "") {
 }
 
 function bundleBlock(b) {
-  const items = b.items.map((it) => `<div${tierStyle(it.tier)} title="${esc(it.name)}">
+  const items = b.items.map((it) => `<div${it.skin && owned(it.skin) ? ' class="owned"' : ""}${tierStyle(it.tier)} title="${esc(it.name)}${it.skin && owned(it.skin) ? " (you own this)" : ""}">
       ${it.icon ? `<img src="${esc(it.icon)}" alt="" loading="lazy">` : `<img alt="">`}
       <span>${esc(it.name)}</span><em>${it.price != null ? num(it.price) + " VP" : ""}</em></div>`).join("");
   return `<article class="bundle" style="background-image:url('${esc(b.icon)}')">
@@ -224,7 +228,7 @@ function renderWishlist() {
       ${tierIcon(w.tier)}
       <div class="art">${w.icon ? `<img src="${esc(w.icon)}" alt="" loading="lazy">` : ""}</div>
       <div class="name">${esc(w.name)}</div>
-      <div class="facts">${i === 0 ? "Your main target, shown on Today. " : ""}Seen ${w.times_seen} time${w.times_seen === 1 ? "" : "s"}${w.last_seen ? `, last on ${dayLabel(w.last_seen)}` : ""}.</div>
+      <div class="facts">${owned(w.skin) ? "<b>You own this.</b> " : ""}${i === 0 ? "Your main target, shown on Today. " : ""}Seen ${w.times_seen} time${w.times_seen === 1 ? "" : "s"}${w.last_seen ? `, last on ${dayLabel(w.last_seen)}` : ""}.</div>
       <div class="actions">
         ${i ? `<button class="btn small ghost" data-first="${w.skin}">Make main target</button>` : ""}
         <button class="btn small ghost" data-remove="${w.skin}">Remove</button>
@@ -260,11 +264,12 @@ function renderSkinResults() {
   const matches = C.skins.filter((s) => (ui.weapon === "All" || s.w === ui.weapon) && (!q || s.n.toLowerCase().includes(q)));
   const onList = new Set(S.wishlist.map((w) => w.skin));
   const cards = matches.slice(0, ui.shown).map((s) => {
-    const on = onList.has(s.u);
+    const on = onList.has(s.u), mine = owned(s.u);
     return `<div class="card"${tierStyle(s.t)}>${tierIcon(s.t)}
       <div class="art">${s.i ? `<img src="${esc(s.i)}" alt="" loading="lazy">` : ""}</div>
       <div class="name" style="font-size:17px">${esc(s.n)}</div>
-      <button class="btn small${on ? " ghost" : ""}" data-add="${s.u}" ${on ? "disabled" : ""}>${on ? "On your wishlist" : "Add to wishlist"}</button>
+      ${mine ? `<button class="btn small ghost" disabled>You own this</button>`
+        : `<button class="btn small${on ? " ghost" : ""}" data-add="${s.u}" ${on ? "disabled" : ""}>${on ? "On your wishlist" : "Add to wishlist"}</button>`}
     </div>`;
   }).join("");
   box.innerHTML = matches.length
@@ -288,6 +293,46 @@ async function wishlistClick(ev) {
     await load();
     scrollTo(0, y);
   } catch (e) { toast(e.message, true); b.disabled = false; }
+}
+
+// ---------- collection
+
+function renderCollection() {
+  const v = $("#view-collection");
+  if (!O) { v.innerHTML = `<p class="muted">Loading your collection…</p>`; return; }
+  if (!O.skins.length) {
+    v.innerHTML = `<div class="empty"><h2>No skins yet</h2><p>${S.auth.state === "ok"
+      ? "Your collection is read on every store check. Press Check now if you just bought something." : "Sign in on the Settings tab to see the skins you own."}</p></div>`;
+    return;
+  }
+  const weapons = [...new Set(O.skins.map((s) => s.w).filter(Boolean))]
+    .sort((a, b) => ((WEAPON_ORDER.indexOf(a) + 1 || 99) - (WEAPON_ORDER.indexOf(b) + 1 || 99)) || a.localeCompare(b));
+  const count = (w) => O.skins.filter((s) => w === "All" || s.w === w).length;
+  v.innerHTML = `
+    <h2>Your collection <small>${num(O.skins.length)} skins${O.at ? `, updated ${ago(O.at)}` : ""}</small></h2>
+    <div class="wish-search"><input type="search" id="col-q" placeholder="Search your skins" value="${esc(ui.colQuery)}" aria-label="Search your skins"></div>
+    <div class="chips" role="group" aria-label="Weapon">${["All", ...weapons].map((w) =>
+      `<button type="button" data-col-weapon="${esc(w)}" aria-pressed="${ui.colWeapon === w}">${esc(w)} <span class="count">${count(w)}</span></button>`).join("")}</div>
+    <div id="col-results"></div>`;
+  $("#col-q").addEventListener("input", (ev) => { ui.colQuery = ev.target.value; renderCollectionResults(); });
+  v.onclick = (ev) => {
+    const b = ev.target.closest("[data-col-weapon]");
+    if (!b) return;
+    ui.colWeapon = b.dataset.colWeapon;
+    v.querySelectorAll("[data-col-weapon]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    renderCollectionResults();
+  };
+  renderCollectionResults();
+}
+
+function renderCollectionResults() {
+  const q = ui.colQuery.trim().toLowerCase();
+  const list = O.skins.filter((s) => (ui.colWeapon === "All" || s.w === ui.colWeapon) && (!q || s.n.toLowerCase().includes(q)));
+  $("#col-results").innerHTML = list.length ? `<div class="grid six">${list.map((s) => `<div class="card"${tierStyle(s.t)}>
+      ${tierIcon(s.t)}
+      <div class="art">${s.i ? `<img src="${esc(s.i)}" alt="" loading="lazy">` : ""}</div>
+      <div class="name" style="font-size:17px">${esc(s.n)}</div>
+    </div>`).join("")}</div>` : `<p class="muted">None of your ${ui.colWeapon === "All" ? "" : esc(ui.colWeapon) + " "}skins match "${esc(ui.colQuery)}".</p>`;
 }
 
 // ---------- settings
@@ -383,7 +428,7 @@ function renderSettings() {
 function tab() { return (location.hash.slice(1) || "today").split("?")[0]; }
 
 async function render(background = false) {
-  const t = ["today", "history", "wishlist", "settings"].includes(tab()) ? tab() : "today";
+  const t = ["today", "history", "wishlist", "collection", "settings"].includes(tab()) ? tab() : "today";
   document.querySelectorAll(".tabs a").forEach((a) => a.setAttribute("aria-selected", a.dataset.tab === t));
   document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + t));
   renderTop();
@@ -405,12 +450,19 @@ async function render(background = false) {
       else $("#view-wishlist h2:nth-of-type(2) small").textContent = `${num(C.skins.length)} skins can show up in the store`;
     }
   }
+  if (t === "collection") {
+    renderCollection();
+    if (!O) {
+      try { O = await api("api/collection"); } catch (e) { toast(e.message, true); return; }
+      renderCollection();
+    }
+  }
   if (t === "settings") renderSettings();
 }
 
 async function load(background = false) {
   S = await api("api/state");
-  if (!background) H = null;
+  if (!background) H = O = null;
   await render(background);
 }
 

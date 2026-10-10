@@ -228,3 +228,11 @@ textarea:focus, input[type=search]:focus { border-color: var(--dust); outline: n
 .key.other { background: rgba(255,70,85,.45); }
 .hunt.found .key { background: #fff; }
 .hunt.found .key.other { background: rgba(255,255,255,.6); }
+
+/* ---------- owned skins */
+.card.owned::after { content: "Owned"; position: absolute; top: 12px; right: 12px; background: var(--ok); color: var(--ink); font-size: 12px; font-weight: 600; padding: 2px 8px; }
+.card.owned .art img { opacity: .55; }
+.bundle-items div.owned { opacity: .5; }
+.bundle-items div.owned span::after { content: " (owned)"; color: var(--ok); }
+.chips .count { color: inherit; opacity: .6; font-weight: 500; margin-left: 2px; }
+.card.owned .badge { top: 40px; }

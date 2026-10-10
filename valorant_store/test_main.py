@@ -140,6 +140,29 @@ def test_alerts_once_per_store():
     assert len(sent) == 2
 
 
+def test_owned_skins_are_not_alerted():
+    from email.message import Message
+    main.db = main.DB(os.path.join(os.environ["VALSTORE_DATA_DIR"], "o.db"))
+    main.http = lambda *a, **k: (200, Message(), {"Entitlements": [{"TypeID": main.SKIN_LEVEL_TYPE, "ItemID": KNIFE_LVL}]})
+    main.fetch_owned({"shard": "ap", "puuid": "P", "headers": {}})
+    assert main.owned_skins() == {KNIFE}
+    sent = []
+    main.send_async = lambda text, key: sent.append(key)
+    main.ha_notification = lambda *a: None
+    main.SETTINGS.update(wishlist=[KNIFE, VANDAL], daily_digest=False)
+    snap = {"day": "2026-10-11", "expires_at": 2e9, "wallet": {}, "night": None,
+            "offers": [{"skin": KNIFE, "name": "Reaver Butterfly Knife", "cost": 5350},
+                       {"skin": VANDAL, "name": "Reaver Vandal", "cost": 1775}]}
+    main.after_check(snap)
+    assert sent == ["valstore-store-2026-10-11-" + VANDAL]  # the owned knife is skipped
+    # a failed collection read keeps the last known one
+    main.http = lambda *a, **k: (500, Message(), {})
+    main.fetch_owned({"shard": "ap", "puuid": "P", "headers": {}})
+    assert main.owned_skins() == {KNIFE}
+    main.forget_collection()
+    assert main.owned_skins() == set()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -4,7 +4,7 @@ Checks your Valorant daily store right after it resets, keeps every day's store,
 WhatsApps you (through the **PDC WhatsApp Bridge** add-on) when a skin on your wishlist
 shows up. The wishlist starts with the Reaver Butterfly Knife.
 
-The **Valorant Store** sidebar panel has four tabs:
+The **Valorant Store** sidebar panel has five tabs:
 
 - **Today:** your main target with a 60-day strip (one mark per store, red when it was
   there), today's four skins, the featured bundle(s), the Night Market when it's running,
@@ -12,6 +12,8 @@ The **Valorant Store** sidebar panel has four tabs:
 - **History:** every store since you installed it, searchable by skin, and the skins
   you've been offered most often.
 - **Wishlist:** add any skin from the full catalog; the first one is the main target.
+- **Collection:** every skin you own, by weapon and searchable. Skins you own get an
+  *Owned* badge everywhere and never trigger wishlist alerts.
 - **Settings:** Riot sign-in, WhatsApp test, Night Market alerts, an optional daily
   store message, and an activity log.
 
