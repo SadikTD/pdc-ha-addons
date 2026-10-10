@@ -1,5 +1,5 @@
 name: Valorant Store Tracker
-version: "1.1.0"
+version: "1.1.1"
 slug: valorant_store
 description: Tracks your Valorant daily store, Night Market and bundles, and WhatsApps you when a wishlist skin shows up
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/valorant_store

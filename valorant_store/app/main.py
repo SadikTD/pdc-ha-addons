@@ -693,8 +693,11 @@ def all_snapshots(limit=400):
 def state_payload():
     snaps = all_snapshots()
     today = snaps[0] if snaps else None
-    wanted = set(SETTINGS["wishlist"])
-    by_day = {s["day"]: any(o["skin"] in wanted for o in s["offers"]) for s in snaps}
+    target, others = SETTINGS["wishlist"][:1], set(SETTINGS["wishlist"][1:])
+    by_day = {}  # per store day: the main target, another wishlist skin, or neither
+    for s in snaps:
+        skins = {o["skin"] for o in s["offers"]}
+        by_day[s["day"]] = "target" if skins & set(target) else "other" if skins & others else "none"
     strip_days = [time.strftime("%Y-%m-%d", time.gmtime(time.time() - i * 86400)) for i in range(59, -1, -1)]
     return {
         "account": {"name": AUTH.get("name"), "region": AUTH.get("region")} if AUTH.get("puuid") else None,

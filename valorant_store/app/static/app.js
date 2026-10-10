@@ -60,7 +60,7 @@ const stamp = (ts) => new Date(ts * 1000).toLocaleString([], { month: "short", d
 const tierOf = (uuid) => (S?.tiers || C?.tiers || H?.tiers || {})[uuid];
 const tierStyle = (uuid) => (tierOf(uuid) ? ` style="--tier:${tierOf(uuid).c}"` : "");
 const tierIcon = (uuid) => (tierOf(uuid)?.i ? `<img class="tier-icon" src="${esc(tierOf(uuid).i)}" alt="${esc(tierOf(uuid).n)} edition" title="${esc(tierOf(uuid).n)} edition">` : "");
-const vp = (n) => (n == null ? "" : `<span class="price"><img src="${CURRENCY.vp}" alt="VP">${num(n)}</span>`);
+const vp = (n) => (n == null ? "" : `<span class="price" title="${num(n)} Valorant Points"><img src="${CURRENCY.vp}" alt="">${num(n)} <small>VP</small></span>`);
 const wanted = (skin) => (S?.wishlist || []).some((w) => w.skin === skin);
 
 // ---------- header
@@ -69,8 +69,9 @@ function renderTop() {
   const acc = S.account;
   $("#account").innerHTML = acc ? `<b>${esc(acc.name || "Signed in")}</b> ${acc.region ? `on ${esc(acc.region.toUpperCase())}` : ""}` : "Not signed in";
   const w = S.today?.wallet;
-  $("#wallet").innerHTML = w ? [["vp", "VP"], ["rad", "Radianite"], ["kc", "Kingdom Credits"]]
-    .map(([k, label]) => `<span title="${label}"><img src="${CURRENCY[k]}" alt="${label}">${num(w[k])}</span>`).join("") : "";
+  $("#wallet").innerHTML = w && Object.keys(w).length ? [["vp", "VP", "Valorant Points: buys skins and bundles"],
+    ["rad", "Radianite", "Radianite Points: upgrades skin levels"], ["kc", "Kingdom Credits", "Kingdom Credits: buys accessories"]]
+    .map(([k, label, tip]) => `<span title="${tip}"><img src="${CURRENCY[k]}" alt="">${num(w[k])} <small>${label}</small></span>`).join("") : "";
   const btn = $("#refresh");
   btn.disabled = S.status.checking;
   btn.textContent = S.status.checking ? "Checking…" : "Check now";
@@ -96,8 +97,9 @@ function huntPanel() {
 
   const todayKey = S.hunt.strip[S.hunt.strip.length - 1]?.day;
   const ticks = S.hunt.strip.map((d, i) => {
-    const cls = d.hit === true ? "hit" : d.hit === false ? "miss" : "";
-    const label = `${dayLabel(d.day)}: ${d.hit === true ? "in your store" : d.hit === false ? "not in your store" : "not checked"}`;
+    const cls = { target: "hit", other: "other", none: "miss" }[d.hit] || "";
+    const label = `${dayLabel(d.day)}: ${{ target: `${target.name} was in your store`, other: "another wishlist skin was in your store",
+      none: "no wishlist skin" }[d.hit] || "not checked"}`;
     return `<i class="${cls}${d.day === todayKey ? " today" : ""}" style="--i:${i}" title="${label}"></i>`;
   }).join("");
   const animate = !stripAnimated ? " animate" : "";
@@ -116,7 +118,9 @@ function huntPanel() {
       </div>
       <div>
         <div class="strip${animate}" role="img" aria-label="The last 60 stores">${ticks}</div>
-        <div class="strip-legend"><span>60 days ago</span><span>Today</span></div>
+        <div class="strip-legend"><span>60 days ago</span>
+          <span class="keys"><span><i class="key hit"></i>${esc(target.name)}</span>${S.wishlist.length > 1 ? `<span><i class="key other"></i>Other wishlist skins</span>` : ""}</span>
+          <span>Today</span></div>
       </div>
     </div>
   </article>`;
