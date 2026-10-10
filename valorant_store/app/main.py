@@ -79,7 +79,9 @@ AUTH = read_json(AUTH_PATH, {})  # {"cookies": {...}, "puuid", "name", "region",
 OWNED_PATH = os.path.join(DATA_DIR, "owned.json")
 OWNED = read_json(OWNED_PATH, {"at": 0, "levels": []})  # skin level uuids the account owns
 PRICES_PATH = os.path.join(DATA_DIR, "prices.json")
-PRICES = read_json(PRICES_PATH, {"at": 0, "vp": {}})  # item uuid -> VP price in the store
+PRICES = read_json(PRICES_PATH, {"at": 0, "vp": {}})  # skin uuid -> full VP price seen in a store
+if not PRICES.get("learned"):  # 1.3.0 stored level-keyed prices from the retired endpoint
+    PRICES = {"at": 0, "vp": {}, "learned": True}
 auth_lock = threading.Lock()
 
 
@@ -286,28 +288,40 @@ def fetch_owned(session):
     write_json(OWNED_PATH, OWNED)
 
 
-def fetch_prices(session):
-    """VP price of every item sold in the store, refreshed daily. Optional, like the collection."""
-    if time.time() - PRICES.get("at", 0) < 86400 and PRICES.get("vp"):
-        return
-    try:
-        body = _check(*http("GET", f"https://pd.{session['shard']}.a.pvp.net/store/v1/offers/", session["headers"]),
-                      "Prices")
-        vp = {o["OfferID"]: o["Cost"][VP] for o in body.get("Offers") or [] if VP in (o.get("Cost") or {})}
-    except (RiotError, AttributeError, TypeError, KeyError) as e:
-        log.warning("Couldn't read store prices: %s", e)
-        return
-    PRICES.update(at=time.time(), vp=vp)
-    write_json(PRICES_PATH, PRICES)
+# Riot retired its price list (store/v1/offers answers 404), so prices are learned from every
+# store, Night Market and bundle seen, and otherwise estimated from the skin's edition.
+EDITION_PRICES = {  # tier uuid: (gun, melee) VP
+    "12683d76-48d7-84a3-4e09-6985794f0445": (875, 1750),    # Select
+    "0cebb8be-46d7-c12a-d306-e9907bfc5a25": (1275, 2550),   # Deluxe
+    "60bca009-4182-7998-dee7-b8a2558dc369": (1775, 3550),   # Premium
+    "e046854e-406c-37f4-6607-19a9ba8426fc": (2175, 4350),   # Exclusive
+    "411e4a55-4e59-7757-41f0-86a53f101bb5": (2475, 4950),   # Ultra
+}
 
 
-def skin_price(skin, levels=None):
-    """A skin's VP price: the price of its base level (owned levels are checked first)."""
-    prices = PRICES.get("vp", {})
-    for lv in levels or ():
-        if lv in prices:
-            return prices[lv]
-    return next((prices[lv] for lv, s in catalog.data.get("levels", {}).items() if s == skin and lv in prices), None)
+def learn_prices(snap):
+    """Remembers the full (undiscounted) VP price of every skin in a store snapshot."""
+    seen = {o["skin"]: o.get("cost") for o in snap["offers"]}
+    seen.update({o["skin"]: o.get("was") for o in (snap.get("night") or {}).get("offers") or []})
+    for b in snap.get("bundles") or []:
+        seen.update({i["skin"]: i.get("base") for i in b["items"] if i.get("skin")})
+    new = {s: p for s, p in seen.items() if isinstance(p, (int, float)) and p > 0 and PRICES["vp"].get(s) != p}
+    if new:
+        PRICES["vp"].update(new)
+        PRICES["at"] = time.time()
+        write_json(PRICES_PATH, PRICES)
+
+
+def skin_price(skin):
+    """(VP, exact): the price seen in a store, else the edition's usual price; (None, False) if
+    the skin isn't sold for VP (battle pass, agent contracts, events have no edition)."""
+    if skin in PRICES["vp"]:
+        return PRICES["vp"][skin], True
+    item = catalog.data.get("items", {}).get(skin) or {}
+    usual = EDITION_PRICES.get(item.get("t"))
+    if not usual:
+        return None, False
+    return usual[1] if item.get("w") == "Melee" else usual[0], False
 
 
 def forget_collection():
@@ -658,11 +672,11 @@ def check(reason="scheduled"):
             session = sign_in()
             store, wallet = fetch_store(session)
             fetch_owned(session)
-            fetch_prices(session)
             if any(not catalog.known(o) for o in (store.get("SkinsPanelLayout") or {}).get("SingleItemOffers") or []):
                 catalog.ensure(force=True)  # a new skin line came out today
             snap = resolve(store, wallet)
             save_snapshot(snap)
+            learn_prices(snap)
             STATUS.update(last_ok=time.time(), error=None, error_kind=None)
             if AUTH.pop("expired_at", None):
                 ha_dismiss("valorant_store_auth")
@@ -790,16 +804,18 @@ def history_payload():
 
 
 def collection_payload():
-    items, levels = catalog.data.get("items", {}), catalog.data.get("levels", {})
-    owned_levels = {}
-    for lv in OWNED.get("levels", []):
-        owned_levels.setdefault(levels.get(lv), []).append(lv)
-    skins = [{"u": u, "n": items[u]["n"], "i": items[u]["i"], "t": items[u].get("t"), "w": items[u].get("w") or "",
-              "vp": skin_price(u, owned_levels.get(u))}
-             for u in owned_skins() if u in items]
-    priced = [s["vp"] for s in skins if s["vp"]]
+    items = catalog.data.get("items", {})
+    skins = []
+    for u in owned_skins():
+        if u in items:
+            price, exact = skin_price(u)
+            skins.append({"u": u, "n": items[u]["n"], "i": items[u]["i"], "t": items[u].get("t"),
+                          "w": items[u].get("w") or "", "vp": price, "exact": exact})
+    priced = [s for s in skins if s["vp"]]
     return {"skins": sorted(skins, key=lambda s: s["n"]), "at": OWNED.get("at"),
-            "value": sum(priced), "unpriced": len(skins) - len(priced), "tiers": catalog.data.get("tiers", {})}
+            "value": sum(s["vp"] for s in priced), "exact": sum(s["exact"] for s in priced),
+            "estimated": sum(not s["exact"] for s in priced), "unpriced": len(skins) - len(priced),
+            "tiers": catalog.data.get("tiers", {})}
 
 
 def catalog_payload():
@@ -979,6 +995,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     os.makedirs(DATA_DIR, exist_ok=True)
     db = DB(DB_PATH)
+    for snap in all_snapshots():  # prices from stores saved before prices were learned
+        learn_prices(snap)
     log.info("Valorant Store Tracker starting; wishlist: %d skin(s); WhatsApp %s",
              len(SETTINGS["wishlist"]), "on" if whatsapp_ready() else "not configured")
     threading.Thread(target=checker_loop, daemon=True, name="checker").start()

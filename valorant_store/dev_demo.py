@@ -55,8 +55,6 @@ main.event("signed_in", "Signed in with a new session cookie")
 main.OWNED.update(at=time.time() - 1800, levels=[lv for lv, sk in list(main.catalog.data["levels"].items())[::40]][:60]
                  + [next(lv for lv, sk in main.catalog.data["levels"].items()
                          if sk == snap["offers"][0]["skin"])])  # includes one of today's skins
-main.PRICES.update(at=time.time(), vp={lv: price.get(items[sk].get("t"), 1775) for lv, sk in main.catalog.data["levels"].items()
-                                       if items.get(sk, {}).get("t") and hash(sk) % 5})
 main.write_json = lambda *a: None
 main.checker_loop = lambda: None  # no Riot calls in the demo
 main.save_auth = lambda: None

@@ -311,7 +311,7 @@ function renderCollection() {
   v.innerHTML = `
     <h2>Your collection <small>${num(O.skins.length)} skins${O.at ? `, updated ${ago(O.at)}` : ""}</small></h2>
     <div class="worth">
-      <div><b>${vp(O.value)}</b><span>store value of your skins</span></div>
+      <div><b>${O.estimated ? "≈ " : ""}${vp(O.value)}</b><span>store value of your skins: ${O.exact} at prices seen in your store${O.estimated ? `, ${O.estimated} estimated from their edition` : ""}</span></div>
       ${O.unpriced ? `<div><b>${num(O.unpriced)}</b><span>${O.unpriced === 1 ? "skin isn't" : "skins aren't"} sold for VP (battle pass, agent contracts, events)</span></div>` : ""}
       <label class="sort">Sort by <select id="col-sort">
         ${[["name", "Name"], ["price", "Price, highest first"], ["weapon", "Weapon"]].map(([k, l]) =>
@@ -342,7 +342,7 @@ function renderCollectionResults() {
   $("#col-results").innerHTML = list.length ? `<div class="grid six">${list.map((s) => `<div class="card"${tierStyle(s.t)}>
       ${tierIcon(s.t)}
       <div class="art">${s.i ? `<img src="${esc(s.i)}" alt="" loading="lazy">` : ""}</div>
-      <div class="meta"><div class="name" style="font-size:17px">${esc(s.n)}</div><div class="prices">${s.vp ? vp(s.vp) : `<span class="muted" style="font-size:13px">Not sold</span>`}</div></div>
+      <div class="meta"><div class="name" style="font-size:17px">${esc(s.n)}</div><div class="prices" ${s.vp && !s.exact ? 'title="Usual price for this edition; exact once it shows up in your store"' : ""}>${s.vp ? (s.exact ? "" : `<span class="muted">≈</span>`) + vp(s.vp) : `<span class="muted" style="font-size:13px">Not sold for VP</span>`}</div></div>
     </div>`).join("")}</div>` : `<p class="muted">None of your ${ui.colWeapon === "All" ? "" : esc(ui.colWeapon) + " "}skins match "${esc(ui.colQuery)}".</p>`;
 }
 

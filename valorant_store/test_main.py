@@ -160,10 +160,14 @@ def test_owned_skins_are_not_alerted():
     main.fetch_owned({"shard": "ap", "puuid": "P", "headers": {}})
     assert main.owned_skins() == {KNIFE}
     # collection value: priced skins add up, unpriced ones are counted separately
-    main.PRICES.update(at=main.time.time(), vp={KNIFE_LVL: 5350})
+    main.write_json = lambda *a: None
+    main.learn_prices({"offers": [{"skin": KNIFE, "cost": 5350}], "night": None, "bundles": []})
     main.OWNED.update(levels=[KNIFE_LVL, VANDAL_LVL])
+    main.catalog.data["items"][VANDAL]["t"] = "60bca009-4182-7998-dee7-b8a2558dc369"  # Premium gun: 1775
     col = main.collection_payload()
-    assert col["value"] == 5350 and col["unpriced"] == 1
+    assert (col["value"], col["exact"], col["estimated"], col["unpriced"]) == (5350 + 1775, 1, 1, 0)
+    main.catalog.data["items"][VANDAL]["t"] = None  # no edition: battle pass / contract skin
+    assert main.collection_payload()["unpriced"] == 1
     main.forget_collection()
     assert main.owned_skins() == set()
 
