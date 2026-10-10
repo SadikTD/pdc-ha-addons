@@ -87,6 +87,59 @@ def test_sign_in_and_fetch():
     assert main.wishlist_hits(main.resolve(store, wallet), [KNIFE])
 
 
+def test_edge_cases():
+    from email.message import Message
+    # a bare ssid with base64 padding is still a bare value
+    assert main.parse_cookie_input("eyJabc==") == {"ssid": "eyJabc=="}
+    # a 401 from the game servers is retried, not treated as signed out
+    try:
+        main._check(401, None, {"errorCode": "BAD_CLAIMS"}, "Store")
+        raise AssertionError("should raise")
+    except main.RiotError as e:
+        assert e.kind == "api"
+    # Riot's sign-in page is what means signed out
+    login = Message()
+    login["Location"] = "https://authenticate.riotgames.com/login?client_id=x"
+    main.http = lambda *a, **k: (303, login, b"")
+    try:
+        main.reauth({"ssid": "x"})
+        raise AssertionError("should raise")
+    except main.RiotError as e:
+        assert e.kind == "expired"
+    # scheduling around the reset
+    now = 1_000_000
+    assert main.next_check_at({"expires_at": now + 30}, now) == now + 120
+    assert main.next_check_at({"expires_at": now}, now) == now + 600
+    assert main.next_check_at(None, now) == now + 600
+    # missing prices don't break messages
+    snap = {"day": "2026-10-10", "expires_at": now + 3600, "wallet": {},
+            "offers": [{"skin": KNIFE, "name": "Reaver Butterfly Knife", "cost": None}],
+            "night": {"expires_at": now + 7200, "offers": [{"skin": KNIFE, "name": "Reaver Butterfly Knife"}]}}
+    assert "price not shown" in main.alert_text("store", snap["offers"][0], snap)
+    assert "price not shown" in main.alert_text("night", snap["night"]["offers"][0], snap)
+    assert "Wallet" not in main.digest_text(snap)
+    # a store saved before the catalog knew a skin gets its name later
+    old = {"offers": [{"skin": KNIFE_LVL, "name": "Unknown item", "icon": "", "cost": 5350}], "night": None}
+    filled = main._fill_names(old)["offers"][0]
+    assert filled["name"] == "Reaver Butterfly Knife" and filled["skin"] == KNIFE and filled["cost"] == 5350
+
+
+def test_alerts_once_per_store():
+    main.db = main.DB(os.path.join(os.environ["VALSTORE_DATA_DIR"], "t.db"))
+    sent, notified = [], []
+    main.send_async = lambda text, key: sent.append(key)
+    main.ha_notification = lambda *a: notified.append(a)
+    main.SETTINGS.update(wishlist=[KNIFE], daily_digest=False, night_market_alerts=True)
+    snap = {"day": "2026-10-10", "expires_at": 2e9, "wallet": {},
+            "offers": [{"skin": KNIFE, "name": "Reaver Butterfly Knife", "cost": 5350}], "night": None}
+    main.after_check(snap)
+    main.after_check(snap)  # WhatsApp not delivered yet: try again, but notify HA only once
+    assert sent == ["valstore-store-2026-10-10-" + KNIFE] * 2 and len(notified) == 1
+    main.db.x("UPDATE alerts SET ok=1")
+    main.after_check(snap)  # delivered: nothing more
+    assert len(sent) == 2
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -12,7 +12,7 @@ let S = null;          // /api/state
 let H = null;          // /api/history (loaded when the tab opens)
 let C = null;          // /api/catalog (loaded when the wishlist tab opens)
 let stripAnimated = false;
-const ui = { historyQuery: "", wishQuery: "" };
+const ui = { historyQuery: "", wishQuery: "", weapon: "All", shown: 48 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -227,47 +227,63 @@ function renderWishlist() {
       </div>
     </div>`).join("");
 
-  let results = "";
-  const q = ui.wishQuery.trim().toLowerCase();
-  if (q.length >= 2 && C) {
-    const matches = C.skins.filter((s) => s.n.toLowerCase().includes(q)).slice(0, 24);
-    results = matches.length ? `<div class="grid six results">${matches.map((s) => {
-      const on = S.wishlist.some((w) => w.skin === s.u);
-      return `<div class="card"${tierStyle(s.t)}>${tierIcon(s.t)}
-        <div class="art">${s.i ? `<img src="${esc(s.i)}" alt="" loading="lazy">` : ""}</div>
-        <div class="name" style="font-size:17px">${esc(s.n)}</div>
-        <button class="btn small${on ? " ghost" : ""}" data-add="${s.u}" ${on ? "disabled" : ""}>${on ? "On your wishlist" : "Add to wishlist"}</button>
-      </div>`;
-    }).join("")}</div>` : `<p class="muted">No skin called "${esc(ui.wishQuery)}". Try part of the name, like "Prime" or "Vandal".</p>`;
-  } else if (q.length >= 2) {
-    results = `<p class="muted">Loading skins…</p>`;
-  }
-
   v.innerHTML = `
     <h2>Your wishlist <small>You get a WhatsApp message when any of these is in your store${S.settings.night_market_alerts ? " or Night Market" : ""}.</small></h2>
-    ${S.wishlist.length ? `<div class="grid">${list}</div>` : `<p class="muted">Empty. Search below to add a skin.</p>`}
-    <h2>Add a skin</h2>
-    <div class="wish-search"><input type="search" id="wish-q" placeholder="Search all skins, e.g. Butterfly, Prime Vandal, Kuronami" value="${esc(ui.wishQuery)}" aria-label="Search skins"></div>
-    ${results}`;
+    ${S.wishlist.length ? `<div class="grid">${list}</div>` : `<p class="muted">Empty. Pick skins below.</p>`}
+    <h2>Add skins <small>${C ? `${num(C.skins.length)} skins can show up in the store` : ""}</small></h2>
+    <div class="wish-search"><input type="search" id="wish-q" placeholder="Search, e.g. Butterfly, Prime, Kuronami" value="${esc(ui.wishQuery)}" aria-label="Search skins"></div>
+    <div class="chips" id="wish-weapons" role="group" aria-label="Weapon"></div>
+    <div id="wish-results"></div>`;
 
-  const input = $("#wish-q");
-  input.addEventListener("input", () => {
-    ui.wishQuery = input.value;
-    const pos = input.selectionStart;
-    renderWishlist();
-    const again = $("#wish-q");
-    again.focus();
-    again.setSelectionRange(pos, pos);
-  });
-  v.querySelectorAll("[data-add],[data-remove],[data-first]").forEach((b) => b.addEventListener("click", async () => {
-    const skin = b.dataset.add || b.dataset.remove || b.dataset.first;
-    b.disabled = true;
-    try {
-      await api("api/wishlist", { skin, remove: !!b.dataset.remove, first: !!b.dataset.first });
-      toast(b.dataset.add ? "Added to your wishlist" : b.dataset.remove ? "Removed from your wishlist" : "Main target changed");
-      await load();
-    } catch (e) { toast(e.message, true); b.disabled = false; }
-  }));
+  $("#wish-q").addEventListener("input", (ev) => { ui.wishQuery = ev.target.value; ui.shown = PAGE; renderSkinResults(); });
+  v.onclick = wishlistClick; // one handler, however often the tab redraws
+  renderSkinResults();
+}
+
+const PAGE = 48;
+const WEAPON_ORDER = ["Melee", "Vandal", "Phantom", "Operator", "Sheriff", "Spectre", "Ghost", "Classic"];
+
+function renderSkinResults() {
+  const box = $("#wish-results");
+  if (!box) return;
+  if (!C) { box.innerHTML = `<p class="muted">${C === false ? "Couldn't load the skin list. Open this tab again to retry." : "Loading skins…"}</p>`; return; }
+  const weapons = [...new Set(C.skins.map((s) => s.w).filter(Boolean))]
+    .sort((a, b) => ((WEAPON_ORDER.indexOf(a) + 1 || 99) - (WEAPON_ORDER.indexOf(b) + 1 || 99)) || a.localeCompare(b));
+  $("#wish-weapons").innerHTML = ["All", ...weapons].map((w) =>
+    `<button type="button" data-weapon="${esc(w)}" aria-pressed="${ui.weapon === w}">${esc(w)}</button>`).join("");
+
+  const q = ui.wishQuery.trim().toLowerCase();
+  const matches = C.skins.filter((s) => (ui.weapon === "All" || s.w === ui.weapon) && (!q || s.n.toLowerCase().includes(q)));
+  const onList = new Set(S.wishlist.map((w) => w.skin));
+  const cards = matches.slice(0, ui.shown).map((s) => {
+    const on = onList.has(s.u);
+    return `<div class="card"${tierStyle(s.t)}>${tierIcon(s.t)}
+      <div class="art">${s.i ? `<img src="${esc(s.i)}" alt="" loading="lazy">` : ""}</div>
+      <div class="name" style="font-size:17px">${esc(s.n)}</div>
+      <button class="btn small${on ? " ghost" : ""}" data-add="${s.u}" ${on ? "disabled" : ""}>${on ? "On your wishlist" : "Add to wishlist"}</button>
+    </div>`;
+  }).join("");
+  box.innerHTML = matches.length
+    ? `<div class="grid six results">${cards}</div>${matches.length > ui.shown
+      ? `<div class="field-row" style="justify-content:center;margin-top:18px"><button class="btn ghost" type="button" data-more>Show more (${num(matches.length - ui.shown)} left)</button></div>` : ""}`
+    : `<p class="muted">No ${ui.weapon === "All" ? "" : esc(ui.weapon) + " "}skin matches "${esc(ui.wishQuery)}". Try part of the name, like "Prime".</p>`;
+}
+
+async function wishlistClick(ev) {
+  const b = ev.target.closest("button");
+  if (!b) return;
+  if (b.dataset.weapon) { ui.weapon = b.dataset.weapon; ui.shown = PAGE; renderSkinResults(); return; }
+  if ("more" in b.dataset) { ui.shown += PAGE; renderSkinResults(); return; }
+  const skin = b.dataset.add || b.dataset.remove || b.dataset.first;
+  if (!skin) return;
+  b.disabled = true;
+  try {
+    await api("api/wishlist", { skin, remove: !!b.dataset.remove, first: !!b.dataset.first });
+    toast(b.dataset.add ? "Added to your wishlist" : b.dataset.remove ? "Removed from your wishlist" : "Main target changed");
+    const y = scrollY;
+    await load();
+    scrollTo(0, y);
+  } catch (e) { toast(e.message, true); b.disabled = false; }
 }
 
 // ---------- settings
@@ -369,8 +385,22 @@ async function render(background = false) {
   renderTop();
   if (background && t !== "today") return; // don't redraw a tab the user may be typing in
   if (t === "today") renderToday();
-  if (t === "history") { renderHistory(); if (!H) { H = await api("api/history"); renderHistory(); } }
-  if (t === "wishlist") { renderWishlist(); if (!C) { C = await api("api/catalog"); renderWishlist(); } }
+  if (t === "history") {
+    renderHistory();
+    if (!H) {
+      try { H = await api("api/history"); } catch (e) { toast(e.message, true); return; }
+      renderHistory();
+    }
+  }
+  if (t === "wishlist") {
+    renderWishlist();
+    if (!C) {
+      try { C = await api("api/catalog"); } catch (e) { C = false; toast(e.message, true); }
+      renderSkinResults();
+      if (C === false) C = null; // retry next time the tab opens
+      else $("#view-wishlist h2:nth-of-type(2) small").textContent = `${num(C.skins.length)} skins can show up in the store`;
+    }
+  }
   if (t === "settings") renderSettings();
 }
 

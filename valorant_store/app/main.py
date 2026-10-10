@@ -9,6 +9,7 @@ change without notice.
 """
 
 import base64
+import http.client as http_client
 import json
 import logging
 import os
@@ -133,12 +134,13 @@ def http(method, url, headers=None, body=None, timeout=30):
     req = urllib.request.Request(url, data=data, method=method, headers={
         "User-Agent": RIOT_UA, **({"Content-Type": "application/json"} if data else {}), **(headers or {})})
     try:
-        resp = _opener.open(req, timeout=timeout)
-    except urllib.error.HTTPError as e:
-        resp = e
-    except OSError as e:
+        try:
+            resp = _opener.open(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            resp = e
+        raw = resp.read() or b""  # a timeout or dropped connection here is a network error too
+    except (OSError, http_client.HTTPException) as e:
         raise RiotError("network", f"Couldn't reach {urllib.parse.urlsplit(url).hostname}: {e}")
-    raw = resp.read() or b""
     try:
         parsed = json.loads(raw) if raw else None
     except ValueError:
@@ -162,7 +164,7 @@ def parse_cookie_input(text):
     text = (text or "").strip().strip('"\'')
     if text.lower().startswith("cookie:"):
         text = text[7:].strip()
-    if "=" not in text:
+    if "=" not in text or (text.startswith("eyJ") and ";" not in text):  # a bare ssid value (a JWT)
         return {"ssid": text} if text else {}
     cookies = {}
     for part in re.split(r";\s*|\n", text):
@@ -192,7 +194,7 @@ def reauth(cookies):
     status, headers, _ = http("GET", AUTHORIZE_URL, {"Cookie": header})
     location = headers.get("Location") or ""
     if "access_token=" not in location:
-        if status in (301, 302, 303) and "login" in location:
+        if status in (301, 302, 303) and "login" in location.split("#")[0]:
             raise RiotError("expired", "Riot signed this session out. Paste a fresh ssid cookie.")
         raise RiotError("api", f"Riot sign-in answered {status}; will retry.")
     frag = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(location).fragment))
@@ -202,9 +204,9 @@ def reauth(cookies):
 def _check(status, _headers, body, what):
     if status == 200:
         return body
+    # Only Riot's sign-in page means "signed out" (see reauth); a 401 here comes with a token
+    # minted seconds ago, so it's a server hiccup to retry, not a reason to ask for a new cookie.
     err = body if isinstance(body, dict) else {}
-    if err.get("errorCode") == "BAD_CLAIMS" or status == 401:
-        raise RiotError("expired", "Riot rejected the session. Paste a fresh ssid cookie.")
     if "MAINTENANCE" in json.dumps(err).upper() or status == 503:
         raise RiotError("maintenance", "Valorant servers are in maintenance.")
     raise RiotError("api", f"{what} failed ({status} {err.get('errorCode') or ''})".strip())
@@ -256,7 +258,11 @@ def fetch_store(session):
     base = f"https://pd.{session['shard']}.a.pvp.net"
     store = _check(*http("POST", f"{base}/store/v3/storefront/{session['puuid']}", session["headers"], {}),
                    "Store")
-    wallet = _check(*http("GET", f"{base}/store/v1/wallet/{session['puuid']}", session["headers"]), "Wallet")
+    try:  # the wallet is a nice-to-have; don't lose the store over it
+        wallet = _check(*http("GET", f"{base}/store/v1/wallet/{session['puuid']}", session["headers"]), "Wallet")
+    except RiotError as e:
+        log.warning("Couldn't read the wallet: %s", e)
+        wallet = {}
     return store, wallet
 
 
@@ -271,14 +277,16 @@ class Catalog:
 
     def ensure(self, force=False):
         with self.lock:
-            if not force and self.data.get("items") and time.time() - self.data.get("at", 0) < 86400:
+            fresh = self.data.get("ver") == CATALOG_VERSION and time.time() - self.data.get("at", 0) < 86400
+            if self.data.get("items") and fresh and not force:
                 return
             try:
                 self.data = build_catalog()
                 write_json(CATALOG_PATH, self.data)
                 log.info("Catalog updated: %d items", len(self.data["items"]))
-            except (RiotError, KeyError, TypeError, ValueError) as e:
+            except (RiotError, KeyError, TypeError, ValueError, AttributeError) as e:
                 log.warning("Couldn't update the skin catalog: %s", e)
+                self.data["at"] = time.time() - 86400 + 1800  # keep the old one; try again in 30 min
 
     def item(self, uuid, kind="skin"):
         items = self.data.get("items", {})
@@ -297,18 +305,23 @@ def _api(path):
     return body["data"]
 
 
+CATALOG_VERSION = 2  # bump when build_catalog's output changes, so cached copies rebuild
+
+
 def build_catalog():
     items, levels = {}, {}
-    for s in _api("weapons/skins"):
-        if not s.get("levels") or "Random Favorite" in s["displayName"]:
-            continue
-        first = s["levels"][0]
-        chroma = (s.get("chromas") or [{}])[0]
-        items[s["uuid"]] = {"u": s["uuid"], "n": s["displayName"], "k": "skin", "t": s.get("contentTierUuid"),
-                            "i": first.get("displayIcon") or s.get("displayIcon") or chroma.get("fullRender") or "",
-                            "v": bool(first.get("streamedVideo"))}
-        for lv in s["levels"]:
-            levels[lv["uuid"]] = s["uuid"]
+    for w in _api("weapons"):
+        for s in w.get("skins") or []:
+            if not s.get("levels") or "Random Favorite" in s["displayName"]:
+                continue
+            first = s["levels"][0]
+            chroma = (s.get("chromas") or [{}])[0]
+            items[s["uuid"]] = {"u": s["uuid"], "n": s["displayName"], "k": "skin", "t": s.get("contentTierUuid"),
+                                "w": w["displayName"],
+                                "i": first.get("displayIcon") or s.get("displayIcon") or chroma.get("fullRender") or "",
+                                "v": bool(first.get("streamedVideo"))}
+            for lv in s["levels"]:
+                levels[lv["uuid"]] = s["uuid"]
     for b in _api("buddies"):
         for lv in b.get("levels") or []:
             items[lv["uuid"]] = {"u": lv["uuid"], "n": b["displayName"], "k": "buddy", "i": lv.get("displayIcon") or ""}
@@ -323,7 +336,7 @@ def build_catalog():
                for b in _api("bundles")}
     tiers = {t["uuid"]: {"n": t["devName"], "c": "#" + (t.get("highlightColor") or "8b978fff")[:6], "r": t["rank"],
                          "i": t.get("displayIcon") or ""} for t in _api("contenttiers")}
-    return {"at": time.time(), "items": items, "levels": levels, "bundles": bundles, "tiers": tiers}
+    return {"ver": CATALOG_VERSION, "at": time.time(), "items": items, "levels": levels, "bundles": bundles, "tiers": tiers}
 
 
 catalog = Catalog()
@@ -359,15 +372,16 @@ def resolve(store, wallet, now=None):
         meta = catalog.data.get("bundles", {}).get(b.get("DataAssetID"), {})
         items = []
         for it in b.get("Items") or []:
-            kind = ITEM_KINDS.get(it["Item"]["ItemTypeID"], "other")
-            info = catalog.item(it["Item"]["ItemID"], kind)
+            raw = it.get("Item") or {}
+            kind = ITEM_KINDS.get(raw.get("ItemTypeID"), "other")
+            info = catalog.item(raw.get("ItemID"), kind)
             items.append({"name": info["n"], "icon": info["i"], "kind": kind, "tier": info.get("t"),
-                          "skin": info["u"] if kind == "skin" else None, "amount": it["Item"].get("Amount", 1),
+                          "skin": info["u"] if kind == "skin" else None, "amount": raw.get("Amount", 1),
                           "price": it.get("DiscountedPrice"), "base": it.get("BasePrice")})
         snap["bundles"].append({
             "uuid": b.get("DataAssetID"), "name": meta.get("n") or "Featured bundle", "icon": meta.get("i", ""),
-            "price": b.get("TotalDiscountedCost", {}).get(VP) or sum(i["price"] or 0 for i in items),
-            "base": b.get("TotalBaseCost", {}).get(VP) or sum(i["base"] or 0 for i in items),
+            "price": (b.get("TotalDiscountedCost") or {}).get(VP) or sum(i["price"] or 0 for i in items),
+            "base": (b.get("TotalBaseCost") or {}).get(VP) or sum(i["base"] or 0 for i in items),
             "expires_at": now + (b.get("DurationRemainingInSeconds") or 0), "items": items})
     bonus = store.get("BonusStore")
     if bonus and bonus.get("BonusStoreOffers"):
@@ -392,9 +406,17 @@ def save_snapshot(snap):
     db.x("INSERT OR REPLACE INTO snapshots VALUES (?,?,?)", (snap["day"], snap["fetched_at"], json.dumps(snap)))
 
 
+def _fill_names(snap):
+    """Skins that weren't in the catalog yet when a store was saved get their names later."""
+    for o in snap["offers"] + ((snap.get("night") or {}).get("offers") or []):
+        if o["name"] == "Unknown item" and catalog.known(o["skin"]):
+            o.update(_skin(o["skin"], **{k: o[k] for k in ("cost", "was", "percent", "seen") if k in o}))
+    return snap
+
+
 def latest_snapshot():
     rows = db.q("SELECT data FROM snapshots ORDER BY day DESC LIMIT 1")
-    return json.loads(rows[0]["data"]) if rows else None
+    return _fill_names(json.loads(rows[0]["data"])) if rows else None
 
 
 # ------------------------------------------------------------------ home assistant + whatsapp
@@ -419,6 +441,10 @@ def _supervisor(method, path, payload=None, timeout=10):
 def ha_notification(title, message, notification_id="valorant_store"):
     _supervisor("POST", "/core/api/services/persistent_notification/create",
                 {"title": title, "message": message, "notification_id": notification_id})
+
+
+def ha_dismiss(notification_id):
+    _supervisor("POST", "/core/api/services/persistent_notification/dismiss", {"notification_id": notification_id})
 
 
 _bridge = {"url": None, "to": "", "token": ""}
@@ -510,7 +536,11 @@ def send_async(text, key):
 
 
 def local_time(ts):
-    return time.strftime("%-I:%M %p", time.localtime(ts)) if os.name != "nt" else time.strftime("%I:%M %p", time.localtime(ts))
+    return time.strftime("%I:%M %p", time.localtime(ts)).lstrip("0")  # musl has no %-I
+
+
+def vp_text(n):
+    return f"{n:,} VP" if isinstance(n, (int, float)) else "price not shown"
 
 
 def hours_left(ts):
@@ -521,17 +551,18 @@ def hours_left(ts):
 def alert_text(place, offer, snap):
     if place == "store":
         return (f"🎯 {offer['name']} is in your Valorant store today!\n"
-                f"Price: {offer['cost']:,} VP\n"
+                f"Price: {vp_text(offer.get('cost'))}\n"
                 f"It leaves at {local_time(snap['expires_at'])} ({hours_left(snap['expires_at'])} left).")
     return (f"🌙 {offer['name']} is in your Night Market!\n"
-            f"{offer['cost']:,} VP instead of {offer['was']:,} VP ({offer['percent']}% off). "
+            f"{vp_text(offer.get('cost'))} instead of {vp_text(offer.get('was'))} ({offer.get('percent', '?')}% off). "
             f"Flip your cards to check; the Night Market ends in {hours_left(snap['night']['expires_at'])}.")
 
 
 def digest_text(snap):
     lines = [f"🛒 Today's Valorant store ({snap['day']})"]
-    lines += [f"• {o['name']} - {o['cost']:,} VP" if o.get("cost") else f"• {o['name']}" for o in snap["offers"]]
-    lines.append(f"Wallet: {snap['wallet']['vp']:,} VP")
+    lines += [f"• {o['name']} - {vp_text(o.get('cost'))}" for o in snap["offers"]]
+    if snap["wallet"]:
+        lines.append(f"Wallet: {vp_text(snap['wallet'].get('vp'))}")
     return "\n".join(lines)
 
 
@@ -541,11 +572,14 @@ def after_check(snap):
             continue
         when = snap["day"] if place == "store" else store_day(snap["night"]["expires_at"])
         key = f"valstore-{place}-{when}-{offer['skin']}"
-        if not db.q("SELECT 1 FROM alerts WHERE key=?", (key,)):  # once per store, even without WhatsApp
-            db.x("INSERT INTO alerts VALUES (?,?,?,0)", (key, time.time(), alert_text(place, offer, snap)))
+        text = alert_text(place, offer, snap)
+        row = db.q("SELECT ok FROM alerts WHERE key=?", (key,))
+        if not row:  # first sighting in this store: log it and notify Home Assistant once
+            db.x("INSERT INTO alerts VALUES (?,?,?,0)", (key, time.time(), text))
             event("found", f"{offer['name']} is in your {'store' if place == 'store' else 'Night Market'}")
-            ha_notification("Valorant store", alert_text(place, offer, snap), f"valorant_store_{offer['skin'][:8]}")
-            send_async(alert_text(place, offer, snap), key)
+            ha_notification("Valorant store", text, f"valorant_store_{offer['skin'][:8]}")
+        if not row or not row[0]["ok"]:  # WhatsApp again on later checks until delivered (bridge dedupes by key)
+            send_async(text, key)
     if SETTINGS["daily_digest"]:
         send_async(digest_text(snap), f"valstore-digest-{snap['day']}")
 
@@ -570,8 +604,13 @@ def check(reason="scheduled"):
             snap = resolve(store, wallet)
             save_snapshot(snap)
             STATUS.update(last_ok=time.time(), error=None, error_kind=None)
+            if AUTH.pop("expired_at", None):
+                ha_dismiss("valorant_store_auth")
             log.info("Store checked (%s): %s", reason, ", ".join(o["name"] for o in snap["offers"]))
-            after_check(snap)
+            try:  # a notification problem must not turn a good check into a failed one
+                after_check(snap)
+            except Exception:
+                log.exception("Sending alerts failed")
             return snap
         except RiotError as e:
             STATUS.update(error=str(e), error_kind=e.kind)
@@ -606,9 +645,12 @@ def next_check_at(snap, now):
     """Right after the next daily reset, or every check_every_hours (Night Market, bundles,
     keeping the session fresh), whichever comes first."""
     every = now + max(1, float(OPTS["check_every_hours"])) * 3600
-    if snap and snap["expires_at"] > now:
+    left = snap["expires_at"] - now if snap else 0
+    if left > 60:
         return min(every, snap["expires_at"] + 90)
-    return every
+    if left > 0:
+        return now + 120  # resetting any moment; look again just after
+    return now + 600  # no countdown (old store still served, or the store is closed between acts)
 
 
 def checker_loop():
@@ -620,7 +662,7 @@ def checker_loop():
             failures = 0
             nxt = next_check_at(snap, now)
         elif STATUS["error_kind"] == "expired":
-            nxt = now + 12 * 3600  # nothing to do until a new cookie arrives (which wakes us)
+            nxt = now + 3600  # a new cookie wakes us at once; meanwhile retry hourly in case Riot recovers
         else:
             failures += 1
             nxt = now + min(3600, 300 * 2 ** (failures - 1))
@@ -644,7 +686,8 @@ def wishlist_payload(snaps):
 
 
 def all_snapshots(limit=400):
-    return [json.loads(r["data"]) for r in db.q("SELECT data FROM snapshots ORDER BY day DESC LIMIT ?", (limit,))]
+    return [_fill_names(json.loads(r["data"]))
+            for r in db.q("SELECT data FROM snapshots ORDER BY day DESC LIMIT ?", (limit,))]
 
 
 def state_payload():
@@ -683,8 +726,10 @@ def history_payload():
 
 
 def catalog_payload():
-    skins = [{"u": i["u"], "n": i["n"], "i": i["i"], "t": i.get("t")}
-             for i in catalog.data.get("items", {}).values() if i["k"] == "skin" and "Standard" not in i["n"]]
+    """Skins that can be in the store: they have an edition tier (defaults, battle pass and
+    agent-contract skins don't)."""
+    skins = [{"u": i["u"], "n": i["n"], "i": i["i"], "t": i["t"], "w": i.get("w") or ""}
+             for i in catalog.data.get("items", {}).values() if i["k"] == "skin" and i.get("t")]
     return {"skins": sorted(skins, key=lambda s: s["n"]), "tiers": catalog.data.get("tiers", {})}
 
 
@@ -705,6 +750,7 @@ def action_login(body):
         AUTH.update(cookies=cookies, saved_at=time.time(), state="ok")
         save_auth()
     event("signed_in", "Signed in with a new session cookie")
+    ha_dismiss("valorant_store_auth")
     snap = check("sign-in")
     wake.set()  # reschedule the next check from this fresh store
     if not snap:
@@ -729,8 +775,8 @@ def action_refresh(_body):
 
 def action_wishlist(body):
     uuid = body.get("skin") or ""
-    if uuid not in catalog.data.get("items", {}):
-        return 400, {"error": "Unknown skin"}
+    if (catalog.data.get("items", {}).get(uuid) or {}).get("k") != "skin":
+        return 400, {"error": "That skin isn't in the catalog."}
     wl = SETTINGS["wishlist"]
     if body.get("remove"):
         SETTINGS["wishlist"] = [u for u in wl if u != uuid]
@@ -740,8 +786,11 @@ def action_wishlist(body):
         SETTINGS["wishlist"] = [uuid] + [u for u in SETTINGS["wishlist"] if u != uuid]
     save_settings()
     snap = latest_snapshot()
-    if snap and not body.get("remove"):
-        after_check(snap)  # added a skin that's already in today's store
+    if snap and not body.get("remove") and snap["expires_at"] > time.time():
+        try:
+            after_check(snap)  # added a skin that's already in today's store
+        except Exception:
+            log.exception("Sending alerts failed")
     return 200, {"ok": True, "wishlist": SETTINGS["wishlist"]}
 
 
@@ -795,9 +844,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self):
+    def _safely(self, handler):
         if not self._allowed():
             return
+        try:
+            handler()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the browser went away
+        except Exception as e:
+            log.exception("Request %s %s failed", self.command, self.path)
+            try:
+                self._send(500, {"error": f"Something went wrong: {e}"})
+            except OSError:
+                pass
+
+    def do_GET(self):
+        self._safely(self._get)
+
+    def do_POST(self):
+        self._safely(self._post)
+
+    def _get(self):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/state":
             return self._send(200, state_payload())
@@ -813,9 +880,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, f.read(), CONTENT_TYPES.get(os.path.splitext(full)[1], "application/octet-stream"),
                        "max-age=31536000, immutable" if full.endswith(".woff2") else "no-cache")
 
-    def do_POST(self):
-        if not self._allowed():
-            return
+    def _post(self):
         action = ACTIONS.get(urllib.parse.urlsplit(self.path).path)
         if not action:
             return self._send(404, {"error": "not found"})
