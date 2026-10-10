@@ -240,7 +240,7 @@ textarea:focus, input[type=search]:focus { border-color: var(--dust); outline: n
 /* ---------- collection value */
 .worth { display: flex; gap: 36px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 18px; }
 .worth > div { display: flex; flex-direction: column; }
-.worth b { font: 700 34px/1 var(--display); }
+.worth b { font: 700 34px/1 var(--display); display: flex; align-items: center; gap: 8px; }
 .worth b .price { font: inherit; gap: 8px; color: var(--bone); }
 .worth b .price img { width: 26px; height: 26px; }
 .worth b .price small { font: 600 16px var(--body); }
