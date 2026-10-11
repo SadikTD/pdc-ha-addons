@@ -187,6 +187,16 @@ func (a *App) Routes(www string) http.Handler {
 		writeJSON(w, 200, a.faces.PersonFaces(r.PathValue("id"), limit))
 	})
 	// Why an event did or didn't give faces: looks again step by step, keeping nothing.
+	// Who a night alert at t (unix ms) on cam would name (dry: nothing is sent or kept).
+	mux.HandleFunc("GET /api/faces/whoat", func(w http.ResponseWriter, r *http.Request) {
+		t, err := strconv.ParseInt(r.URL.Query().Get("t"), 10, 64)
+		if err != nil {
+			writeErr(w, 400, "t: unix ms")
+			return
+		}
+		names := a.faces.WhoAt(r.Context(), r.URL.Query().Get("cam"), time.UnixMilli(t))
+		writeJSON(w, 200, map[string]any{"names": names, "label": alertLabel("Person", names)})
+	})
 	mux.HandleFunc("GET /api/faces/explain/{cam}/{id}", func(w http.ResponseWriter, r *http.Request) {
 		e, ok := a.events.Get(r.PathValue("cam"), r.PathValue("id"))
 		if !ok {
