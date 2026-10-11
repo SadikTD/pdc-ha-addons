@@ -663,13 +663,19 @@ def close_event(event_id, end):
     db.execute("UPDATE events SET end=? WHERE id=?", (end, event_id))
 
 
+def stall_gap(interval):
+    """Silence longer than this means the monitor wasn't running. At least 90 s, so a
+    slow round during an outage (DNS timeouts) or a quick add-on restart isn't one."""
+    return max(3 * interval, 90)
+
+
 def handle_startup_gap(interval):
     """Records the time the monitor itself was not running (e.g. power cut)."""
     last = db.one("SELECT MAX(ts) AS ts FROM checks")["ts"]
     now = time.time()
     open_outage = db.one("SELECT id, start FROM events WHERE kind='internet_down' AND end IS NULL "
                          "ORDER BY start DESC LIMIT 1")
-    if last and now - last > 3 * interval:
+    if last and now - last > stall_gap(interval):
         if open_outage:  # we can't know when it really ended; stop at our last observation
             close_event(open_outage["id"], last)
             open_outage = None
@@ -696,7 +702,7 @@ def monitor_loop():
 
 
 def monitor_step(m, t0, interval):
-    if m["prev_ts"] and t0 - m["prev_ts"] > 3 * interval:  # host was suspended/stalled
+    if m["prev_ts"] and t0 - m["prev_ts"] > stall_gap(interval):  # host was suspended/stalled
         eid = open_event("monitor_offline", m["prev_ts"])
         close_event(eid, t0)
     up, latency, jitter, loss = check_once()
