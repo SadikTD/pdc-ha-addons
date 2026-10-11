@@ -92,3 +92,11 @@ func eventPeople(ss []*Seen) []string {
 	}
 	return out
 }
+
+// whoBy: how a sighting was named, as events show it ("clothing" = only today's outfit).
+func whoBy(by string) string {
+	if by == "outfit" {
+		return "clothing"
+	}
+	return "face"
+}

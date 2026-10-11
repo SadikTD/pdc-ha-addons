@@ -35,7 +35,7 @@ export function LabelChips({ e, size = "sm", showMotion = false, onWrong }: { e:
       {who.map((w) => (
         <span
           key={w.person}
-          title={w.by === "clothing" ? `${w.name}, going by their clothes (same day)` : `${w.name}, recognised by face`}
+          title={w.by === "clothing" ? `${w.name}, going by their clothes (same day)` : `${w.name}, recognised`}
           className={clsx("inline-flex items-center gap-1 rounded-md bg-pink-600 font-bold text-white shadow-sm", size === "xs" ? "px-1 py-0.5 text-[9px]" : "px-1.5 py-0.5 text-[10px]")}
         >
           <UserRound className={size === "xs" ? "size-2.5" : "size-3"} /> {w.by === "clothing" ? "≈ " : ""}

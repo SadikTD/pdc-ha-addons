@@ -330,7 +330,11 @@ func (a *App) Routes(www string) http.Handler {
 			return
 		}
 		w.Header().Set("Cache-Control", "private, max-age=86400")
-		http.ServeFile(w, r, a.faces.imgPath(id))
+		p := a.faces.imgPath(id)
+		if _, err := os.Stat(p); err != nil {
+			p = a.faces.bodyPath(id) // no face seen: the whole person
+		}
+		http.ServeFile(w, r, p)
 	})
 	// Comings and goings of the people named (from, to: unix ms; default the last 3 days).
 	mux.HandleFunc("GET /api/presence", func(w http.ResponseWriter, r *http.Request) {

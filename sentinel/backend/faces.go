@@ -32,9 +32,8 @@ import (
 // names them all; every face the user confirms makes that person easier to recognise.
 //
 // Cameras that look down from the ceiling rarely see a face, so each person crop also
-// keeps the colours of their clothes: a sighting without a usable face, the same day and
-// in daylight, whose clothes clearly match one named person's, is that person "by
-// clothing" (shown as such, it's the weaker kind of evidence).
+// gets a who-model fingerprint of the whole person (see who.go): it names people from
+// above, from behind and in infrared, but only when it is sure.
 //
 // Everything stays on the Pi: /media/sentinel/faces holds the people, the sightings with
 // their fingerprints (as long as the events they belong to) and small face pictures.
@@ -46,12 +45,7 @@ const (
 	faceSuggest = 0.32 // an unknown group this alike to someone is shown as "Is this …?"
 	faceJunk    = 0.5  // like a "not a face": not a face either
 	faceMinQ    = 0.3  // worse faces are kept, but not matched or shown
-	lookMatch   = 0.78 // clothes: histogram overlap
-	lookMargin  = 0.08
-	lookWindow  = 6 * time.Hour
-	// Clothes-only naming (same day) was 8% wrong in the 2026-10-11 baseline: off.
-	useClothing = false
-	galleryMax  = 300 // faces kept per person
+	galleryMax  = 300  // faces kept per person
 )
 
 // Who is someone recognised in an event.
@@ -78,19 +72,19 @@ type Seen struct {
 	T      int64    `json:"t"`
 	Box    Rect     `json:"box"`              // the person, in the frame
 	Night  bool     `json:"night,omitempty"`  // infrared picture: no colours
-	Look   string   `json:"look,omitempty"`   // clothing colours
 	Face   *Rect    `json:"face,omitempty"`   // the face, in the frame
 	Q      float64  `json:"q,omitempty"`      // face quality 0..1
 	Emb    string   `json:"emb,omitempty"`    // face fingerprint
+	Body   string   `json:"body,omitempty"`   // who-model fingerprint of the whole person
 	Person string   `json:"person,omitempty"` // who it is
-	By     string   `json:"by,omitempty"`     // "you" (named by the user) or "face" (recognised)
+	By     string   `json:"by,omitempty"`     // "you" (named by the user); recognised: "face", "sure" or "outfit"
 	Sim    float64  `json:"sim,omitempty"`    // how alike, when recognised
 	Not    []string `json:"not,omitempty"`    // people the user said it isn't
 	Junk   bool     `json:"junk,omitempty"`   // the user said it's not a face
 	Skip   bool     `json:"skip,omitempty"`   // the user doesn't want to name them (hidden, and faces like it)
 
 	emb  []float32
-	look []float32
+	body []float32
 }
 
 func (s *Seen) hasFace() bool { return s.emb != nil && !s.Junk }
@@ -119,6 +113,7 @@ type Faces struct {
 	flushC chan struct{}
 	laterC chan struct{}
 	status FaceStatus
+	tried  map[string]bool // sightings whose fingerprint backfill was attempted (this run)
 	// version counts changes; the faces to name are grouped again only after one
 	// (grouping every face is heavy, and the page asks every 30 s and after each action).
 	version  atomic.Int64
@@ -137,7 +132,7 @@ type FaceStatus struct {
 }
 
 func newFaces(app *App) *Faces {
-	f := &Faces{app: app, root: filepath.Join(app.media, "faces"), wake: make(chan struct{}, 1), seen: map[string]*Seen{}, dirty: map[string]bool{}, whoQ: map[EventKey][]Who{}, flushC: make(chan struct{}, 1), laterC: make(chan struct{}, 1)}
+	f := &Faces{app: app, root: filepath.Join(app.media, "faces"), wake: make(chan struct{}, 1), seen: map[string]*Seen{}, dirty: map[string]bool{}, whoQ: map[EventKey][]Who{}, flushC: make(chan struct{}, 1), laterC: make(chan struct{}, 1), tried: map[string]bool{}}
 	_ = os.MkdirAll(filepath.Join(f.root, "img"), 0o755)
 	_ = os.MkdirAll(filepath.Join(f.root, "seen"), 0o755)
 	if b, err := os.ReadFile(filepath.Join(f.root, "people.json")); err == nil {
@@ -148,7 +143,7 @@ func newFaces(app *App) *Faces {
 		var list []*Seen
 		if b, err := os.ReadFile(p); err == nil && json.Unmarshal(b, &list) == nil {
 			for _, s := range list {
-				s.emb, s.look = decodeVec(s.Emb), decodeVec(s.Look)
+				s.emb, s.body = decodeVec(s.Emb), decodeVec(s.Body)
 				f.seen[s.ID] = s
 			}
 		}
@@ -323,6 +318,7 @@ func (f *Faces) Cleanup() {
 		if !exists[EventKey{s.Cam, s.Event}] {
 			delete(f.seen, id)
 			_ = os.Remove(f.imgPath(id))
+			_ = os.Remove(f.bodyPath(id))
 			f.touchLocked(s)
 		}
 	}
@@ -334,6 +330,7 @@ func (f *Faces) Cleanup() {
 		for _, s := range list[galleryMax:] {
 			delete(f.seen, s.ID)
 			_ = os.Remove(f.imgPath(s.ID))
+			_ = os.Remove(f.bodyPath(s.ID))
 			f.touchLocked(s)
 		}
 	}
@@ -408,22 +405,51 @@ func isJunk(v []float32, junk [][]float32) bool {
 	return false
 }
 
-// matchLocked (re)decides who each face not named by the user is.
-func (f *Faces) matchLocked(list []*Seen) {
-	g, junk := f.galleriesLocked()
-	for _, s := range list {
-		if !s.hasFace() || s.By == "you" {
+// bodyRefsLocked: what people look like. long: sightings the user named (any day);
+// today: everyone known surely (user, face or "sure"), sorted by time, for outfits.
+// ponytail: rebuilt per call (O(sightings)); fine at ~10k, index by day if relearn gets slow.
+func (f *Faces) bodyRefsLocked() (long, today []bodyRef) {
+	for _, s := range f.seen {
+		if s.body == nil || s.Person == "" || s.Junk {
 			continue
 		}
-		p, sim := "", 0.0
-		if s.Q >= faceMinQ && !isJunk(s.emb, junk) {
-			if best, bs, second := bestMatch(s.emb, g, s.Not); bs >= faceMatch && bs-second >= faceMargin {
-				p, sim = best, bs
-			}
+		r := bodyRef{person: s.Person, t: s.T, night: s.Night, v: s.body}
+		if s.By == "you" {
+			long = append(long, r)
 		}
-		if p != s.Person || math.Abs(sim-s.Sim) > 0.005 {
-			s.Person, s.Sim = p, sim
-			s.By = map[bool]string{true: "face", false: ""}[p != ""]
+		if s.By == "you" || s.By == "face" || s.By == "sure" {
+			today = append(today, r)
+		}
+	}
+	sort.Slice(today, func(i, j int) bool { return today[i].t < today[j].t })
+	return long, today
+}
+
+// decideLocked: who a sighting not named by the user is: by face first (the stronger
+// evidence), then by the who model.
+func (f *Faces) decideLocked(s *Seen, g map[string][][]float32, junk [][]float32, long, today []bodyRef) (string, string, float64) {
+	if s.hasFace() && s.Q >= faceMinQ && !isJunk(s.emb, junk) {
+		if best, bs, second := bestMatch(s.emb, g, s.Not); bs >= faceMatch && bs-second >= faceMargin {
+			return best, "face", bs
+		}
+	}
+	if s.body != nil && !s.Junk {
+		return decideWho(s.body, s.T, s.Night, s.Not, long, today)
+	}
+	return "", "", 0
+}
+
+// matchLocked (re)decides who each sighting not named by the user is.
+func (f *Faces) matchLocked(list []*Seen) {
+	g, junk := f.galleriesLocked()
+	long, today := f.bodyRefsLocked()
+	for _, s := range list {
+		if s.By == "you" {
+			continue
+		}
+		p, by, sim := f.decideLocked(s, g, junk, long, today)
+		if p != s.Person || by != s.By || math.Abs(sim-s.Sim) > 0.005 {
+			s.Person, s.By, s.Sim = p, by, sim
 			f.touchLocked(s)
 		}
 	}
@@ -438,97 +464,36 @@ func (f *Faces) nameOfLocked(id string) string {
 	return ""
 }
 
-// whoLocked works out who was in each event of the sightings' days (names by face, then
-// by clothing), and stores it on the events.
+// whoLocked works out who was in each event of the sightings' days and stores it on the
+// events: a name only when its sightings agree (eventPeople), "face" when the face or a
+// sure whole look said so, "clothing" when only today's outfit did.
 func (f *Faces) whoLocked(days map[string]bool) {
-	byDay := map[string][]*Seen{}
+	events := map[EventKey][]*Seen{}
 	for _, s := range f.seen {
 		if d := dayOf(s.T); days == nil || days[d] {
-			byDay[d] = append(byDay[d], s)
-		}
-	}
-	for _, list := range byDay {
-		named := []*Seen{}
-		for _, s := range list {
-			if s.Person != "" && s.look != nil && !s.Night {
-				named = append(named, s)
-			}
-		}
-		events := map[EventKey][]*Seen{}
-		for _, s := range list {
 			k := EventKey{s.Cam, s.Event}
 			events[k] = append(events[k], s)
 		}
-		for k, ss := range events {
-			var who []Who
-			add := func(p, by string) {
-				if i := slices.IndexFunc(who, func(w Who) bool { return w.Person == p }); i >= 0 {
-					if by == "face" {
-						who[i].By = "face"
-					}
-					return
-				}
-				if name := f.nameOfLocked(p); name != "" {
-					who = append(who, Who{Person: p, Name: name, By: by})
-				}
+	}
+	for k, ss := range events {
+		sort.Slice(ss, func(i, j int) bool { return ss[i].T < ss[j].T })
+		var who []Who
+		for _, p := range eventPeople(ss) {
+			name := f.nameOfLocked(p)
+			if name == "" {
+				continue
 			}
+			by := "clothing"
 			for _, s := range ss {
-				if s.Person != "" {
-					add(s.Person, "face")
+				if s.Person == p && whoBy(s.By) == "face" {
+					by = "face"
 				}
 			}
-			for _, s := range ss {
-				if !useClothing || s.Person != "" || s.Night || s.look == nil {
-					continue
-				}
-				if p := clothesMatch(s, named); p != "" {
-					add(p, "clothing")
-				}
-			}
-			sort.SliceStable(who, func(i, j int) bool { return who[i].By == "face" && who[j].By != "face" })
-			f.whoQ[k] = who
+			who = append(who, Who{Person: p, Name: name, By: by})
 		}
+		sort.SliceStable(who, func(i, j int) bool { return who[i].By == "face" && who[j].By != "face" })
+		f.whoQ[k] = who
 	}
-}
-
-// clothesMatch: the named person whose clothes (the same day, within lookWindow, in
-// colour) clearly match s's, if one does.
-func clothesMatch(s *Seen, named []*Seen) string {
-	best := map[string]float64{}
-	for _, n := range named {
-		if n.Event == s.Event && n.Cam == s.Cam && n.T == s.T {
-			continue
-		}
-		if d := time.Duration(abs64(n.T-s.T)) * time.Millisecond; d > lookWindow {
-			continue
-		}
-		if sim := histOverlap(s.look, n.look); sim > best[n.Person] {
-			best[n.Person] = sim
-		}
-	}
-	p, bs, second := "", 0.0, 0.0
-	for id, v := range best {
-		if v > bs {
-			p, bs, second = id, v, bs
-		} else if v > second {
-			second = v
-		}
-	}
-	if bs >= lookMatch && bs-second >= lookMargin {
-		return p
-	}
-	return ""
-}
-
-func histOverlap(a, b []float32) float64 {
-	if len(a) != len(b) {
-		return 0
-	}
-	s := 0.0
-	for i := range a {
-		s += float64(min(a[i], b[i]))
-	}
-	return s
 }
 
 // ---- looking at events ----
@@ -557,6 +522,9 @@ func (f *Faces) Run(ctx context.Context) {
 		todo := f.app.events.ForFaces(time.Now().Add(-backfillWindow).UnixMilli(), 100000)
 		f.setStatus(func(st *FaceStatus) { st.Enabled, st.Error, st.Backlog = true, "", len(todo) })
 		if len(todo) == 0 {
+			if f.backfillBodies(ctx) {
+				continue
+			}
 			select {
 			case <-ctx.Done():
 			case <-f.wake:
@@ -590,6 +558,60 @@ func (f *Faces) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// backfillBodies gives sightings from before the who model a fingerprint, the ones the
+// user named first, while their footage is still kept. A few per round, low priority.
+// It reports whether it did any work (then there may be more).
+func (f *Faces) backfillBodies(ctx context.Context) bool {
+	if !f.app.detector.HasModel(modelWho) || systemBusy() {
+		return false
+	}
+	f.mu.RLock()
+	var todo []Seen
+	for _, s := range f.seen {
+		if s.body == nil && !s.Junk && !f.tried[s.ID] && time.Since(time.UnixMilli(s.T)) < 7*24*time.Hour {
+			todo = append(todo, *s)
+		}
+	}
+	f.mu.RUnlock()
+	if len(todo) == 0 {
+		return false
+	}
+	sort.Slice(todo, func(i, j int) bool { return todo[i].By == "you" && todo[j].By != "you" })
+	ctx = lowPriority(ctx)
+	got := map[string][]float32{}
+	for _, s := range todo[:min(len(todo), 20)] {
+		if ctx.Err() != nil {
+			return false
+		}
+		if full, err := f.app.decodeRGB(ctx, s.Cam, time.UnixMilli(s.T), fullFrame, 0); err == nil {
+			if v, pic := f.body(ctx, full, s.Box); v != nil {
+				got[s.ID] = v
+				if pic != nil {
+					_ = writePicture(f.bodyPath(s.ID), pic)
+				}
+			}
+		}
+		f.mu.Lock()
+		f.tried[s.ID] = true
+		f.mu.Unlock()
+	}
+	if len(got) > 0 {
+		f.mu.Lock()
+		for id, v := range got {
+			if s := f.seen[id]; s != nil {
+				s.body, s.Body = v, encodeVec(v)
+				f.touchLocked(s)
+			}
+		}
+		f.matchLocked(slices.Collect(maps.Values(f.seen)))
+		f.whoLocked(maps.Clone(f.dirty))
+		f.saveLaterLocked()
+		f.mu.Unlock()
+		f.applyWho()
+	}
+	return true
 }
 
 func (f *Faces) setStatus(fn func(*FaceStatus)) {
@@ -635,7 +657,7 @@ func faceMoments(e Event) []int64 {
 	return out
 }
 
-// process looks for faces (and clothes) of the people in an event, then says who it was.
+// process looks at the faces and whole looks of the people in an event, then says who it was.
 func (f *Faces) process(ctx context.Context, e Event) error {
 	_, err := f.look(ctx, e, false, nil)
 	return err
@@ -686,7 +708,13 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 		}
 		for _, p := range people {
 			s := &Seen{ID: newID(), Cam: e.Cam, Event: e.ID, T: ms, Box: p.Box}
-			s.look, s.Night = clothes(full, p.Box)
+			s.Night = night(full, p.Box)
+			if v, pic := f.body(ctx, full, p.Box); v != nil {
+				s.body = v
+				if pic != nil && !dry {
+					_ = writePicture(f.bodyPath(s.ID), pic)
+				}
+			}
 			if face, q, emb, thumb := f.face(ctx, full, p.Box, log); emb != nil {
 				s.Face, s.Q, s.emb = &face, q, emb
 				if thumb != nil && !dry {
@@ -706,12 +734,13 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 	if len(found) > 10 {
 		for _, s := range found[10:] {
 			_ = os.Remove(f.imgPath(s.ID))
+			_ = os.Remove(f.bodyPath(s.ID))
 		}
 		found = found[:10]
 	}
 	f.mu.Lock()
 	for _, s := range found {
-		s.Emb, s.Look = encodeVec(s.emb), encodeVec(s.look)
+		s.Emb, s.Body = encodeVec(s.emb), encodeVec(s.body)
 		f.seen[s.ID] = s
 		f.touchLocked(s)
 	}
@@ -807,9 +836,12 @@ func faceThumb(full frameRGB, face Rect) []byte {
 	if x1-x0 < 8 || y1-y0 < 8 {
 		return nil
 	}
-	rgb := resizeRGB(full.rgb, full.w, full.h, x0, y0, x1, y1, 256, 256)
-	img := image.NewRGBA(image.Rect(0, 0, 256, 256))
-	for i := 0; i < 256*256; i++ {
+	return jpegRGB(resizeRGB(full.rgb, full.w, full.h, x0, y0, x1, y1, 256, 256), 256, 256)
+}
+
+func jpegRGB(rgb []byte, w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i := 0; i < w*h; i++ {
 		img.Pix[4*i], img.Pix[4*i+1], img.Pix[4*i+2], img.Pix[4*i+3] = rgb[3*i], rgb[3*i+1], rgb[3*i+2], 255
 	}
 	var buf bytes.Buffer
@@ -817,6 +849,29 @@ func faceThumb(full frameRGB, face Rect) []byte {
 		return nil
 	}
 	return buf.Bytes()
+}
+
+func (f *Faces) bodyPath(id string) string { return filepath.Join(f.root, "img", id+".b.jpg") }
+
+// body: the who-model fingerprint of the person in box, and a picture of them (the same
+// crop as D:\sentinel-train\who\lib.py crop(): keep the two in step).
+func (f *Faces) body(ctx context.Context, full frameRGB, box Rect) ([]float32, []byte) {
+	r := clampRect(Rect{X: box.X - box.W*0.05, Y: box.Y - box.H*0.03, W: box.W * 1.1, H: box.H * 1.06})
+	x0, y0 := int(r.X*float64(full.w)), int(r.Y*float64(full.h))
+	x1, y1 := int((r.X+r.W)*float64(full.w)), int((r.Y+r.H)*float64(full.h))
+	if x1-x0 < 16 || y1-y0 < 32 || !f.app.detector.HasModel(modelWho) {
+		return nil, nil
+	}
+	rgb := resizeRGB(full.rgb, full.w, full.h, x0, y0, x1, y1, whoW, whoH)
+	rows, err := f.app.detector.Raw(ctx, modelWho, rgb, whoW, whoH)
+	if err != nil || len(rows) != 1 || len(rows[0]) != whoDim {
+		return nil, nil
+	}
+	v := make([]float32, whoDim)
+	for i, x := range rows[0] {
+		v[i] = float32(x)
+	}
+	return v, jpegRGB(rgb, whoW, whoH)
 }
 
 // resizeRGB scales the part [x0,x1)x[y0,y1) of a w-wide RGB picture to dw x dh (bilinear).
@@ -843,13 +898,10 @@ func resizeRGB(src []byte, w, h, x0, y0, x1, y1, dw, dh int) []byte {
 	return out
 }
 
-// clothes: the colours of a person's clothes (torso and legs, away from the edges of
-// their box), as a histogram of 8 hues x 3 saturations x 3 brightnesses plus 3 greys.
-// night: the picture has no colour (infrared), so clothes can't be compared.
-func clothes(full frameRGB, box Rect) ([]float32, bool) {
+// night: the picture has no colour (infrared): the person's torso and legs are grey.
+func night(full frameRGB, box Rect) bool {
 	x0, x1 := box.X+box.W*0.25, box.X+box.W*0.75
 	y0, y1 := box.Y+box.H*0.3, box.Y+box.H*0.85
-	hist := make([]float32, 8*3*3+3)
 	n, satSum := 0, 0.0
 	for gy := 0; gy < 40; gy++ {
 		for gx := 0; gx < 20; gx++ {
@@ -859,24 +911,12 @@ func clothes(full frameRGB, box Rect) ([]float32, bool) {
 				continue
 			}
 			i := (py*full.w + px) * 3
-			hh, ss, vv := hsv(full.rgb[i], full.rgb[i+1], full.rgb[i+2])
+			_, ss, _ := hsv(full.rgb[i], full.rgb[i+1], full.rgb[i+2])
 			satSum += ss
 			n++
-			vb := min(int(vv*3), 2)
-			if ss < 0.2 || vv < 0.12 {
-				hist[72+vb]++
-				continue
-			}
-			hist[(min(int(hh/45), 7)*3+min(int(ss*3), 2))*3+vb]++
 		}
 	}
-	if n == 0 {
-		return nil, false
-	}
-	for i := range hist {
-		hist[i] /= float32(n)
-	}
-	return hist, satSum/float64(n) < 0.06
+	return n > 0 && satSum/float64(n) < 0.06
 }
 
 func hsv(r, g, b byte) (h, s, v float64) {
@@ -1028,26 +1068,47 @@ func (f *Faces) Unknown(limit int) []FaceGroup {
 
 func (f *Faces) unknownLocked(limit int) []FaceGroup {
 	g, junk := f.galleriesLocked()
+	long, _ := f.bodyRefsLocked()
 	hidden := f.hiddenLocked()
+	// People seen without a face are asked about only for two days: what they wore is
+	// most of what tells them apart.
+	recent := time.Now().Add(-48 * time.Hour).UnixMilli()
 	var list []*Seen
 	for _, s := range f.seen {
-		if s.hasFace() && s.Person == "" && !s.Skip && s.Q >= faceMinQ && !isJunk(s.emb, junk) && (len(hidden) == 0 || closeness(s.emb, hidden) < faceMatch) {
+		if s.Person != "" || s.Skip {
+			continue
+		}
+		if s.hasFace() && s.Q >= faceMinQ && !isJunk(s.emb, junk) && (len(hidden) == 0 || closeness(s.emb, hidden) < faceMatch) {
+			list = append(list, s)
+		} else if s.Face == nil && s.body != nil && !s.Junk && s.T >= recent {
 			list = append(list, s)
 		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Q > list[j].Q })
+	// A face sighting is grouped by its face, one without by its whole look; never mixed.
+	vecOf := func(s *Seen) ([]float32, bool) {
+		if s.hasFace() {
+			return s.emb, true
+		}
+		return s.body, false
+	}
 	type cluster struct {
+		face    bool
 		sum     []float64
 		members []*Seen
 	}
 	var cs []*cluster
 	for _, s := range list {
+		v, isFace := vecOf(s)
 		var best *cluster
-		bs := faceGroup
+		bs := map[bool]float64{true: faceGroup, false: whoGroup}[isFace]
 		for _, c := range cs {
+			if c.face != isFace {
+				continue
+			}
 			var d, norm float64
 			for i, x := range c.sum {
-				d += x * float64(s.emb[i])
+				d += x * float64(v[i])
 				norm += x * x
 			}
 			if norm > 0 {
@@ -1057,10 +1118,10 @@ func (f *Faces) unknownLocked(limit int) []FaceGroup {
 			}
 		}
 		if best == nil {
-			best = &cluster{sum: make([]float64, len(s.emb))}
+			best = &cluster{face: isFace, sum: make([]float64, len(v))}
 			cs = append(cs, best)
 		}
-		for i, x := range s.emb {
+		for i, x := range v {
 			best.sum[i] += float64(x)
 		}
 		best.members = append(best.members, s)
@@ -1089,7 +1150,11 @@ func (f *Faces) unknownLocked(limit int) []FaceGroup {
 		for i, x := range c.sum {
 			cen[i] = float32(x / math.Sqrt(norm))
 		}
-		if p, bs, _ := bestMatch(cen, g, nil); p != "" && bs >= faceSuggest {
+		if c.face {
+			if p, bs, _ := bestMatch(cen, g, nil); p != "" && bs >= faceSuggest {
+				fg.Suggest = &Who{Person: p, Name: f.nameOfLocked(p)}
+			}
+		} else if p, bs, _ := bestRef(cen, long, nil); p != "" && bs >= whoOutfit {
 			fg.Suggest = &Who{Person: p, Name: f.nameOfLocked(p)}
 		}
 		out = append(out, fg)

@@ -74,3 +74,11 @@ func TestEventPeopleUserWins(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestWhoByLabel(t *testing.T) {
+	for by, want := range map[string]string{"you": "face", "face": "face", "sure": "face", "outfit": "clothing"} {
+		if got := whoBy(by); got != want {
+			t.Fatalf("%s -> %s, want %s", by, got, want)
+		}
+	}
+}
