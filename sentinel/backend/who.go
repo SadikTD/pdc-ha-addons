@@ -20,10 +20,10 @@ import (
 // Otherwise nobody: a wrong name is worse than none. Thresholds come from eval.py
 // (work/who_thresholds.json), measured at ≤1% wrong on days the model never saw.
 const (
-	whoSure      = 0.80 // from who_thresholds.json "sure"
-	whoOutfit    = 0.70 // "outfit"
-	whoMargin    = 0.08 // "margin": clearly more alike than anyone else
-	whoGroup     = 0.70 // unknown people this alike are shown together (= whoOutfit)
+	whoSure      = 0.98 // from who_thresholds.json "sure" (2026-10-11: by body alone across days only when near certain)
+	whoOutfit    = 0.94 // "outfit"
+	whoMargin    = 0.04 // "margin": clearly more alike than anyone else
+	whoGroup     = 0.94 // unknown people this alike are shown together (= whoOutfit)
 	outfitWindow = 12 * time.Hour
 	whoDim       = 256
 	whoW, whoH   = 128, 256 // the crop the model takes
