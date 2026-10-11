@@ -16,7 +16,7 @@
     </div>
     <div class="actions">
       <div class="menu" id="pause-menu">
-        <button class="btn ghost" id="btn-pause" aria-haspopup="true" aria-expanded="false">
+        <button class="btn ghost" id="btn-pause" aria-haspopup="true" aria-expanded="false" aria-label="Pause speedtests">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span id="pause-label">Pause tests</span>
         </button>
         <div class="menu-list" role="menu" hidden>
@@ -71,6 +71,7 @@
           <span class="muted small" id="sp-up-pct">&nbsp;</span>
         </div>
       </div>
+      <p class="speed-note" id="speed-note"></p>
       <dl class="speed-foot" id="speed-foot"></dl>
       <div class="live" id="live" hidden>
         <div class="live-head"><span id="live-phase">Connecting…</span><span id="live-value"></span></div>
@@ -102,7 +103,10 @@
 
   <section class="card reveal">
     <div class="card-head">
-      <h2>Uptime</h2>
+      <div>
+        <h2>Uptime</h2>
+        <p class="muted small head-note" id="uptime-sub"></p>
+      </div>
       <span class="head-value" id="uptime-headline">—</span>
     </div>
     <div class="strip" id="strip" role="img" aria-label="Uptime per period"></div>
@@ -158,6 +162,7 @@
       <div class="grade" id="grade">
         <span class="grade-letter" id="grade-letter">–</span>
         <span class="grade-caption" id="grade-caption">Not enough data yet</span>
+        <span class="grade-how" id="grade-how"></span>
       </div>
       <div class="tiles" id="report-tiles"></div>
     </div>
@@ -169,6 +174,7 @@
         <h2>Best and worst times</h2>
         <span class="muted small">Average download, last 30 days</span>
       </div>
+      <p class="heat-summary" id="heat-summary"></p>
       <div class="heatmap" id="heatmap"></div>
       <div class="heat-legend" id="heat-legend"></div>
     </article>

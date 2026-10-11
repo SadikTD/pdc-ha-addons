@@ -219,6 +219,18 @@
     $("sp-up-bar").style.width = `${Math.min(100, up || 0)}%`;
     $("sp-down-pct").textContent = lt ? `${dp.toFixed(0)}% of ${s.plan_down} Mbps plan` : "No test yet";
     $("sp-up-pct").textContent = lt ? `${up.toFixed(0)}% of ${s.plan_up} Mbps plan` : "";
+    const note = $("speed-note");
+    if (!lt) {
+      note.className = "speed-note";
+      note.textContent = "No speedtest yet. Run one to see how your line compares with your plan.";
+    } else {
+      const lv = dp >= 90 ? 0 : dp >= 60 ? 1 : 2;
+      note.className = `speed-note lv-${LEVEL_CLS[lv]}`;
+      note.innerHTML = ["<strong>Full speed.</strong> You're getting what you pay for.",
+        `<strong>A bit under your plan.</strong> Download reached ${dp.toFixed(0)}% of it.`,
+        `<strong>Well below your plan.</strong> Download reached only ${dp.toFixed(0)}% of it.`][lv]
+        + (up < 50 ? ` Upload was unusually low in this test (${mbps(lt.upload_mbps)} Mbit/s), which usually means the line was busy or congested.` : "");
+    }
 
     const paused = s.paused_until === -1 || s.paused_until > s.now;
     let next;
@@ -228,7 +240,8 @@
     const foot = [];
     if (lt) {
       foot.push(["Last test", `${when(lt.ts)}, ${ms(lt.ping_ms)} ms ping`]);
-      foot.push(["Server", [lt.server_name, lt.server_location].filter(Boolean).join(", ")]);
+      const place = [...new Set(String(lt.server_location || "").split(", ").filter(Boolean))].join(", ");
+      foot.push(["Server", [lt.server_name, place].filter(Boolean).join(", ")]);
     }
     foot.push(["Next test", next]);
     if (s.scheduler_note && !paused) foot.push(["Note", s.scheduler_note]);
@@ -324,6 +337,9 @@
     ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(0, Y(100)); ctx.lineTo(w, Y(100)); ctx.stroke();
     ctx.setLineDash([]);
+    ctx.fillStyle = css("--text-muted");
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.fillText("100 ms", 2, Y(100) - 3);
     const color = css("--series-lat");
     const grad = ctx.createLinearGradient(0, 0, 0, h);
     grad.addColorStop(0, color + "40");
@@ -348,7 +364,9 @@
 
   // -------------------------------------------------------------- range label
   function renderRangeLabel() {
-    $("range-label").textContent = `${fullFmt.format(range.lo * 1000)} → ${range.preset === "custom" ? fullFmt.format(range.hi * 1000) : "now"}`;
+    $("range-label").textContent = range.preset === "custom"
+      ? `Showing ${fullFmt.format(range.lo * 1000)} to ${fullFmt.format(range.hi * 1000)}`
+      : `Showing since ${fullFmt.format(range.lo * 1000)}`;
   }
 
   // ------------------------------------------------------------- uptime strip
@@ -356,6 +374,9 @@
     const tl = data.timeline;
     const r = data.report;
     $("uptime-headline").textContent = r.uptime_pct == null ? "—" : pct(r.uptime_pct, r.uptime_pct >= 99.95 || r.uptime_pct < 10 ? 1 : 2);
+    $("uptime-sub").textContent = r.uptime_pct == null ? "Not enough data yet."
+      : r.outages ? `${r.outages} outage${r.outages === 1 ? "" : "s"}, ${dur(r.downtime_s)} down in total.${r.planned_restarts ? ` ${r.planned_restarts} scheduled router restart${r.planned_restarts === 1 ? "" : "s"} not counted.` : ""}`
+      : "No outages in this range.";
     const strip = $("strip");
     strip.innerHTML = tl.map((b, i) => {
       let cls = "";
@@ -393,6 +414,7 @@
     $("grade-caption").textContent = r.grade
       ? `${r.avg_down_pct.toFixed(0)}% of plan speed, ${pct(r.uptime_pct, 1)} uptime`
       : "Needs speedtests and uptime data";
+    $("grade-how").textContent = "Graded on speed (60%) and uptime (40%).";
     const c = r.test_counts || {};
     const skipped = (c.skipped_busy || 0) + (c.skipped_paused || 0);
     $("report-sub").textContent = `Based on ${r.tests} speedtest${r.tests === 1 ? "" : "s"}${c.failed ? `, ${c.failed} failed` : ""}${skipped ? `, ${skipped} skipped` : ""}${r.data_mb ? `. Tests used ${(r.data_mb / 1000).toFixed(1)} GB.` : ""}`;
@@ -403,12 +425,10 @@
       tile("Avg download", r.avg_down == null ? "—" : `${mbps(r.avg_down)}<small>Mbit/s</small>`, r.avg_down == null ? "" : `${r.avg_down_pct.toFixed(0)}% of plan, ranging ${mbps(r.min_down)} to ${mbps(r.max_down)}`),
       tile("Avg upload", r.avg_up == null ? "—" : `${mbps(r.avg_up)}<small>Mbit/s</small>`, r.avg_up == null ? "" : `${r.avg_up_pct.toFixed(0)}% of plan`),
       tile("Avg ping", r.avg_ping == null ? "—" : `${ms(r.avg_ping)}<small>ms</small>`, "to Singapore"),
-      tile("Slow tests", r.below_50_pct == null ? "—" : pct(r.below_50_pct), r.below_80_pct == null ? "" : `under half your plan. ${pct(r.below_80_pct)} under 80%.`),
+      tile("Tests at full speed", r.below_80_pct == null ? "—" : pct(100 - r.below_80_pct), r.below_50_pct == null ? "" : `got at least 80% of your plan.${r.below_50_pct ? ` ${pct(r.below_50_pct)} got under half.` : ""}`),
       tile("Outages", String(r.outages), (r.downtime_s ? `${dur(r.downtime_s)} down in total.` : "No downtime.") +
         (r.planned_restarts ? ` ${r.planned_restarts} router restart${r.planned_restarts === 1 ? "" : "s"} not counted.` : "")),
-      tile("Longest outage", lo ? dur(lo.duration_s) : "—", lo ? when(lo.start) : ""),
-      tile("Slowest hour", r.slowest_hour ? esc(r.slowest_hour.label) : "—", r.slowest_hour ? `avg ${mbps(r.slowest_hour.avg_down)} Mbit/s` : "needs more data"),
-      tile("Fastest hour", r.fastest_hour ? esc(r.fastest_hour.label) : "—", r.fastest_hour ? `avg ${mbps(r.fastest_hour.avg_down)} Mbit/s` : ""),
+      tile("Longest outage", lo ? dur(lo.duration_s) : "None", lo ? when(lo.start) : ""),
     ].join("");
   }
 
@@ -528,10 +548,11 @@
     const ds = (label, key, color) => ({
       label, data: withBreaks(ok.map((t) => ({ x: t.ts * 1000, y: t[key] }))),
       borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: radius, pointHoverRadius: 5,
-      pointBorderColor: css("--surface-1"), pointBorderWidth: radius ? 1.5 : 0, tension: 0.25, spanGaps: false,
+      pointBorderColor: css("--surface-1"), pointBorderWidth: radius ? 1.5 : 0, cubicInterpolationMode: "monotone", spanGaps: false,
     });
     const opts = baseOptions();
     opts.scales.y.suggestedMax = plan * 1.1;
+    opts.scales.y.title = { display: true, text: "Mbit/s", color: css("--text-muted"), font: { size: 11 } };
     opts.plugins.tooltip.callbacks.label = (item) => ` ${item.dataset.label}: ${mbps(item.parsed.y)} Mbit/s`;
     opts.plugins.tooltip.callbacks.footer = (items) => {
       const t = byX.get(items[0].parsed.x);
@@ -717,8 +738,18 @@
       showTip(ev, c ? `<b>${label}</b><span>avg ${mbps(c.avg_down)} Mbit/s · ${c.pct.toFixed(0)}% of plan</span><span>${c.n} test${c.n === 1 ? "" : "s"}</span>` : `<b>${label}</b><span>No tests yet</span>`);
     };
     el.onmouseleave = hideTip;
-    const labels = ["<25%", "25–50%", "50–70%", "70–85%", "85–95%", "≥95%"];
-    $("heat-legend").innerHTML = `<span>Slower</span>${labels.map((l, i) => `<i title="${l} of plan" style="background:var(--heat-${i})"></i>`).join("")}<span>Faster (of plan)</span>`;
+    const labels = ["under 25%", "25–50%", "50–70%", "70–85%", "85–95%", "95% or more"];
+    $("heat-legend").innerHTML = `<span>Under 25% of plan</span>${labels.map((l, i) => `<i title="${l} of plan" style="background:var(--heat-${i})"></i>`).join("")}<span>95% or more</span>`;
+    const byHour = {};
+    h.cells.forEach((c) => { (byHour[c.hour] = byHour[c.hour] || []).push(c.avg_down); });
+    const hrs = Object.entries(byHour).map(([hr, v]) => ({ hr: Number(hr), avg: v.reduce((a, b) => a + b, 0) / v.length }));
+    if (hrs.length > 3) {
+      const best = hrs.reduce((a, b) => (b.avg > a.avg ? b : a)), worst = hrs.reduce((a, b) => (b.avg < a.avg ? b : a));
+      const hl = (x) => hFmt.format(new Date(2000, 0, 1, x));
+      $("heat-summary").innerHTML = best.avg - worst.avg < 0.1 * h.plan_down
+        ? `Speed hardly changes through the day: between <strong>${mbps(worst.avg)}</strong> and <strong>${mbps(best.avg)}</strong> Mbit/s.`
+        : `Fastest around <strong>${hl(best.hr)}</strong> (${mbps(best.avg)} Mbit/s), slowest around <strong>${hl(worst.hr)}</strong> (${mbps(worst.avg)} Mbit/s).`;
+    } else $("heat-summary").textContent = "Needs a few days of speedtests.";
   }
 
   // ------------------------------------------------------------------- tables
@@ -732,7 +763,7 @@
     if (e.ongoing) return '<span class="muted">still down</span>';
     if (e.rec_status === "ok") return `${mbps(e.rec_download)} ↓ / ${mbps(e.rec_upload)} ↑ Mbit/s · ${ms(e.rec_ping)} ms`;
     if (e.rec_status === "failed") return '<span class="muted">test failed</span>';
-    return '<span class="muted">too short to test</span>';
+    return `<span class="muted">${e.duration_s < 120 ? "too short to test" : "not tested"}</span>`;
   }
   function renderOutages() {
     const rows = data.events;
@@ -743,6 +774,8 @@
       <td>${recoveryText(e)}</td></tr>`).join("")
       : '<tr><td colspan="5" class="muted">No outages in this range.</td></tr>';
   }
+  // " is-warn" / " is-bad" when a value crosses a threshold (low=true: smaller is worse).
+  const flag = (v, warn, bad, low) => v == null ? "" : low ? (v < bad ? " is-bad" : v < warn ? " is-warn" : "") : (v >= bad ? " is-bad" : v >= warn ? " is-warn" : "");
   function failText(err) {
     if (!err) return "";
     if (/Latency test failed/i.test(err)) return "No test server could be reached. The international link was probably down.";
@@ -753,19 +786,20 @@
   function renderTests() {
     const plan = data.status.plan_down;
     const rows = [...data.tests].reverse();
-    const shown = showAllTests ? rows : rows.slice(0, 25);
-    $("btn-more-tests").hidden = showAllTests || rows.length <= 25;
+    const shown = showAllTests ? rows : rows.slice(0, 10);
+    $("btn-more-tests").hidden = showAllTests || rows.length <= 10;
     $("btn-more-tests").textContent = `Show all ${rows.length}`;
     $("test-rows").innerHTML = shown.length ? shown.map((t) => {
       if (t.status !== "ok") {
         const [cls, label] = SKIP[t.status] || ["", t.status];
-        const why = t.status === "skipped_busy" && t.error ? `${label}: ${t.error}` : label + (t.busy_mbps ? ` (${mbps(t.busy_mbps)} Mbit/s in use)` : "");
+        const why = t.status === "skipped_busy" && t.error ? `${label}: ${t.error}` : label;
         return `<tr><td>${when(t.ts)}</td><td colspan="7"><span class="tag ${cls}" title="${esc(t.error || "")}">${esc(why)}</span>${t.status === "failed" ? ` <span class="muted">${esc(failText(t.error))}</span>` : ""}</td><td>${TRIGGER[t.trigger] || esc(t.trigger)}</td><td></td></tr>`;
       }
       return `<tr><td>${when(t.ts)}</td>
         <td class="num"><strong>${mbps(t.download_mbps)}</strong></td><td>${pbar(t.download_mbps, plan)}</td>
-        <td class="num">${mbps(t.upload_mbps)}</td><td class="num">${ms(t.ping_ms)} ms</td><td class="num">${ms(t.jitter_ms)} ms</td>
-        <td class="num">${t.packet_loss == null ? "—" : `${t.packet_loss.toFixed(1)}%`}</td>
+        <td class="num${flag(t.upload_mbps / data.status.plan_up, 0.5, 0.2, true)}">${mbps(t.upload_mbps)}</td>
+        <td class="num${flag(t.ping_ms, 100, 200)}">${ms(t.ping_ms)} ms</td><td class="num${flag(t.jitter_ms, 20, 50)}">${ms(t.jitter_ms)} ms</td>
+        <td class="num${flag(t.packet_loss, 2, 10)}">${t.packet_loss == null ? "—" : `${t.packet_loss.toFixed(1)}%`}</td>
         <td>${esc(t.server_name)}</td><td>${TRIGGER[t.trigger] || esc(t.trigger)}</td>
         <td>${t.result_url ? `<a class="link" href="${esc(t.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ""}</td></tr>`;
     }).join("") : '<tr><td colspan="10" class="muted">No speedtests in this range.</td></tr>';
