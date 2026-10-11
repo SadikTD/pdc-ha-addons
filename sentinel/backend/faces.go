@@ -41,8 +41,7 @@ import (
 
 const (
 	faceMatch   = 0.42 // a named person's faces must be this alike (mean of the closest three)
-	faceMargin  = 0.07 // ...and clearly more alike than anyone else's
-	faceLearn   = 0.55 // a match this sure is kept as one of the person's faces
+	faceMargin  = 0.14 // ...and clearly more alike than anyone else's (0.07 gave 6% wrong names)
 	faceGroup   = 0.42 // unknown faces this alike are shown together
 	faceSuggest = 0.32 // an unknown group this alike to someone is shown as "Is this …?"
 	faceJunk    = 0.5  // like a "not a face": not a face either
@@ -50,6 +49,8 @@ const (
 	lookMatch   = 0.78 // clothes: histogram overlap
 	lookMargin  = 0.08
 	lookWindow  = 6 * time.Hour
+	// Clothes-only naming (same day) was 8% wrong in the 2026-10-11 baseline: off.
+	useClothing = false
 	galleryMax  = 300 // faces kept per person
 )
 
@@ -350,7 +351,7 @@ func (f *Faces) galleriesLocked() (map[string][][]float32, [][]float32) {
 		switch {
 		case s.Junk && s.emb != nil:
 			junk = append(junk, s.emb)
-		case s.hasFace() && s.Person != "" && (s.By == "you" || s.By == "face" && s.Sim >= faceLearn):
+		case s.hasFace() && s.Person != "" && s.By == "you": // only the user's names teach: a guess must never teach more guesses
 			g[s.Person] = append(g[s.Person], s.emb)
 		}
 	}
@@ -477,7 +478,7 @@ func (f *Faces) whoLocked(days map[string]bool) {
 				}
 			}
 			for _, s := range ss {
-				if s.Person != "" || s.Night || s.look == nil {
+				if !useClothing || s.Person != "" || s.Night || s.look == nil {
 					continue
 				}
 				if p := clothesMatch(s, named); p != "" {
@@ -937,7 +938,7 @@ func (f *Faces) PeopleInfo() []PersonInfo {
 			if s.Person != p.ID {
 				continue
 			}
-			if s.hasFace() && (s.By == "you" || s.Sim >= faceLearn) {
+			if s.hasFace() && (s.By == "you" || s.By == "face") {
 				pi.Faces++
 				if s.Q > pi.Best {
 					pi.Best, pi.Cover = s.Q, s.ID

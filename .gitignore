@@ -6,3 +6,4 @@ sentinel-app/android/.gradle/
 sentinel-app/android/local.properties
 sentinel-app/android/app/libs/
 sentinel-app/introducer/.wrangler/
+.superpowers/
