@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
@@ -80,5 +81,31 @@ func TestWhoByLabel(t *testing.T) {
 		if got := whoBy(by); got != want {
 			t.Fatalf("%s -> %s, want %s", by, got, want)
 		}
+	}
+}
+
+func TestAlertLabel(t *testing.T) {
+	cases := []struct {
+		what  string
+		names []string
+		want  string
+	}{
+		{"Person", nil, "Person"},
+		{"Person", []string{"Dad"}, "Dad"},
+		{"2 people", []string{"Dad", "Mom"}, "Dad, Mom"},
+		{"2 people", []string{"Dad"}, "Dad + 1 more"},
+		{"Cat", []string{"Dad"}, "Cat"},
+	}
+	for _, c := range cases {
+		if got := alertLabel(c.what, c.names); got != c.want {
+			t.Errorf("alertLabel(%q, %v) = %q, want %q", c.what, c.names, got, c.want)
+		}
+	}
+}
+
+func TestWhoAtNoModel(t *testing.T) {
+	f := &Faces{app: &App{detector: &Detector{model: "/nonexistent/yolox_s.onnx"}}}
+	if got := f.WhoAt(context.Background(), "x", time.Now()); got != nil {
+		t.Fatalf("no model must give no names, got %v", got)
 	}
 }

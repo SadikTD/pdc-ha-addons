@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -255,11 +256,12 @@ func (al *Alerter) fire(cam string, e Event) {
 	}
 	rec := AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: pic.t.UnixMilli(), Event: e.ID, Status: "sending"}
 	al.put(rec)
-	al.app.push.Alert(cam, name, pic.t, pic.what, e.ID)
+	label := alertLabel(pic.what, al.app.faces.WhoAt(al.app.ctx, cam, pic.t))
+	al.app.push.Alert(cam, name, pic.t, label, e.ID)
 	var err error
 	to := alertChat(s, pic.what)
 	if to != "" {
-		err = al.deliver(cam, name, pic.t, to, e.ID, pic.what, note, 15*time.Minute)
+		err = al.deliver(cam, name, pic.t, to, e.ID, label, note, 15*time.Minute)
 	}
 	al.finish(rec.ID, err)
 	if to == "" {
@@ -300,7 +302,7 @@ func (al *Alerter) fire(cam string, e Event) {
 		al.put(AlertRecord{ID: id, Camera: cam, CameraName: name, At: b.t.UnixMilli(), Event: e.ID, Status: "sending"})
 		label := "Still moving"
 		if b.what != "" {
-			label = b.what + " still there"
+			label = alertLabel(b.what, al.app.faces.WhoAt(al.app.ctx, cam, b.t)) + " still there"
 		}
 		al.app.push.Alert(cam, name, b.t, label, e.ID)
 		if to := alertChat(s, b.what); to != "" {
@@ -482,6 +484,22 @@ func (al *Alerter) scanObjects(cam Camera, bg time.Time, times []time.Time, r Re
 		return shotResult{t: c.t, box: box, detected: true, what: describeDetections(kept)}, nil
 	}
 	return shotResult{detected: true}, nil
+}
+
+// alertLabel: the alert's title: the people recognised surely (see Faces.WhoAt), else
+// what was seen ("Person" exactly, never "not sure").
+func alertLabel(what string, names []string) string {
+	n := 1
+	if _, err := fmt.Sscanf(what, "%d people", &n); err != nil && what != "Person" {
+		return what
+	}
+	if len(names) == 0 {
+		return what
+	}
+	if len(names) < n {
+		return fmt.Sprintf("%s + %d more", strings.Join(names, ", "), n-len(names))
+	}
+	return strings.Join(names, ", ")
 }
 
 // describeDetections names who was seen, for the caption.

@@ -560,6 +560,64 @@ func (f *Faces) Run(ctx context.Context) {
 	}
 }
 
+// WhoAt: who the people in cam's picture at t are, for an alert: names only when sure;
+// strangers ("Unknown person N") and anyone unsure are left out. Gives up after 3 s.
+func (f *Faces) WhoAt(ctx context.Context, cam string, t time.Time) []string {
+	if !f.app.detector.Available() || !f.enabled() || !f.app.detector.HasModel(modelWho) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	a := f.app
+	size, err := a.detector.Size(modelScan)
+	if err != nil {
+		return nil
+	}
+	small, err := a.decodeRGB(ctx, cam, t, fullFrame, size)
+	if err != nil {
+		return nil
+	}
+	dets, err := a.detectIn(ctx, modelScan, small)
+	if err != nil {
+		return nil
+	}
+	full, err := a.decodeRGB(ctx, cam, t, fullFrame, 0)
+	if err != nil {
+		return nil
+	}
+	var ss []*Seen
+	for _, d := range dets {
+		if d.Label != "person" || d.Score < 0.45 || d.Box.W*d.Box.H < minBoxArea || len(ss) == 4 {
+			continue
+		}
+		s := &Seen{Cam: cam, T: t.UnixMilli(), Box: d.Box, Night: night(full, d.Box)}
+		if a.detector.HasModel(modelFaces) {
+			if face, q, emb, _ := f.face(ctx, full, d.Box, func(string, ...any) {}); emb != nil {
+				s.Face, s.Q, s.emb = &face, q, emb
+			}
+		}
+		s.body, _ = f.body(ctx, full, d.Box)
+		ss = append(ss, s)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	g, junk := f.galleriesLocked()
+	long, today := f.bodyRefsLocked()
+	for _, s := range ss {
+		s.Person, s.By, s.Sim = f.decideLocked(s, g, junk, long, today)
+	}
+	var names []string
+	for _, p := range eventPeople(ss) {
+		if i := slices.IndexFunc(f.people, func(x Person) bool { return x.ID == p }); i >= 0 && !f.people[i].Unnamed {
+			names = append(names, f.people[i].Name)
+		}
+	}
+	return names
+}
+
 // backfillBodies gives sightings from before the who model a fingerprint, the ones the
 // user named first, while their footage is still kept. A few per round, low priority.
 // It reports whether it did any work (then there may be more).
