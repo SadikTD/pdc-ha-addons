@@ -94,19 +94,20 @@ type Seen struct {
 	Cam    string   `json:"cam"`
 	Event  string   `json:"event"`
 	T      int64    `json:"t"`
-	Box    Rect     `json:"box"`              // the person, in the frame
-	Night  bool     `json:"night,omitempty"`  // infrared picture: no colours
-	Face   *Rect    `json:"face,omitempty"`   // the face, in the frame
-	Q      float64  `json:"q,omitempty"`      // face quality 0..1
-	Emb    string   `json:"emb,omitempty"`    // face fingerprint
-	EmbBy  string   `json:"emb_by,omitempty"` // which model made it ("" MobileFaceNet, "r50")
-	Body   string   `json:"body,omitempty"`   // who-model fingerprint of the whole person
-	Person string   `json:"person,omitempty"` // who it is
-	By     string   `json:"by,omitempty"`     // "you" (named by the user); recognised: "face", "sure" or "outfit"
-	Sim    float64  `json:"sim,omitempty"`    // how alike, when recognised
-	Not    []string `json:"not,omitempty"`    // people the user said it isn't
-	Junk   bool     `json:"junk,omitempty"`   // the user said it's not a face
-	Skip   bool     `json:"skip,omitempty"`   // the user doesn't want to name them (hidden, and faces like it)
+	Box    Rect     `json:"box"`               // the person, in the frame
+	Night  bool     `json:"night,omitempty"`   // infrared picture: no colours
+	Face   *Rect    `json:"face,omitempty"`    // the face, in the frame
+	Q      float64  `json:"q,omitempty"`       // face quality 0..1
+	Emb    string   `json:"emb,omitempty"`     // face fingerprint
+	EmbBy  string   `json:"emb_by,omitempty"`  // which model made it ("" MobileFaceNet, "r50")
+	Body   string   `json:"body,omitempty"`    // who-model fingerprint of the whole person
+	BodyBy string   `json:"body_by,omitempty"` // which who.onnx made it (whoModel)
+	Person string   `json:"person,omitempty"`  // who it is
+	By     string   `json:"by,omitempty"`      // "you" (named by the user); recognised: "face", "sure" or "outfit"
+	Sim    float64  `json:"sim,omitempty"`     // how alike, when recognised
+	Not    []string `json:"not,omitempty"`     // people the user said it isn't
+	Junk   bool     `json:"junk,omitempty"`    // the user said it's not a face
+	Skip   bool     `json:"skip,omitempty"`    // the user doesn't want to name them (hidden, and faces like it)
 
 	emb  []float32
 	body []float32
@@ -181,6 +182,7 @@ func newFaces(app *App) *Faces {
 	}
 	models := env("SENTINEL_CUSTOM_MODELS", "/config/models")
 	useEmbedder(faceEmbedderIn(models))
+	whoModel = whoModelIn(models)
 	f.extra = loadWhoGallery(filepath.Join(models, "who_gallery.json"))
 	go f.writer()
 	return f
@@ -450,7 +452,7 @@ func (f *Faces) bodyRefsLocked() (long, today []bodyRef) {
 		}
 	}
 	for _, s := range f.seen {
-		if s.body == nil || s.Person == "" || s.Junk {
+		if s.body == nil || s.BodyBy != whoModel || s.Person == "" || s.Junk {
 			continue
 		}
 		r := bodyRef{person: s.Person, t: s.T, night: s.Night, v: s.body}
@@ -473,7 +475,7 @@ func (f *Faces) decideLocked(s *Seen, g map[string][][]float32, junk [][]float32
 			return best, "face", bs
 		}
 	}
-	if s.body != nil && !s.Junk {
+	if s.body != nil && s.BodyBy == whoModel && !s.Junk {
 		return decideWho(s.body, s.T, s.Night, s.Not, long, today)
 	}
 	return "", "", 0
@@ -637,6 +639,7 @@ func (f *Faces) WhoAt(ctx context.Context, cam string, t time.Time) []string {
 			}
 		}
 		s.body, _ = f.body(ctx, full, d.Box)
+		s.BodyBy = whoModel
 		ss = append(ss, s)
 	}
 	if ctx.Err() != nil {
@@ -714,7 +717,7 @@ func (f *Faces) backfillBodies(ctx context.Context) bool {
 	f.mu.RLock()
 	var todo []Seen
 	for _, s := range f.seen {
-		if s.body == nil && !s.Junk && !f.tried[s.ID] && time.Since(time.UnixMilli(s.T)) < 7*24*time.Hour {
+		if (s.body == nil || s.BodyBy != whoModel) && !s.Junk && !f.tried[s.ID] {
 			todo = append(todo, *s)
 		}
 	}
@@ -738,11 +741,18 @@ func (f *Faces) backfillBodies(ctx context.Context) bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		if full, err := f.app.decodeRGB(ctx, s.Cam, time.UnixMilli(s.T), fullFrame, 0); err == nil {
-			if v, pic := f.body(ctx, full, s.Box); v != nil {
+		if b, err := os.ReadFile(f.bodyPath(s.ID)); err == nil {
+			// The kept picture is exactly the model's input: no footage needed.
+			if v := f.bodyFromPicture(ctx, b); v != nil {
 				got[s.ID] = v
-				if pic != nil {
-					_ = writePicture(f.bodyPath(s.ID), pic)
+			}
+		} else if time.Since(time.UnixMilli(s.T)) < 7*24*time.Hour {
+			if full, err := f.app.decodeRGB(ctx, s.Cam, time.UnixMilli(s.T), fullFrame, 0); err == nil {
+				if v, pic := f.body(ctx, full, s.Box); v != nil {
+					got[s.ID] = v
+					if pic != nil {
+						_ = writePicture(f.bodyPath(s.ID), pic)
+					}
 				}
 			}
 		}
@@ -754,7 +764,7 @@ func (f *Faces) backfillBodies(ctx context.Context) bool {
 		f.mu.Lock()
 		for id, v := range got {
 			if s := f.seen[id]; s != nil {
-				s.body, s.Body = v, encodeVec(v)
+				s.body, s.Body, s.BodyBy = v, encodeVec(v), whoModel
 				f.touchLocked(s)
 			}
 		}
@@ -861,7 +871,7 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 			s := &Seen{ID: newID(), Cam: e.Cam, Event: e.ID, T: ms, Box: p.Box}
 			s.Night = night(full, p.Box)
 			if v, pic := f.body(ctx, full, p.Box); v != nil {
-				s.body = v
+				s.body, s.BodyBy = v, whoModel
 				if pic != nil && !dry {
 					_ = writePicture(f.bodyPath(s.ID), pic)
 				}
@@ -1068,6 +1078,31 @@ func jpegRGB(rgb []byte, w, h int) []byte {
 		return nil
 	}
 	return buf.Bytes()
+}
+
+// bodyFromPicture: the who-model fingerprint of a kept person picture (whoW x whoH).
+func (f *Faces) bodyFromPicture(ctx context.Context, jpg []byte) []float32 {
+	img, err := jpeg.Decode(bytes.NewReader(jpg))
+	if err != nil || img.Bounds().Dx() != whoW || img.Bounds().Dy() != whoH {
+		return nil
+	}
+	rgb := make([]byte, 0, whoW*whoH*3)
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			rgb = append(rgb, byte(r>>8), byte(g>>8), byte(bl>>8))
+		}
+	}
+	rows, err := f.app.detector.Raw(ctx, modelWho, rgb, whoW, whoH)
+	if err != nil || len(rows) != 1 || len(rows[0]) != whoDim {
+		return nil
+	}
+	v := make([]float32, whoDim)
+	for i, x := range rows[0] {
+		v[i] = float32(x)
+	}
+	return v
 }
 
 func (f *Faces) bodyPath(id string) string { return filepath.Join(f.root, "img", id+".b.jpg") }
@@ -1299,7 +1334,7 @@ func (f *Faces) unknownLocked(limit int) []FaceGroup {
 		}
 		if s.hasFace() && s.Q >= faceMinQ && !isJunk(s.emb, junk) && (len(hidden) == 0 || closeness(s.emb, hidden) < faceMatch) {
 			list = append(list, s)
-		} else if s.Face == nil && s.body != nil && !s.Junk && s.T >= recent {
+		} else if s.Face == nil && s.body != nil && s.BodyBy == whoModel && !s.Junk && s.T >= recent {
 			list = append(list, s)
 		}
 	}

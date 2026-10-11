@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -122,6 +125,19 @@ func eventPeople(ss []*Seen) []string {
 		}
 	}
 	return out
+}
+
+// whoModel identifies the who.onnx in use: fingerprints of another (retrained) model
+// live in a different space and are redone from their pictures.
+var whoModel string
+
+func whoModelIn(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "who.onnx"))
+	if err != nil {
+		return ""
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:6])
 }
 
 // loadWhoGallery reads who_gallery.json, written next to who.onnx by the training

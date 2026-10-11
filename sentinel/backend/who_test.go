@@ -214,3 +214,26 @@ func TestThumbFace(t *testing.T) {
 		t.Fatal("nothing found must give nil")
 	}
 }
+
+func TestWhoModelID(t *testing.T) {
+	dir := t.TempDir()
+	if whoModelIn(dir) != "" {
+		t.Fatal("no model: no id")
+	}
+	os.WriteFile(dir+"/who.onnx", []byte("model one"), 0o644)
+	a := whoModelIn(dir)
+	os.WriteFile(dir+"/who.onnx", []byte("model two!"), 0o644)
+	if b := whoModelIn(dir); a == "" || a == b {
+		t.Fatalf("a retrained model must get a new id: %q %q", a, b)
+	}
+}
+
+func TestOldBodyFingerprintsAreNotCompared(t *testing.T) {
+	old := whoModel
+	defer func() { whoModel = old }()
+	whoModel = "new"
+	f := &Faces{people: []Person{{ID: "dad"}}, seen: map[string]*Seen{"a": {ID: "a", Person: "dad", By: "you", body: unitVec(0), BodyBy: "old"}}}
+	if long, today := f.bodyRefsLocked(); len(long)+len(today) != 0 {
+		t.Fatal("a fingerprint from another who model must not be compared")
+	}
+}
