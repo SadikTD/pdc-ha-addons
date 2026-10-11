@@ -121,7 +121,8 @@ add-on automatically. The WhatsApp token is never shown; leave it blank to keep 
 | `speedtest_interval_minutes` | 60 | Aligned to local midnight, so 60 = on the hour |
 | `server_ids` | Singapore servers | Ookla server IDs, tried in order |
 | `check_interval_seconds` | 30 | Connectivity check period |
-| `check_targets` | Singapore + 1.1.1.1 | `host:port`; online if **any** answers |
+| `check_targets` | Singapore hosts | `host:port`; online if **at least 2** answer. Answers under 10 ms are in-country (e.g. 1.1.1.1 is served from Dhaka) and are ignored |
+| `dns_check_server` | `auto` | DNS server your devices use (`auto` = the router). If it stops resolving names the internet counts as down. Empty = off |
 | `quality_samples` | 5 | Handshakes per check for jitter / loss |
 | `busy_threshold_mbps` | 5 | Download Mbps that counts as busy (`0` = ignore) |
 | `busy_upload_mbps` | 0.25 | Upload Mbps that counts as busy (`0` = ignore) |

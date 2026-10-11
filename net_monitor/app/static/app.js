@@ -207,7 +207,7 @@
     let text = "";
     if (s.online === true && s.online_since) text = `Online for ${dur(now - s.online_since, true)}`;
     else if (s.online === false && s.outage_start && s.planned_outage) text = `Scheduled restart since ${time(s.outage_start)} · ${dur(now - s.outage_start, true)}`;
-    else if (s.online === false && s.outage_start) text = `Down since ${when(s.outage_start)} · ${dur(now - s.outage_start, true)}`;
+    else if (s.online === false && s.outage_start) text = `Down since ${when(s.outage_start)} · ${dur(now - s.outage_start, true)}${s.down_reason ? ` · ${s.down_reason}` : ""}`;
     if (s.last_check_ts) text += `${text ? " · " : ""}checked ${relative(s.last_check_ts)}`;
     $("conn-since").textContent = text || " ";
   }
@@ -786,7 +786,8 @@
     ] },
     { id: "monitoring", title: "Monitoring", note: "Advanced.", fields: [
       { key: "check_interval_seconds", label: "Check every", type: "number", unit: "seconds", help: "Restarts the add-on." },
-      { key: "check_targets", label: "Check targets", type: "lines", help: "One host:port per line. Online if any answers." },
+      { key: "check_targets", label: "Check targets", type: "lines", help: "One host:port per line, all abroad. Online when at least 2 answer; in-country answers (under 10 ms) are ignored." },
+      { key: "dns_check_server", label: "DNS check server", type: "text", help: "auto = the router. Online also needs it to resolve names. Empty = off." },
       { key: "quality_samples", label: "Handshakes per check", type: "number", help: "For jitter and packet loss." },
       { key: "retention_days", label: "Keep history for", type: "number", unit: "days" },
     ] },

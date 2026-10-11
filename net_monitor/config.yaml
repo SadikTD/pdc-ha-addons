@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.4.0"
+version: "1.4.1"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
@@ -31,13 +31,14 @@ options:
     - 62530
     - 67827
   check_interval_seconds: 30
-  # International hosts only (Singapore + Cloudflare). 8.8.8.8 / 9.9.9.9 are
-  # served from in-country caches and would hide an international outage.
+  # International hosts only (Singapore). 1.1.1.1 / 8.8.8.8 / 9.9.9.9 answer from
+  # Dhaka and would hide an international outage; answers under 10 ms are ignored.
+  # Online needs at least 2 of these to answer.
   check_targets:
     - sgp-ping.vultr.com:443
     - m1speedtest1.m1net.com.sg:8080
     - speedtest.singnet.com.sg:8080
-    - 1.1.1.1:443
+    - sin-speed.hetzner.com:443
   # The line counts as busy (test postponed) if ANY of these is exceeded. Gaming and
   # calls use little bandwidth, so upload and outgoing packet rate catch them.
   busy_threshold_mbps: 5
@@ -81,6 +82,9 @@ options:
   # Monthly bill, for the report's value-for-money line (0 = leave it out).
   plan_price: 0
   plan_currency: "৳"
+  # DNS server the LAN uses ("auto" = the router). If it stops resolving names,
+  # websites fail even with the line up, so that counts as down too. "" = off.
+  dns_check_server: auto
 schema:
   speedtest_interval_minutes: int(15,1440)
   server_ids:
@@ -121,3 +125,4 @@ schema:
   monthly_report_hour: int(0,23)
   plan_price: float(0,10000000)
   plan_currency: str
+  dns_check_server: match(^(auto|\d{1,3}(\.\d{1,3}){3})?$)?

@@ -43,7 +43,7 @@ DEFAULT_OPTIONS = {
     "server_ids": [13058, 7556, 62530, 67827],
     "check_interval_seconds": 30,
     "check_targets": ["sgp-ping.vultr.com:443", "m1speedtest1.m1net.com.sg:8080",
-                      "speedtest.singnet.com.sg:8080", "1.1.1.1:443"],
+                      "speedtest.singnet.com.sg:8080", "sin-speed.hetzner.com:443"],
     "busy_threshold_mbps": 5.0,
     "busy_retry_minutes": 10,
     "recovery_speedtest_min_outage_minutes": 2,
@@ -74,6 +74,7 @@ DEFAULT_OPTIONS = {
     "monthly_report_hour": 10,
     "plan_price": 0,
     "plan_currency": "৳",
+    "dns_check_server": "auto",
 }
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -191,6 +192,9 @@ class State:
         self.next_test_ts = None
         self.scheduler_note = ""
         self.router_upnp = None  # None unknown, True reachable, False not found
+        self.down_reason = None     # why the last failed round failed
+        self.dns_seen_ok = False    # the DNS check counts only once the server has answered
+        self.publish_ok = True      # False = the last connectivity push to HA failed; retry
 
 
 state = State()
@@ -290,7 +294,9 @@ def iso(ts):
 
 
 def publish_connectivity():
-    ha_set_state("binary_sensor.net_monitor_internet", "on" if state.online else "off", {
+    """Pushes the connectivity sensor; a failed push is retried on the next check."""
+    entity = "binary_sensor.net_monitor_internet"
+    body = {"state": "on" if state.online else "off", "attributes": {
         "friendly_name": "Internet",
         "device_class": "connectivity",
         "latency_ms": round(state.last_latency_ms, 1) if state.last_latency_ms else None,
@@ -300,7 +306,14 @@ def publish_connectivity():
         "offline_since": iso(state.outage_start),
         # True while the internet is down only because of the router's scheduled restart.
         "planned_outage": outage_is_planned(),
-    })
+        "down_reason": state.down_reason if state.online is False else None,
+    }}
+
+    def push():
+        state.publish_ok = _supervisor_request("POST", f"/core/api/states/{entity}", body) in (200, 201)
+
+    state.publish_ok = True  # one push in flight at a time; push() resets it on failure
+    threading.Thread(target=push, daemon=True).start()
 
 
 def publish_all():
@@ -460,17 +473,113 @@ def _tcp_probe(target, timeout=3.0):
 
 probe_pool = ThreadPoolExecutor(max_workers=8)
 
+# Nothing abroad answers a handshake this fast from Bangladesh (Singapore is ~45 ms).
+# A quicker answer comes from an in-country copy (1.1.1.1 and 8.8.8.8 have Dhaka
+# servers) or the router/ISP intercepting the connection, and keeps answering while
+# the international link is dead.
+# ponytail: fixed floor; make it an option if the add-on is ever used next to its targets.
+MIN_INTERNATIONAL_MS = 10.0
+_local_warned = set()
+
+
+def international(results):
+    """The (target, ms) pairs that answered from abroad; logs too-fast targets once."""
+    ok = []
+    for target, ms in results:
+        if ms is None:
+            continue
+        if ms < MIN_INTERNATIONAL_MS:
+            if target not in _local_warned:
+                _local_warned.add(target)
+                log.warning("%s answers in %.1f ms, so it's in-country (or intercepted), not abroad; "
+                            "ignoring it. Replace it in check_targets.", target, ms)
+            continue
+        ok.append((target, ms))
+    return ok
+
+
+def quorum(n_targets):
+    """Answers needed for the line to count as up: one lucky handshake through a
+    collapsing link shouldn't hide an outage."""
+    return min(2, n_targets)
+
+
+def dns_server():
+    """The DNS server LAN devices use: the router (default gateway) for "auto"."""
+    spec = (OPTS.get("dns_check_server") or "").strip()
+    if spec != "auto":
+        return spec or None
+    try:
+        with open("/proc/net/route") as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if parts[1] == "00000000" and int(parts[3], 16) & 2:  # default route via a gateway
+                    return socket.inet_ntoa(int(parts[2], 16).to_bytes(4, "little"))
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def dns_query(server, name, timeout=2.0, port=53):
+    """Sends an A query; returns the response code (0 ok, 3 no such name, 2 server
+    failure...) or None if nothing valid came back."""
+    tid = os.urandom(2)
+    qname = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\0"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.settimeout(timeout)
+        try:
+            s.sendto(tid + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + qname + b"\x00\x01\x00\x01", (server, port))
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                data = s.recv(512)
+                if len(data) >= 12 and data[:2] == tid and data[2] & 0x80:
+                    return data[3] & 0x0F
+        except OSError:
+            pass
+    return None
+
+
+def dns_check():
+    """True/False = the LAN's DNS resolves / doesn't; None = not checked.
+
+    Asks for a random name under google.com: no cache can hold it, so a "no such
+    name" reply proves the router -> ISP resolver -> internet chain works."""
+    server = dns_server()
+    if not server:
+        return None
+    for _ in range(2):  # one lost UDP packet isn't an outage
+        if dns_query(server, f"netmon-{os.urandom(4).hex()}.google.com") in (0, 3):
+            return True
+    return False
+
+
+def round_verdict(results, dns_ok, dns_seen_ok):
+    """(up, reason why not) from the probe results and the DNS check."""
+    need, ok = quorum(len(results)), international(results)
+    if len(ok) < need:
+        return False, f"only {len(ok)} of {len(results)} international targets answered (need {need})"
+    if dns_ok is False and dns_seen_ok:  # a server that never answered isn't a DNS server
+        return False, f"DNS ({dns_server()}) isn't resolving names"
+    return True, None
+
 
 def check_once():
     """Returns (up, latency_ms, jitter_ms, loss_pct).
 
-    Up = any target answers. Quality comes from a few extra TCP handshakes to the
-    fastest target: a handshake that doesn't complete within 1.5 s counts as lost
-    (a real SYN loss would take >1 s to be retransmitted). Costs a few hundred bytes.
+    Up = enough international targets answer and the LAN's DNS works. Quality comes
+    from a few extra TCP handshakes to the fastest target: a handshake that doesn't
+    complete within 1.5 s counts as lost (a real SYN loss would take >1 s to be
+    retransmitted). Costs a few hundred bytes.
     """
+    dns_future = probe_pool.submit(dns_check)
     results = list(zip(OPTS["check_targets"], probe_pool.map(_tcp_probe, OPTS["check_targets"])))
-    ok = [(t, ms) for t, ms in results if ms is not None]
-    if not ok:
+    dns_ok = dns_future.result()
+    if dns_ok and not state.dns_seen_ok:
+        state.dns_seen_ok = True
+        log.info("DNS check active via %s", dns_server())
+    up, state.down_reason = round_verdict(results, dns_ok, state.dns_seen_ok)
+    ok = international(results)
+    if not up:
         return False, None, None, None
     target, first = min(ok, key=lambda x: x[1])
     samples = [first]
@@ -574,56 +683,71 @@ def handle_startup_gap(interval):
 def monitor_loop():
     interval = OPTS["check_interval_seconds"]
     handle_startup_gap(interval)
-    fails, first_fail_ts, prev_ts, planned, down_announced = 0, None, None, False, False
+    m = {"fails": 0, "first_fail_ts": None, "oks": 0, "first_ok_ts": None, "prev_ts": None,
+         "planned": False, "down_announced": False}
     while True:
         t0 = time.time()
-        if prev_ts and t0 - prev_ts > 3 * interval:  # host was suspended/stalled
-            eid = open_event("monitor_offline", prev_ts)
-            close_event(eid, t0)
-        up, latency, jitter, loss = check_once()
-        db.execute("INSERT INTO checks(ts, up, latency_ms, jitter_ms, loss_pct) VALUES(?, ?, ?, ?, ?)",
-                   (t0, int(up), latency, jitter, loss))
-        changed = False
-        with state.lock:
-            state.last_check_ts, state.last_latency_ms = t0, latency
-            state.last_jitter_ms, state.last_loss_pct = jitter, loss
-            if up:
-                fails, first_fail_ts = 0, None
-                if state.outage_id:
-                    outage_id, start = state.outage_id, state.outage_start
-                    close_event(outage_id, t0)
-                    state.outage_id = state.outage_start = None
-                    real = classify_outage(outage_id, start, t0)
-                    if real:
-                        log.info("Internet back after %s", fmt_duration(t0 - real[1]))
-                        announce("up", t0 - real[1])
-                        threading.Thread(target=after_outage, args=(real[0], real[1], t0), daemon=True).start()
-                    down_announced = False
+        try:
+            monitor_step(m, t0, interval)
+        except Exception:  # a crash here would freeze the sensor on its last state forever
+            log.exception("Connectivity check failed; retrying")
+        m["prev_ts"] = t0
+        time.sleep(max(1.0, t0 + interval - time.time()))
+
+
+def monitor_step(m, t0, interval):
+    if m["prev_ts"] and t0 - m["prev_ts"] > 3 * interval:  # host was suspended/stalled
+        eid = open_event("monitor_offline", m["prev_ts"])
+        close_event(eid, t0)
+    up, latency, jitter, loss = check_once()
+    db.execute("INSERT INTO checks(ts, up, latency_ms, jitter_ms, loss_pct) VALUES(?, ?, ?, ?, ?)",
+               (t0, int(up), latency, jitter, loss))
+    changed = False
+    with state.lock:
+        state.last_check_ts, state.last_latency_ms = t0, latency
+        state.last_jitter_ms, state.last_loss_pct = jitter, loss
+        if up:
+            m["fails"], m["first_fail_ts"] = 0, None
+            m["oks"] += 1
+            if m["oks"] == 1:
+                m["first_ok_ts"] = t0
+            # Like going down, coming back takes two good rounds in a row (a flapping
+            # line isn't "back"); it's dated from the first one.
+            if state.outage_id and m["oks"] >= 2:
+                outage_id, start, back = state.outage_id, state.outage_start, m["first_ok_ts"]
+                close_event(outage_id, back)
+                state.outage_id = state.outage_start = None
+                real = classify_outage(outage_id, start, back)
+                if real:
+                    log.info("Internet back after %s", fmt_duration(back - real[1]))
+                    announce("up", back - real[1])
+                    threading.Thread(target=after_outage, args=(real[0], real[1], back), daemon=True).start()
+                m["down_announced"] = False
+            if not state.outage_id:
                 changed = state.online is not True
                 state.online = True
-            else:
-                fails += 1
-                if fails == 1:
-                    first_fail_ts = t0
-                # Two consecutive failed rounds = outage, dated from the first failure.
-                if fails >= 2 and not state.outage_id:
-                    state.outage_id = open_event("internet_down", first_fail_ts)
-                    state.outage_start = first_fail_ts
-                    log.info("Internet DOWN since %s", fmt_time(first_fail_ts))
-                if fails >= 2:
-                    changed = state.online is not False
-                    state.online = False
-            # A planned restart that overruns its window becomes a real outage right then.
-            now_planned = outage_is_planned(t0)
-            changed = changed or now_planned != planned
-            planned = now_planned
-            if state.online is False and not now_planned and not down_announced:
-                down_announced = True
-                announce("down")
-        if changed:
-            publish_connectivity()
-        prev_ts = t0
-        time.sleep(max(1.0, t0 + interval - time.time()))
+        else:
+            m["oks"], m["first_ok_ts"] = 0, None
+            m["fails"] += 1
+            if m["fails"] == 1:
+                m["first_fail_ts"] = t0
+            # Two consecutive failed rounds = outage, dated from the first failure.
+            if m["fails"] >= 2 and not state.outage_id:
+                state.outage_id = open_event("internet_down", m["first_fail_ts"])
+                state.outage_start = m["first_fail_ts"]
+                log.info("Internet DOWN since %s (%s)", fmt_time(m["first_fail_ts"]), state.down_reason)
+            if m["fails"] >= 2:
+                changed = state.online is not False
+                state.online = False
+        # A planned restart that overruns its window becomes a real outage right then.
+        now_planned = outage_is_planned(t0)
+        changed = changed or now_planned != m["planned"]
+        m["planned"] = now_planned
+        if state.online is False and not now_planned and not m["down_announced"]:
+            m["down_announced"] = True
+            announce("down")
+    if changed or not state.publish_ok:
+        publish_connectivity()
 
 
 def after_outage(outage_id, start, end):
@@ -1488,6 +1612,7 @@ def status_payload():
         "now": time.time(), "online": state.online, "last_check_ts": state.last_check_ts,
         "latency_ms": state.last_latency_ms, "jitter_ms": state.last_jitter_ms, "loss_pct": state.last_loss_pct,
         "online_since": online_since() if state.online else None, "outage_start": state.outage_start,
+        "down_reason": state.down_reason if state.online is False else None,
         "planned_outage": outage_is_planned(),
         "sparkline": spark,
         "test_running": state.test_running, "test_started_ts": state.test_started_ts,
@@ -1541,6 +1666,7 @@ SETTINGS = {
     "monthly_report_hour": ("int", 0, 23),
     "plan_price": ("float", 0, 10000000),
     "plan_currency": ("text", True, None),
+    "dns_check_server": ("text", False, r"^(auto|\d{1,3}(\.\d{1,3}){3})$"),
 }
 RESTART_KEYS = {"speedtest_interval_minutes", "check_interval_seconds"}  # read once at startup
 SECRET_KEYS = {"whatsapp_api_token"}
