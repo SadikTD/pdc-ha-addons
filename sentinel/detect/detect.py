@@ -20,6 +20,10 @@ MobileFaceNet (w600k_mbf; its weights are for non-commercial use, which a home s
 is). The answer per face: [score, x, y, w, h, landmarks (10), sharpness, frontal,
 fingerprint (512)], positions normalised to the picture.
 
+Stronger face fingerprints: if /config/models/face_r50.onnx (InsightFace w600k_r50, same
+licence) is there, it replaces MobileFaceNet. Model "facedet" is YuNet alone (no
+fingerprints, the rows end after "frontal"), to find a face before fingerprinting it once.
+
 Who (model "who"): a model trained on this home's own footage, /config/models/who.onnx,
 turns a person crop (exactly 128x256) into a 256-number fingerprint: [[256 floats]].
 """
@@ -106,7 +110,7 @@ class Faces:
         self.emb_in = self.emb.get_inputs()[0].name
         self.names = [o.name for o in self.det.get_outputs()]
 
-    def detect(self, data, w, h):
+    def detect(self, data, w, h, embed=True):
         rgb = np.frombuffer(data, np.uint8).reshape(h, w, 3)
         img = np.zeros((640, 640, 3), np.float32)
         img[:h, :w] = rgb[:, :, ::-1]  # YuNet takes BGR, 0..255, top-left letterboxed
@@ -132,9 +136,11 @@ class Faces:
         for i in nms(wh, scores, 0.3):
             k = np.array(kps[i], np.float32)
             face = align(rgb, k)
-            x = ((face - 127.5) / 127.5).transpose(2, 0, 1)[None].astype(np.float32)
-            v = self.emb.run(None, {self.emb_in: x})[0][0]
-            v = v / (np.linalg.norm(v) + 1e-9)
+            v = []
+            if embed:
+                x = ((face - 127.5) / 127.5).transpose(2, 0, 1)[None].astype(np.float32)
+                v = self.emb.run(None, {self.emb_in: x})[0][0]
+                v = v / (np.linalg.norm(v) + 1e-9)
             x0, y0, x1, y1 = boxes[i]
             x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, w), min(y1, h)
             if x1 <= x0 or y1 <= y0:
@@ -144,6 +150,17 @@ class Faces:
                          + [round(sharpness(face), 1), round(frontal(k), 3)]
                          + [round(float(x), 4) for x in v])
         return found
+
+
+class FaceDet:
+    """YuNet only: where the faces are, no fingerprints."""
+    size = 640
+
+    def __init__(self, faces):
+        self.faces = faces
+
+    def detect(self, data, w, h):
+        return self.faces.detect(data, w, h, embed=False)
 
 
 def align(rgb, kps, size=112):
@@ -209,14 +226,18 @@ def main():
     models = {"scan": Model(MODEL)}
     if os.path.exists(VERIFY_MODEL):
         models["verify"] = Model(VERIFY_MODEL)
-    if os.path.exists(FACE_MODEL) and os.path.exists(EMBED_MODEL):
-        models["faces"] = Faces(FACE_MODEL, EMBED_MODEL)
+    custom = os.environ.get("SENTINEL_CUSTOM_MODELS", "/config/models")
+    embed = os.path.join(custom, "face_r50.onnx")
+    if not os.path.exists(embed):
+        embed = EMBED_MODEL
+    if os.path.exists(FACE_MODEL) and os.path.exists(embed):
+        models["faces"] = Faces(FACE_MODEL, embed)
+        models["facedet"] = FaceDet(models["faces"])
     # Models trained on one camera's own footage (cat watch): /config/models/<name>.onnx,
     # same YOLOX layout as the others. Kept with the settings, not in the image.
-    custom = os.environ.get("SENTINEL_CUSTOM_MODELS", "/config/models")
     if os.path.isdir(custom):
         for f in sorted(os.listdir(custom)):
-            if f.endswith(".onnx"):
+            if f.endswith(".onnx") and f != "face_r50.onnx":
                 path = os.path.join(custom, f)
                 models[f[:-5]] = Who(path) if f == "who.onnx" else Model(path)
     out = sys.stdout

@@ -143,10 +143,11 @@ func (d *Detector) readLocked(ctx context.Context, timeout time.Duration) (strin
 }
 
 const (
-	modelScan   = "scan"   // fast, looks at every frame
-	modelVerify = "verify" // bigger and more accurate, confirms what scan found
-	modelFaces  = "faces"  // faces and their fingerprints (see faces.go)
-	modelWho    = "who"    // who someone is, from their whole look (see who.go)
+	modelScan    = "scan"    // fast, looks at every frame
+	modelVerify  = "verify"  // bigger and more accurate, confirms what scan found
+	modelFaces   = "faces"   // faces and their fingerprints (see faces.go)
+	modelWho     = "who"     // who someone is, from their whole look (see who.go)
+	modelFaceDet = "facedet" // faces only, no fingerprints
 )
 
 // HasModel reports whether the worker has a model (starting it if needed).

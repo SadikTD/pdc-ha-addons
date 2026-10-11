@@ -39,14 +39,38 @@ import (
 // their fingerprints (as long as the events they belong to) and small face pictures.
 
 const (
-	faceMatch   = 0.42 // a named person's faces must be this alike (mean of the closest three)
-	faceMargin  = 0.14 // ...and clearly more alike than anyone else's (0.07 gave 6% wrong names)
-	faceGroup   = 0.42 // unknown faces this alike are shown together
-	faceSuggest = 0.32 // an unknown group this alike to someone is shown as "Is this …?"
-	faceJunk    = 0.5  // like a "not a face": not a face either
-	faceMinQ    = 0.3  // worse faces are kept, but not matched or shown
-	galleryMax  = 300  // faces kept per person
+	faceJunk   = 0.5 // like a "not a face": not a face either
+	faceMinQ   = 0.3 // worse faces are kept, but not matched or shown
+	galleryMax = 300 // faces kept per person
 )
+
+// Face fingerprints come from MobileFaceNet, or from InsightFace R50 when
+// /config/models/face_r50.onnx is there (much better on this CCTV: on the user's named
+// faces 61% recognised at 0.7% wrong, vs 8% at 0%). Fingerprints of the two can't be
+// compared: sightings remember which made theirs, old ones are redone from their picture.
+var (
+	faceEmbedder = ""   // "" MobileFaceNet, "r50"
+	faceMatch    = 0.42 // a named person's faces must be this alike (mean of the closest three)
+	faceMargin   = 0.14 // ...and clearly more alike than anyone else's (0.07 gave 6% wrong names)
+	faceGroup    = 0.42 // unknown faces this alike are shown together
+	faceSuggest  = 0.32 // an unknown group this alike to someone is shown as "Is this …?"
+)
+
+func faceEmbedderIn(dir string) string {
+	if _, err := os.Stat(filepath.Join(dir, "face_r50.onnx")); err == nil {
+		return "r50"
+	}
+	return ""
+}
+
+// useEmbedder sets the face thresholds for the fingerprint model. R50: measured on the
+// user's named faces, leave-one-day-out (D:\sentinel-train\who\calib.py).
+func useEmbedder(e string) {
+	faceEmbedder = e
+	if e == "r50" {
+		faceMatch, faceMargin, faceGroup, faceSuggest = 0.34, 0.12, 0.34, 0.26
+	}
+}
 
 // Who is someone recognised in an event.
 type Who struct {
@@ -75,6 +99,7 @@ type Seen struct {
 	Face   *Rect    `json:"face,omitempty"`   // the face, in the frame
 	Q      float64  `json:"q,omitempty"`      // face quality 0..1
 	Emb    string   `json:"emb,omitempty"`    // face fingerprint
+	EmbBy  string   `json:"emb_by,omitempty"` // which model made it ("" MobileFaceNet, "r50")
 	Body   string   `json:"body,omitempty"`   // who-model fingerprint of the whole person
 	Person string   `json:"person,omitempty"` // who it is
 	By     string   `json:"by,omitempty"`     // "you" (named by the user); recognised: "face", "sure" or "outfit"
@@ -87,7 +112,7 @@ type Seen struct {
 	body []float32
 }
 
-func (s *Seen) hasFace() bool { return s.emb != nil && !s.Junk }
+func (s *Seen) hasFace() bool { return s.emb != nil && !s.Junk && s.EmbBy == faceEmbedder }
 
 // usable: a sighting that can be named, by its face or its whole look.
 func (s *Seen) usable() bool { return (s.emb != nil || s.body != nil) && !s.Junk }
@@ -96,7 +121,7 @@ func (s *Seen) usable() bool { return (s.emb != nil || s.body != nil) && !s.Junk
 func (f *Faces) hiddenLocked() [][]float32 {
 	var out [][]float32
 	for _, s := range f.seen {
-		if s.Skip && s.emb != nil && s.Person == "" {
+		if s.Skip && s.emb != nil && s.EmbBy == faceEmbedder && s.Person == "" {
 			out = append(out, s.emb)
 		}
 	}
@@ -154,7 +179,9 @@ func newFaces(app *App) *Faces {
 			}
 		}
 	}
-	f.extra = loadWhoGallery(filepath.Join(env("SENTINEL_CUSTOM_MODELS", "/config/models"), "who_gallery.json"))
+	models := env("SENTINEL_CUSTOM_MODELS", "/config/models")
+	useEmbedder(faceEmbedderIn(models))
+	f.extra = loadWhoGallery(filepath.Join(models, "who_gallery.json"))
 	go f.writer()
 	return f
 }
@@ -353,7 +380,7 @@ func (f *Faces) galleriesLocked() (map[string][][]float32, [][]float32) {
 	var junk [][]float32
 	for _, s := range f.seen {
 		switch {
-		case s.Junk && s.emb != nil:
+		case s.Junk && s.emb != nil && s.EmbBy == faceEmbedder:
 			junk = append(junk, s.emb)
 		case s.hasFace() && s.Person != "" && s.By == "you": // only the user's names teach: a guess must never teach more guesses
 			g[s.Person] = append(g[s.Person], s.emb)
@@ -606,7 +633,7 @@ func (f *Faces) WhoAt(ctx context.Context, cam string, t time.Time) []string {
 		s := &Seen{Cam: cam, T: t.UnixMilli(), Box: d.Box, Night: night(full, d.Box)}
 		if a.detector.HasModel(modelFaces) {
 			if face, q, emb, _ := f.face(ctx, full, d.Box, func(string, ...any) {}); emb != nil {
-				s.Face, s.Q, s.emb = &face, q, emb
+				s.Face, s.Q, s.emb, s.EmbBy = &face, q, emb, faceEmbedder
 			}
 		}
 		s.body, _ = f.body(ctx, full, d.Box)
@@ -631,12 +658,58 @@ func (f *Faces) WhoAt(ctx context.Context, cam string, t time.Time) []string {
 	return names
 }
 
+// reembed redoes face fingerprints made by another model (after face_r50.onnx was added
+// or removed) from their kept face pictures, the user's named ones first, a few per round.
+func (f *Faces) reembed(ctx context.Context) bool {
+	if !f.app.detector.HasModel(modelFaces) {
+		return false
+	}
+	f.mu.RLock()
+	var todo []Seen
+	for _, s := range f.seen {
+		if s.emb != nil && s.EmbBy != faceEmbedder && !f.tried["e"+s.ID] {
+			todo = append(todo, *s)
+		}
+	}
+	f.mu.RUnlock()
+	if len(todo) == 0 {
+		return false
+	}
+	sort.Slice(todo, func(i, j int) bool { return todo[i].By == "you" && todo[j].By != "you" })
+	ctx = lowPriority(ctx)
+	got := map[string][]float32{}
+	for _, s := range todo[:min(len(todo), 20)] {
+		if ctx.Err() != nil {
+			return false
+		}
+		if b, err := os.ReadFile(f.imgPath(s.ID)); err == nil {
+			got[s.ID] = f.thumbEmb(ctx, b)
+		}
+		f.tried["e"+s.ID] = true
+	}
+	f.mu.Lock()
+	for id, v := range got {
+		if s := f.seen[id]; s != nil {
+			// No face found in the picture again: keep the sighting, without a face.
+			s.emb, s.Emb, s.EmbBy = v, encodeVec(v), faceEmbedder
+			f.touchLocked(s)
+		}
+	}
+	f.saveLaterLocked()
+	f.mu.Unlock()
+	f.backfilled = true
+	return true
+}
+
 // backfillBodies gives sightings from before the who model a fingerprint, the ones the
 // user named first, while their footage is still kept. A few per round, low priority.
 // It reports whether it did any work (then there may be more).
 func (f *Faces) backfillBodies(ctx context.Context) bool {
 	if !f.app.detector.HasModel(modelWho) || systemBusy() {
 		return false
+	}
+	if f.reembed(ctx) {
+		return true
 	}
 	f.mu.RLock()
 	var todo []Seen
@@ -794,7 +867,7 @@ func (f *Faces) look(ctx context.Context, e Event, dry bool, trace func(string, 
 				}
 			}
 			if face, q, emb, thumb := f.face(ctx, full, p.Box, log); emb != nil {
-				s.Face, s.Q, s.emb = &face, q, emb
+				s.Face, s.Q, s.emb, s.EmbBy = &face, q, emb, faceEmbedder
 				if thumb != nil && !dry {
 					_ = writePicture(f.imgPath(s.ID), thumb)
 				}
@@ -853,7 +926,11 @@ func (f *Faces) face(ctx context.Context, full frameRGB, box Rect, log func(stri
 	scale := min(640/float64(cw), 640/float64(ch), 3)
 	dw, dh := max(int(float64(cw)*scale), 1), max(int(float64(ch)*scale), 1)
 	rgb := resizeRGB(full.rgb, full.w, full.h, x0, y0, x1, y1, dw, dh)
-	rows, err := f.app.detector.Raw(ctx, modelFaces, rgb, dw, dh)
+	model := modelFaces
+	if faceEmbedder != "" {
+		model = modelFaceDet // the big fingerprint runs once, on the chosen face's picture
+	}
+	rows, err := f.app.detector.Raw(ctx, model, rgb, dw, dh)
 	if err != nil {
 		log("  faces: %v", err)
 		return Rect{}, 0, nil, nil
@@ -861,7 +938,7 @@ func (f *Faces) face(ctx context.Context, full frameRGB, box Rect, log func(stri
 	log("  person %s: crop %dx%d -> %dx%d, %d face(s)", fmtBox(box), cw, ch, dw, dh, len(rows))
 	var best []float64
 	for _, row := range rows {
-		if len(row) < 17+128 {
+		if len(row) < 17 || model == modelFaces && len(row) < 17+128 {
 			continue
 		}
 		score := row[0]
@@ -889,12 +966,76 @@ func (f *Faces) face(ctx context.Context, full frameRGB, box Rect, log func(stri
 		return Rect{}, 0, nil, nil
 	}
 	q := 0.4*unit(score, 0.72, 0.95) + 0.35*unit(px, 28, 90) + 0.25*unit(frontal, 0.2, 0.9)
+	face := Rect{X: r.X + best[1]*r.W, Y: r.Y + best[2]*r.H, W: best[3] * r.W, H: best[4] * r.H}
+	thumb := faceThumb(full, face)
+	if faceEmbedder != "" {
+		// Fingerprint the picture that is kept: old faces are redone from theirs, so
+		// old and new are made the same way.
+		emb := f.thumbEmb(ctx, thumb)
+		if emb == nil {
+			log("    no face in its picture")
+		}
+		return face, q, emb, thumb
+	}
 	emb := make([]float32, len(best)-17)
 	for i := range emb {
 		emb[i] = float32(best[17+i])
 	}
-	face := Rect{X: r.X + best[1]*r.W, Y: r.Y + best[2]*r.H, W: best[3] * r.W, H: best[4] * r.H}
-	return face, q, emb, faceThumb(full, face)
+	return face, q, emb, thumb
+}
+
+// thumbEmb: the fingerprint of the face in a face picture (faceThumb's JPEG).
+func (f *Faces) thumbEmb(ctx context.Context, jpg []byte) []float32 {
+	if jpg == nil {
+		return nil
+	}
+	img, err := jpeg.Decode(bytes.NewReader(jpg))
+	if err != nil {
+		return nil
+	}
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w > 640 || h > 640 {
+		return nil
+	}
+	rgb := make([]byte, 0, w*h*3)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			rgb = append(rgb, byte(r>>8), byte(g>>8), byte(bl>>8))
+		}
+	}
+	rows, err := f.app.detector.Raw(ctx, modelFaces, rgb, w, h)
+	if err != nil {
+		return nil
+	}
+	return thumbFace(rows)
+}
+
+// thumbFace picks the face a face picture is centred on (faceThumb centres it) and
+// returns its fingerprint; nil if there is none near the centre.
+func thumbFace(rows [][]float64) []float32 {
+	var best []float64
+	for _, r := range rows {
+		if len(r) <= 17 {
+			continue
+		}
+		cx, cy := r[1]+r[3]/2, r[2]+r[4]/2
+		if math.Abs(cx-0.5) > 0.2 || math.Abs(cy-0.5) > 0.2 {
+			continue
+		}
+		if best == nil || r[0] > best[0] {
+			best = r
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	v := make([]float32, len(best)-17)
+	for i := range v {
+		v[i] = float32(best[17+i])
+	}
+	return v
 }
 
 func unit(v, lo, hi float64) float64 { return min(max((v-lo)/(hi-lo), 0), 1) }

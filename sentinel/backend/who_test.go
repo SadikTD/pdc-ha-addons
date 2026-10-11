@@ -170,3 +170,47 @@ func TestLoadWhoGallery(t *testing.T) {
 		t.Fatalf("got %+v", g)
 	}
 }
+
+func TestFaceEmbedderFromModels(t *testing.T) {
+	dir := t.TempDir()
+	if got := faceEmbedderIn(dir); got != "" {
+		t.Fatalf("no file: got %q", got)
+	}
+	if err := os.WriteFile(dir+"/face_r50.onnx", []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := faceEmbedderIn(dir); got != "r50" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestOldFingerprintsAreNotCompared(t *testing.T) {
+	old := faceEmbedder
+	defer func() { faceEmbedder = old }()
+	faceEmbedder = "r50"
+	if (&Seen{emb: unitVec(0)}).hasFace() {
+		t.Fatal("a MobileFaceNet fingerprint must not be compared with R50 ones")
+	}
+	if !(&Seen{emb: unitVec(0), EmbBy: "r50"}).hasFace() {
+		t.Fatal("current fingerprint ignored")
+	}
+}
+
+func TestThumbFace(t *testing.T) {
+	row := func(score, x float64) []float64 {
+		r := make([]float64, 17+4)
+		r[0], r[1], r[2], r[3], r[4] = score, x, 0.25, 0.4, 0.5
+		r[17] = 1
+		return r
+	}
+	// The thumbnail is centred on the face: the centred face wins over a sharper edge one.
+	if v := thumbFace([][]float64{row(0.95, 0.0), row(0.8, 0.3)}); v == nil || len(v) != 4 {
+		t.Fatal("no face picked")
+	}
+	if v := thumbFace([][]float64{row(0.95, 0.0)}); v != nil {
+		t.Fatal("a face at the edge of the thumbnail isn't the person's")
+	}
+	if thumbFace(nil) != nil {
+		t.Fatal("nothing found must give nil")
+	}
+}
