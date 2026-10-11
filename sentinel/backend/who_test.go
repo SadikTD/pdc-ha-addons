@@ -26,22 +26,68 @@ func TestDecideRespectsNot(t *testing.T) {
 }
 
 func TestDecideOutfitSameLightOnly(t *testing.T) {
-	today := []bodyRef{{person: "mom", t: 0, night: true, v: unitVec(2)}}
+	today := []bodyRef{{person: "mom", t: 0, night: true, v: unitVec(2)}, {person: "dad", t: 0, v: unitVec(1)}}
 	if p, _, _ := decideWho(unitVec(2), 1000, false, nil, nil, today); p != "" {
 		t.Fatal("matched an IR outfit in daylight")
 	}
-	if p, by, _ := decideWho(unitVec(2), 1000, true, nil, nil, today); p != "mom" || by != "outfit" {
+	if p, by, _ := decideWho(unitVec(1), 1000, false, nil, nil, today); p != "dad" || by != "outfit" {
 		t.Fatalf("got %q %q", p, by)
+	}
+}
+
+func TestDecideNoOutfitAtNight(t *testing.T) {
+	// At night the outfit memory is often one person: a stranger in infrared would
+	// "clearly" match them. Until night is measured, no naming by outfit at night.
+	today := []bodyRef{{person: "dad", t: 0, night: true, v: unitVec(2)}}
+	if p, _, _ := decideWho(unitVec(2), 1000, true, nil, nil, today); p != "" {
+		t.Fatalf("named %q by an infrared outfit", p)
+	}
+}
+
+func TestEventPeopleSameNameTwoBoxes(t *testing.T) {
+	ss := []*Seen{{T: 0, Box: Rect{X: .05, Y: .1, W: .2, H: .6}, Person: "dad", By: "outfit"},
+		{T: 0, Box: Rect{X: .6, Y: .1, W: .2, H: .6}, Person: "dad", By: "sure"}}
+	if got := eventPeople(ss); len(got) != 0 {
+		t.Fatalf("two people at once can't both be Dad, got %v", got)
+	}
+	ss[1].By = "you" // the user's own name stands
+	if got := eventPeople(ss); !slices.Equal(got, []string{"dad"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestNameBodyOnlySighting(t *testing.T) {
+	f := &Faces{people: []Person{{ID: "dad", Name: "Dad"}}, seen: map[string]*Seen{"a": {ID: "a", T: 1, body: unitVec(0)}}, dirty: map[string]bool{}, whoQ: map[EventKey][]Who{}}
+	p, err := f.Name([]string{"a"}, "dad", "")
+	if err != nil || f.seen["a"].Person != p.ID || f.seen["a"].By != "you" {
+		t.Fatalf("naming a sighting without a face did nothing: %+v %v", f.seen["a"], err)
+	}
+	if got := f.PersonFaces(p.ID, 10); len(got) != 1 {
+		t.Fatalf("a person's page must list sightings without a face (to correct them), got %d", len(got))
+	}
+}
+
+func TestAlertNamesTimeout(t *testing.T) {
+	began := time.Now()
+	got := namesWithin(50*time.Millisecond, "Person", func() []string { time.Sleep(time.Second); return []string{"Dad"} })
+	if got != nil || time.Since(began) > 500*time.Millisecond {
+		t.Fatalf("alert waited %v for names %v", time.Since(began), got)
+	}
+	if got := namesWithin(time.Second, "Person", func() []string { return []string{"Dad"} }); !slices.Equal(got, []string{"Dad"}) {
+		t.Fatalf("got %v", got)
+	}
+	if got := namesWithin(time.Second, "Cat", func() []string { t.Fatal("no names for cats"); return nil }); got != nil {
+		t.Fatal(got)
 	}
 }
 
 func TestDecideOutfitAcrossMidnight(t *testing.T) {
 	at := time.Date(2026, 10, 11, 23, 5, 0, 0, time.Local).UnixMilli()
-	today := []bodyRef{{person: "mom", t: at - 35*60*1000, night: true, v: unitVec(2)}}     // 22:30
-	if p, _, _ := decideWho(unitVec(2), at+90*60*1000, true, nil, nil, today); p != "mom" { // 00:35
+	today := []bodyRef{{person: "mom", t: at - 35*60*1000, v: unitVec(2)}}                   // 22:30
+	if p, _, _ := decideWho(unitVec(2), at+90*60*1000, false, nil, nil, today); p != "mom" { // 00:35
 		t.Fatal("outfit memory must use time, not the calendar day")
 	}
-	if p, _, _ := decideWho(unitVec(2), at+13*3600*1000, true, nil, nil, today); p != "" {
+	if p, _, _ := decideWho(unitVec(2), at+13*3600*1000, false, nil, nil, today); p != "" {
 		t.Fatal("outfit memory must expire after outfitWindow")
 	}
 }

@@ -256,7 +256,7 @@ func (al *Alerter) fire(cam string, e Event) {
 	}
 	rec := AlertRecord{ID: e.ID, Camera: cam, CameraName: name, At: pic.t.UnixMilli(), Event: e.ID, Status: "sending"}
 	al.put(rec)
-	label := alertLabel(pic.what, al.app.faces.WhoAt(al.app.ctx, cam, pic.t))
+	label := alertLabel(pic.what, namesWithin(3*time.Second, pic.what, func() []string { return al.app.faces.WhoAt(al.app.ctx, cam, pic.t) }))
 	al.app.push.Alert(cam, name, pic.t, label, e.ID)
 	var err error
 	to := alertChat(s, pic.what)
@@ -302,7 +302,7 @@ func (al *Alerter) fire(cam string, e Event) {
 		al.put(AlertRecord{ID: id, Camera: cam, CameraName: name, At: b.t.UnixMilli(), Event: e.ID, Status: "sending"})
 		label := "Still moving"
 		if b.what != "" {
-			label = alertLabel(b.what, al.app.faces.WhoAt(al.app.ctx, cam, b.t)) + " still there"
+			label = alertLabel(b.what, namesWithin(3*time.Second, b.what, func() []string { return al.app.faces.WhoAt(al.app.ctx, cam, b.t) })) + " still there"
 		}
 		al.app.push.Alert(cam, name, b.t, label, e.ID)
 		if to := alertChat(s, b.what); to != "" {

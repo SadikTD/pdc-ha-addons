@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -43,6 +44,12 @@ func decideWho(v []float32, t int64, night bool, not []string, long, today []bod
 	if p, s, second := bestRef(v, long, not); p != "" && s >= whoSure && s-second >= whoMargin {
 		return p, "sure", s
 	}
+	if night {
+		// ponytail: night (infrared) outfit naming is off: there was no night data to
+		// measure it, and at night the memory is often one person, so the margin can't
+		// protect a stranger. Turn on once a night eval passes.
+		return "", "", 0
+	}
 	w := outfitWindow.Milliseconds()
 	i := sort.Search(len(today), func(i int) bool { return today[i].t >= t-w })
 	j := sort.Search(len(today), func(i int) bool { return today[i].t > t+w })
@@ -73,7 +80,24 @@ func eventPeople(ss []*Seen) []string {
 	bad := map[*Seen]bool{}
 	for i, a := range ss {
 		for _, b := range ss[i+1:] {
-			if a.Person == "" || b.Person == "" || a.Person == b.Person || abs64(a.T-b.T) > 2000 || iou(a.Box, b.Box) < 0.3 {
+			if a.Person == "" || b.Person == "" {
+				continue
+			}
+			if a.Person == b.Person {
+				// One name on two people seen at the same moment: one of them is wrong.
+				if a.T == b.T && iou(a.Box, b.Box) < 0.3 {
+					switch {
+					case a.By == "you" && b.By != "you":
+						bad[b] = true
+					case b.By == "you" && a.By != "you":
+						bad[a] = true
+					case a.By != "you":
+						bad[a], bad[b] = true, true
+					}
+				}
+				continue
+			}
+			if abs64(a.T-b.T) > 2000 || iou(a.Box, b.Box) < 0.3 {
 				continue
 			}
 			switch {
@@ -86,9 +110,14 @@ func eventPeople(ss []*Seen) []string {
 			}
 		}
 	}
+	// A name stands if none of its sightings was cancelled, or the user gave it.
 	var out []string
 	for _, s := range ss {
-		if s.Person != "" && !bad[s] && !slices.Contains(out, s.Person) {
+		if s.Person == "" || bad[s] || slices.Contains(out, s.Person) {
+			continue
+		}
+		cancelled := slices.ContainsFunc(ss, func(x *Seen) bool { return x.Person == s.Person && bad[x] })
+		if !cancelled || slices.ContainsFunc(ss, func(x *Seen) bool { return x.Person == s.Person && x.By == "you" && !bad[x] }) {
 			out = append(out, s.Person)
 		}
 	}
@@ -126,4 +155,20 @@ func whoBy(by string) string {
 		return "clothing"
 	}
 	return "face"
+}
+
+// namesWithin: the names for an alert about what ("Person", "2 people"), from fn, if it
+// answers within d; otherwise none (the alert says "Person" and isn't held up).
+func namesWithin(d time.Duration, what string, fn func() []string) []string {
+	if what != "Person" && !strings.HasSuffix(what, " people") {
+		return nil
+	}
+	c := make(chan []string, 1)
+	go func() { c <- fn() }()
+	select {
+	case names := <-c:
+		return names
+	case <-time.After(d):
+		return nil
+	}
 }

@@ -89,6 +89,9 @@ type Seen struct {
 
 func (s *Seen) hasFace() bool { return s.emb != nil && !s.Junk }
 
+// usable: a sighting that can be named, by its face or its whole look.
+func (s *Seen) usable() bool { return (s.emb != nil || s.body != nil) && !s.Junk }
+
 // hiddenLocked: the faces the user chose not to name; faces like them aren't asked about.
 func (f *Faces) hiddenLocked() [][]float32 {
 	var out [][]float32
@@ -115,6 +118,8 @@ type Faces struct {
 	status FaceStatus
 	tried  map[string]bool // sightings whose fingerprint backfill was attempted (this run)
 	extra  []bodyRef       // who_gallery.json: reviewed pictures from the training
+	// backfilled: fingerprints were added since the last full re-decision (Run only).
+	backfilled bool
 	// version counts changes; the faces to name are grouped again only after one
 	// (grouping every face is heavy, and the page asks every 30 s and after each action).
 	version  atomic.Int64
@@ -642,6 +647,15 @@ func (f *Faces) backfillBodies(ctx context.Context) bool {
 	}
 	f.mu.RUnlock()
 	if len(todo) == 0 {
+		if f.backfilled {
+			// All fingerprints in: decide again once (not after every round, which held
+			// the lock for seconds hundreds of times after an update).
+			f.backfilled = false
+			f.mu.Lock()
+			f.relearnLocked()
+			f.mu.Unlock()
+			f.applyWho()
+		}
 		return false
 	}
 	sort.Slice(todo, func(i, j int) bool { return todo[i].By == "you" && todo[j].By != "you" })
@@ -671,11 +685,9 @@ func (f *Faces) backfillBodies(ctx context.Context) bool {
 				f.touchLocked(s)
 			}
 		}
-		f.matchLocked(slices.Collect(maps.Values(f.seen)))
-		f.whoLocked(maps.Clone(f.dirty))
 		f.saveLaterLocked()
 		f.mu.Unlock()
-		f.applyWho()
+		f.backfilled = true
 	}
 	return true
 }
@@ -1087,7 +1099,7 @@ func (f *Faces) PersonFaces(id string, limit int) []FaceInfo {
 	defer f.mu.RUnlock()
 	var list []*Seen
 	for _, s := range f.seen {
-		if s.Person == id && s.hasFace() {
+		if s.Person == id && s.usable() {
 			list = append(list, s)
 		}
 	}
@@ -1250,7 +1262,7 @@ func (f *Faces) Name(ids []string, id, name string) (Person, error) {
 		p = f.addPersonLocked(name, false)
 	}
 	for _, fid := range ids {
-		if s, ok := f.seen[fid]; ok && s.emb != nil {
+		if s, ok := f.seen[fid]; ok && (s.emb != nil || s.body != nil) {
 			s.Person, s.By, s.Sim, s.Junk = p.ID, "you", 1, false
 			s.Not = slices.DeleteFunc(s.Not, func(x string) bool { return x == p.ID })
 			f.touchLocked(s)
@@ -1353,7 +1365,7 @@ func (f *Faces) Hidden() []FaceInfo {
 	defer f.mu.RUnlock()
 	out := []FaceInfo{}
 	for _, s := range f.seen {
-		if (s.Skip || s.Junk) && s.emb != nil && s.Person == "" {
+		if (s.Skip || s.Junk) && (s.emb != nil || s.body != nil) && s.Person == "" {
 			fi := f.faceInfoLocked(s)
 			fi.By = "hidden"
 			if s.Junk {
@@ -1448,7 +1460,7 @@ func (f *Faces) EventFaces(cam, event string) []FaceInfo {
 	_, junk := f.galleriesLocked()
 	out := []FaceInfo{}
 	for _, s := range f.seen {
-		if s.Cam == cam && s.Event == event && s.hasFace() && s.Q >= faceMinQ && !isJunk(s.emb, junk) {
+		if s.Cam == cam && s.Event == event && (s.hasFace() && s.Q >= faceMinQ && !isJunk(s.emb, junk) || s.emb == nil && s.usable()) {
 			out = append(out, f.faceInfoLocked(s))
 		}
 	}
