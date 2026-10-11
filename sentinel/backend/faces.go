@@ -114,6 +114,7 @@ type Faces struct {
 	laterC chan struct{}
 	status FaceStatus
 	tried  map[string]bool // sightings whose fingerprint backfill was attempted (this run)
+	extra  []bodyRef       // who_gallery.json: reviewed pictures from the training
 	// version counts changes; the faces to name are grouped again only after one
 	// (grouping every face is heavy, and the page asks every 30 s and after each action).
 	version  atomic.Int64
@@ -148,6 +149,7 @@ func newFaces(app *App) *Faces {
 			}
 		}
 	}
+	f.extra = loadWhoGallery(filepath.Join(env("SENTINEL_CUSTOM_MODELS", "/config/models"), "who_gallery.json"))
 	go f.writer()
 	return f
 }
@@ -405,10 +407,16 @@ func isJunk(v []float32, junk [][]float32) bool {
 	return false
 }
 
-// bodyRefsLocked: what people look like. long: sightings the user named (any day);
+// bodyRefsLocked: what people look like. long: sightings the user named (any day) and the
+// training's reviewed pictures (who_gallery.json);
 // today: everyone known surely (user, face or "sure"), sorted by time, for outfits.
 // ponytail: rebuilt per call (O(sightings)); fine at ~10k, index by day if relearn gets slow.
 func (f *Faces) bodyRefsLocked() (long, today []bodyRef) {
+	for _, r := range f.extra {
+		if slices.ContainsFunc(f.people, func(p Person) bool { return p.ID == r.person }) {
+			long = append(long, r)
+		}
+	}
 	for _, s := range f.seen {
 		if s.body == nil || s.Person == "" || s.Junk {
 			continue

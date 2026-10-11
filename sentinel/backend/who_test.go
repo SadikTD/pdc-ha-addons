@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"slices"
 	"testing"
 	"time"
@@ -107,5 +108,19 @@ func TestWhoAtNoModel(t *testing.T) {
 	f := &Faces{app: &App{detector: &Detector{model: "/nonexistent/yolox_s.onnx"}}}
 	if got := f.WhoAt(context.Background(), "x", time.Now()); got != nil {
 		t.Fatalf("no model must give no names, got %v", got)
+	}
+}
+
+func TestLoadWhoGallery(t *testing.T) {
+	p := t.TempDir() + "/who_gallery.json"
+	if g := loadWhoGallery(p); g != nil {
+		t.Fatal("no file must give no gallery")
+	}
+	if err := os.WriteFile(p, []byte(`[{"person":"dad","night":true,"emb":"`+encodeVec(unitVec(1))+`"},{"person":"x","emb":"bad"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := loadWhoGallery(p)
+	if len(g) != 1 || g[0].person != "dad" || !g[0].night || g[0].v[1] != 1 {
+		t.Fatalf("got %+v", g)
 	}
 }

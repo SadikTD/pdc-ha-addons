@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"slices"
 	"sort"
 	"time"
@@ -88,6 +90,31 @@ func eventPeople(ss []*Seen) []string {
 	for _, s := range ss {
 		if s.Person != "" && !bad[s] && !slices.Contains(out, s.Person) {
 			out = append(out, s.Person)
+		}
+	}
+	return out
+}
+
+// loadWhoGallery reads who_gallery.json, written next to who.onnx by the training
+// (D:\sentinel-train\who\gallery.py): fingerprints of reviewed pictures of each person,
+// used like pictures the user named. Missing or unreadable: none.
+func loadWhoGallery(path string) []bodyRef {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var list []struct {
+		Person string `json:"person"`
+		Night  bool   `json:"night"`
+		Emb    string `json:"emb"`
+	}
+	if json.Unmarshal(b, &list) != nil {
+		return nil
+	}
+	var out []bodyRef
+	for _, e := range list {
+		if v := decodeVec(e.Emb); v != nil && e.Person != "" {
+			out = append(out, bodyRef{person: e.Person, night: e.Night, v: v})
 		}
 	}
 	return out
