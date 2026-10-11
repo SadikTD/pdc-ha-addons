@@ -68,7 +68,8 @@ func faceEmbedderIn(dir string) string {
 func useEmbedder(e string) {
 	faceEmbedder = e
 	if e == "r50" {
-		faceMatch, faceMargin, faceGroup, faceSuggest = 0.34, 0.12, 0.34, 0.26
+		// group 0.45: at 0.34 about 16% of faces landed in another person's group (Pi data, 2026-10-11)
+		faceMatch, faceMargin, faceGroup, faceSuggest = 0.34, 0.12, 0.45, 0.34
 	}
 }
 
