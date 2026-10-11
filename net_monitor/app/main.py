@@ -1598,7 +1598,9 @@ def latest_outage_report():
 
 def alerts_payload():
     text, real = latest_outage_report()
-    return {"alexa_entities": OPTS["alexa_entities"], "alexa_volume": OPTS["alexa_volume"],
+    names = {e: ((ha_get_state(e) or {}).get("attributes") or {}).get("friendly_name") or e
+             for e in OPTS["alexa_entities"]}
+    return {"alexa_entities": OPTS["alexa_entities"], "alexa_names": names, "alexa_volume": OPTS["alexa_volume"],
             "alexa_quiet_hours": OPTS["alexa_quiet_hours"], "offline_tts_service": OPTS["offline_tts_service"],
             "whatsapp_configured": bool(OPTS["whatsapp_to"] and OPTS["whatsapp_api_token"]),
             "down_message": announce_message("down"), "up_message": announce_message("up", 27 * 60),
@@ -1608,7 +1610,12 @@ def alerts_payload():
 def status_payload():
     last_test = db.one("SELECT * FROM speedtests WHERE status='ok' ORDER BY ts DESC LIMIT 1")
     spark = db.query("SELECT ts, up, latency_ms FROM checks ORDER BY ts DESC LIMIT 60")[::-1]
+    # How the line feels right now: the last 10 minutes, not one 30-second sample.
+    recent = db.one("SELECT COUNT(*) AS n, SUM(up = 0) AS fails, AVG(CASE WHEN up THEN latency_ms END) AS latency_ms, "
+                    "AVG(CASE WHEN up THEN jitter_ms END) AS jitter_ms, AVG(CASE WHEN up THEN loss_pct END) AS loss_pct "
+                    "FROM checks WHERE ts > ?", (time.time() - 600,))
     return {
+        "recent": recent,
         "now": time.time(), "online": state.online, "last_check_ts": state.last_check_ts,
         "latency_ms": state.last_latency_ms, "jitter_ms": state.last_jitter_ms, "loss_pct": state.last_loss_pct,
         "online_since": online_since() if state.online else None, "outage_start": state.outage_start,

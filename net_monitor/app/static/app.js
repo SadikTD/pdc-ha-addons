@@ -49,8 +49,47 @@
     return d.toISOString().slice(0, 16);
   };
   const fromLocalInput = (v) => new Date(v).getTime() / 1000;
-  const TRIGGER = { scheduled: "Hourly", manual: "Manual", after_outage: "After outage" };
-  const SKIP = { failed: ["down", "Failed"], skipped_busy: ["warn", "Skipped — line busy"], skipped_paused: ["", "Skipped — paused"] };
+  const TRIGGER = { scheduled: "Scheduled", manual: "You ran it", after_outage: "After an outage" };
+  const SKIP = { failed: ["down", "Failed"], skipped_busy: ["warn", "Skipped, line in use"], skipped_paused: ["", "Skipped, tests paused"] };
+  const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+  const listText = (a) => (a.length < 2 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`);
+
+  // ------------------------------------------------------------------ quality
+  // Plain-language grading of response time (latency), steadiness (jitter) and
+  // lost data (packet loss) to Singapore, where ~50 ms is normal from Bangladesh.
+  const QUALITY_SINCE = 1791738254;  // 11 Oct 2026 11:04 PM (+06), when v1.4.1 went live
+  const LEVEL = ["Smooth", "Sluggish", "Poor"];
+  const LEVEL_CLS = ["good", "warn", "bad"];
+  const RATE_WORD = ["Good", "Fair", "Poor"];
+  const step3 = (v, a, b) => (v == null ? 0 : v < a ? 0 : v < b ? 1 : 2);
+  const rateLat = (v) => step3(v, 100, 200);
+  const rateJit = (v) => step3(v, 20, 50);
+  const rateLoss = (v) => step3(v, 2, 10);
+  function rate(lat, jit, loss) {
+    const why = [];
+    if (rateLat(lat)) why.push(`slow (${ms(lat)} ms)`);
+    if (rateJit(jit)) why.push(`jumpy (±${ms(jit)} ms)`);
+    if (rateLoss(loss)) why.push(`losing data (${loss.toFixed(0)}%)`);
+    return { level: Math.max(rateLat(lat), rateJit(jit), rateLoss(loss)), why };
+  }
+  // What each activity needs: [good if all under, okay if all under] for latency, jitter, loss.
+  const USES = [
+    { name: "Browsing", need: [[300, 100, 5], [600, 200, 15]] },
+    { name: "Video streaming", need: [[400, 150, 5], [800, 300, 15]], minMbps: [25, 8] },
+    { name: "Video calls", need: [[150, 30, 3], [300, 60, 10]] },
+    { name: "Online games", need: [[80, 15, 1], [150, 30, 3]] },
+  ];
+  const USE_WORD = ["Works well", "May stutter", "Likely to struggle", "Not working"];
+  function useLevel(u, r, mbpsNow) {
+    const fits = ([l, j, p]) => (r.latency_ms ?? 0) < l && (r.jitter_ms ?? 0) < j && (r.loss_pct ?? 0) < p;
+    let lvl = fits(u.need[0]) ? 0 : fits(u.need[1]) ? 1 : 2;
+    if (u.minMbps && mbpsNow != null) lvl = Math.max(lvl, mbpsNow >= u.minMbps[0] ? 0 : mbpsNow >= u.minMbps[1] ? 1 : 2);
+    return lvl;
+  }
+  const DOWN_WHY = (reason) => !reason ? "None of the test servers abroad are answering."
+    : /DNS/.test(reason) ? "Websites can't be found: your router's DNS isn't answering, even though the line may be up."
+    : /only [01] of/.test(reason) ? "The test servers abroad aren't answering, so the international link is cut."
+    : "Too few test servers abroad are answering to call the line usable.";
 
   // -------------------------------------------------------------------- theme
   // Follow Home Assistant's own light/dark setting (Ingress runs same-origin),
@@ -144,6 +183,7 @@
     renderHero();
     renderRangeLabel();
     renderStrip();
+    renderQuality();
     renderReport();
     renderCharts();
     renderHeatmap();
@@ -168,9 +208,7 @@
     $("conn-state").textContent = s.online === true ? "Online"
       : s.online === false ? (s.planned_outage ? "Router restarting" : "Internet down") : "Checking…";
     tickSince();
-    countUp($("q-latency"), s.online ? s.latency_ms : null, (v) => (v == null ? "—" : `${ms(v)} ms`));
-    countUp($("q-jitter"), s.online ? s.jitter_ms : null, (v) => (v == null ? "—" : `${ms(v)} ms`));
-    countUp($("q-loss"), s.online ? s.loss_pct : null, (v) => (v == null ? "—" : `${v.toFixed(0)}%`));
+    renderVerdict();
     drawSpark();
 
     const lt = s.last_test;
@@ -184,14 +222,18 @@
 
     const paused = s.paused_until === -1 || s.paused_until > s.now;
     let next;
-    if (paused) next = s.paused_until === -1 ? "Scheduled tests paused" : `Paused until ${when(s.paused_until)}`;
-    else if (s.next_test_ts) next = `Next ${time(s.next_test_ts)} (${relative(s.next_test_ts)})`;
-    else next = "";
-    const note = s.scheduler_note ? ` · ${s.scheduler_note}` : "";
-    $("speed-foot").innerHTML = lt
-      ? `${esc(when(lt.ts))} · ${ms(lt.ping_ms)} ms ping · ${esc(lt.server_name || "")} · ${esc(next)}${esc(note)}`
-      : esc(next + note);
-    $("pause-label").textContent = paused ? "Paused" : "Pause";
+    if (paused) next = s.paused_until === -1 ? "Paused until you resume" : `Paused until ${when(s.paused_until)}`;
+    else if (s.next_test_ts) next = `${time(s.next_test_ts)}, ${relative(s.next_test_ts)}`;
+    else next = "—";
+    const foot = [];
+    if (lt) {
+      foot.push(["Last test", `${when(lt.ts)}, ${ms(lt.ping_ms)} ms ping`]);
+      foot.push(["Server", [lt.server_name, lt.server_location].filter(Boolean).join(", ")]);
+    }
+    foot.push(["Next test", next]);
+    if (s.scheduler_note && !paused) foot.push(["Note", s.scheduler_note]);
+    $("speed-foot").innerHTML = foot.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
+    $("pause-label").textContent = paused ? "Tests paused" : "Pause tests";
     $("menu-resume").hidden = !paused;
 
     const run = $("btn-run");
@@ -207,9 +249,41 @@
     let text = "";
     if (s.online === true && s.online_since) text = `Online for ${dur(now - s.online_since, true)}`;
     else if (s.online === false && s.outage_start && s.planned_outage) text = `Scheduled restart since ${time(s.outage_start)} · ${dur(now - s.outage_start, true)}`;
-    else if (s.online === false && s.outage_start) text = `Down since ${when(s.outage_start)} · ${dur(now - s.outage_start, true)}${s.down_reason ? ` · ${s.down_reason}` : ""}`;
-    if (s.last_check_ts) text += `${text ? " · " : ""}checked ${relative(s.last_check_ts)}`;
+    else if (s.online === false && s.outage_start) text = `Down since ${when(s.outage_start)}, ${dur(now - s.outage_start, true)} so far`;
+    if (s.last_check_ts) text += `${text ? ". " : ""}Checked ${relative(s.last_check_ts)}.`;
     $("conn-since").textContent = text || " ";
+  }
+
+  function renderVerdict() {
+    const s = data.status, r = s.recent || {};
+    let title = "", text = "", lvl = 0, uses = null;
+    if (s.online === false && s.planned_outage) {
+      title = "Scheduled router restart";
+      text = "Your router restarts at this time every day. It isn't counted as an outage.";
+      uses = USES.map((u) => [u.name, 3]);
+    } else if (s.online === false) {
+      title = "Nothing gets through";
+      text = DOWN_WHY(s.down_reason);
+      lvl = 2;
+      uses = USES.map((u) => [u.name, 3]);
+    } else if (s.online === true && r.latency_ms != null) {
+      const q = rate(r.latency_ms, r.jitter_ms, r.loss_pct);
+      lvl = q.level;
+      if (r.fails) lvl = Math.max(lvl, 1);
+      title = ["Smooth", "A bit sluggish", "Struggling"][lvl];
+      text = lvl === 0
+        ? `Replies come back in ${ms(r.latency_ms)} ms, steadily and with nothing lost. Fine for everything, games included.`
+        : `${cap(listText([...q.why, ...(r.fails ? [`${r.fails} short drop${r.fails === 1 ? "" : "s"}`] : [])]))} in the last 10 minutes. `
+          + (lvl === 1 ? "Games and video calls may lag." : "Expect lag, buffering and dropped calls.");
+      const dl = s.last_test ? s.last_test.download_mbps : null;
+      uses = USES.map((u) => [u.name, Math.max(useLevel(u, r, dl), r.fails && u.name !== "Browsing" ? 1 : 0)]);
+    }
+    $("verdict").className = `verdict lv-${LEVEL_CLS[lvl]}`;
+    $("verdict").hidden = !title;
+    $("verdict-title").textContent = title;
+    $("verdict-text").textContent = text;
+    $("uses").innerHTML = (uses || []).map(([name, l]) =>
+      `<li class="use u-${l === 3 ? "off" : LEVEL_CLS[l]}"><span class="use-name">${name}</span><span class="use-word">${USE_WORD[l]}</span></li>`).join("");
   }
 
   function renderLive() {
@@ -237,11 +311,19 @@
     const ctx = c.getContext("2d");
     ctx.scale(dpr, dpr);
     const pts = (s.sparkline || []).filter((p) => p.up && p.latency_ms != null);
+    const last = pts[pts.length - 1];
+    $("spark-now").textContent = last && s.online ? `${ms(last.latency_ms)} ms now` : "";
     if (pts.length < 2) return;
     const t0 = s.sparkline[0].ts, t1 = s.sparkline[s.sparkline.length - 1].ts || t0 + 1;
-    const vals = pts.map((p) => p.latency_ms);
-    const lo = Math.min(...vals) * 0.9, hi = Math.max(...vals) * 1.1 || 1;
-    const X = (t) => ((t - t0) / (t1 - t0 || 1)) * (w - 4) + 2, Y = (v) => h - 4 - ((v - lo) / (hi - lo || 1)) * (h - 14);
+    // Scale to the typical values so one spike doesn't flatten the rest; spikes are clipped at the top.
+    const vals = pts.map((p) => p.latency_ms).sort((a, b) => a - b);
+    const lo = 0, hi = Math.max(100, vals[Math.floor(vals.length * 0.9)] * 1.4);
+    const X = (t) => ((t - t0) / (t1 - t0 || 1)) * (w - 4) + 2, Y = (v) => Math.max(2, h - 4 - ((v - lo) / (hi - lo || 1)) * (h - 8));
+    // The "feels instant" line at 100 ms.
+    ctx.strokeStyle = css("--grid");
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(0, Y(100)); ctx.lineTo(w, Y(100)); ctx.stroke();
+    ctx.setLineDash([]);
     const color = css("--series-lat");
     const grad = ctx.createLinearGradient(0, 0, 0, h);
     grad.addColorStop(0, color + "40");
@@ -309,21 +391,21 @@
     g.className = `grade${r.grade ? ` g-${r.grade}` : ""}`;
     $("grade-letter").textContent = r.grade || "–";
     $("grade-caption").textContent = r.grade
-      ? `Speed ${r.avg_down_pct.toFixed(0)}% of plan · ${pct(r.uptime_pct, 1)} uptime`
+      ? `${r.avg_down_pct.toFixed(0)}% of plan speed, ${pct(r.uptime_pct, 1)} uptime`
       : "Needs speedtests and uptime data";
     const c = r.test_counts || {};
     const skipped = (c.skipped_busy || 0) + (c.skipped_paused || 0);
-    $("report-sub").textContent = `${r.tests} speedtest${r.tests === 1 ? "" : "s"}${c.failed ? ` · ${c.failed} failed` : ""}${skipped ? ` · ${skipped} skipped` : ""}${r.data_mb ? ` · ${(r.data_mb / 1000).toFixed(1)} GB used` : ""}`;
+    $("report-sub").textContent = `Based on ${r.tests} speedtest${r.tests === 1 ? "" : "s"}${c.failed ? `, ${c.failed} failed` : ""}${skipped ? `, ${skipped} skipped` : ""}${r.data_mb ? `. Tests used ${(r.data_mb / 1000).toFixed(1)} GB.` : ""}`;
     const tile = (label, value, sub) =>
       `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub || "&nbsp;"}</div></div>`;
     const lo = r.longest_outage;
     $("report-tiles").innerHTML = [
-      tile("Avg download", r.avg_down == null ? "—" : `${mbps(r.avg_down)}<small>Mbit/s</small>`, r.avg_down == null ? "" : `${r.avg_down_pct.toFixed(0)}% of plan · ${mbps(r.min_down)}–${mbps(r.max_down)}`),
+      tile("Avg download", r.avg_down == null ? "—" : `${mbps(r.avg_down)}<small>Mbit/s</small>`, r.avg_down == null ? "" : `${r.avg_down_pct.toFixed(0)}% of plan, ranging ${mbps(r.min_down)} to ${mbps(r.max_down)}`),
       tile("Avg upload", r.avg_up == null ? "—" : `${mbps(r.avg_up)}<small>Mbit/s</small>`, r.avg_up == null ? "" : `${r.avg_up_pct.toFixed(0)}% of plan`),
       tile("Avg ping", r.avg_ping == null ? "—" : `${ms(r.avg_ping)}<small>ms</small>`, "to Singapore"),
-      tile("Below half of plan", r.below_50_pct == null ? "—" : pct(r.below_50_pct), r.below_80_pct == null ? "" : `${pct(r.below_80_pct)} below 80%`),
-      tile("Outages", String(r.outages), (r.downtime_s ? `${dur(r.downtime_s)} down in total` : "no downtime") +
-        (r.planned_restarts ? ` · ${r.planned_restarts} scheduled restart${r.planned_restarts === 1 ? "" : "s"} excluded` : "")),
+      tile("Slow tests", r.below_50_pct == null ? "—" : pct(r.below_50_pct), r.below_80_pct == null ? "" : `under half your plan. ${pct(r.below_80_pct)} under 80%.`),
+      tile("Outages", String(r.outages), (r.downtime_s ? `${dur(r.downtime_s)} down in total.` : "No downtime.") +
+        (r.planned_restarts ? ` ${r.planned_restarts} router restart${r.planned_restarts === 1 ? "" : "s"} not counted.` : "")),
       tile("Longest outage", lo ? dur(lo.duration_s) : "—", lo ? when(lo.start) : ""),
       tile("Slowest hour", r.slowest_hour ? esc(r.slowest_hour.label) : "—", r.slowest_hour ? `avg ${mbps(r.slowest_hour.avg_down)} Mbit/s` : "needs more data"),
       tile("Fastest hour", r.fastest_hour ? esc(r.fastest_hour.label) : "—", r.fastest_hour ? `avg ${mbps(r.fastest_hour.avg_down)} Mbit/s` : ""),
@@ -433,7 +515,6 @@
 
   function renderCharts() {
     renderSpeedChart();
-    renderQualityCharts();
     renderHeatmap();
     if (data.status) drawSpark();
   }
@@ -465,32 +546,99 @@
       ["Internet down", css("--band-down"), "band"], ["Scheduled restart", css("--band-planned"), "band"], ["Not monitored", css("--band-offline"), "band"]]);
   }
 
-  function renderQualityCharts() {
-    const lat = data.checks.map((c) => ({ x: c.ts * 1000, y: c.up ? c.latency_ms : null }));
-    const jit = data.checks.map((c) => ({ x: c.ts * 1000, y: c.up ? c.jitter_ms : null }));
-    const opts = baseOptions();
-    opts.plugins.tooltip.callbacks.label = (item) => ` ${item.dataset.label}: ${ms(item.parsed.y)} ms`;
-    const line = (label, pts, color) => ({ label, data: pts, borderColor: color, backgroundColor: color, borderWidth: 2,
-      pointRadius: 0, pointHoverRadius: 4, tension: 0.2, spanGaps: false });
-    mount("latency", $("latency-chart"), {
-      type: "line",
-      data: { datasets: [line("Latency", lat, css("--series-lat")), line("Jitter", jit, css("--series-jit"))] },
-      options: opts, plugins: [bandsPlugin, crosshairPlugin],
+  // Connection quality: a strip of how the line felt, three plain stats, and the rough patches.
+  let qBuckets = [];
+  const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+
+  function renderQuality() {
+    const rows = data.checks;
+    // Before v1.4.1 quality was measured against a Dhaka server, which says nothing about abroad.
+    const up = rows.filter((c) => c.up && c.latency_ms != null && c.ts >= QUALITY_SINCE);
+    const levelOf = (c) => rate(c.latency_ms, c.jitter_ms, c.loss_pct || 0);
+    up.forEach((c) => { c.q = levelOf(c); });
+
+    // Strip: same buckets as the uptime strip.
+    const n = data.timeline.length || 60;
+    const step = (range.hi - range.lo) / n;
+    qBuckets = Array.from({ length: n }, (_, i) => ({ from: range.lo + i * step, to: range.lo + (i + 1) * step, rows: [] }));
+    rows.forEach((c) => { const b = qBuckets[Math.floor((c.ts - range.lo) / step)]; if (b) b.rows.push(c); });
+    qBuckets.forEach((b) => {
+      const u = b.rows.filter((c) => c.q);
+      b.downs = b.rows.length - b.rows.filter((c) => c.up).length;
+      b.lat = avg(u.map((c) => c.latency_ms));
+      b.jit = avg(u.map((c) => c.jitter_ms).filter((v) => v != null));
+      b.loss = avg(u.map((c) => c.loss_pct || 0));
+      b.cls = !b.rows.length ? "" : b.downs > b.rows.length / 2 ? "down" : !u.length ? "" : LEVEL_CLS[rate(b.lat, b.jit, b.loss).level];
     });
-    const loss = data.checks.map((c) => ({ x: c.ts * 1000, y: c.up ? c.loss_pct || 0 : null }));
-    const lopts = baseOptions();
-    lopts.scales.y.suggestedMax = 10;
-    lopts.scales.y.ticks.maxTicksLimit = 2;
-    lopts.scales.y.ticks.callback = (v) => `${v}%`;
-    lopts.scales.x.ticks.display = false;
-    lopts.plugins.tooltip.callbacks.label = (item) => ` Packet loss: ${item.parsed.y.toFixed(0)}%`;
-    mount("loss", $("loss-chart"), {
-      type: "bar",
-      data: { datasets: [{ label: "Packet loss", data: loss, backgroundColor: css("--critical"), borderRadius: 2, barPercentage: 1, categoryPercentage: 1, minBarLength: 0 }] },
-      options: lopts, plugins: [bandsPlugin],
+    $("qstrip").innerHTML = qBuckets.map((b, i) => `<span class="${b.cls}" data-i="${i}"></span>`).join("");
+    $("qstrip-start").textContent = $("strip-start").textContent;
+    $("qstrip-end").textContent = $("strip-end").textContent;
+
+    const smooth = up.length ? (100 * up.filter((c) => c.q.level === 0).length) / up.length : null;
+    $("quality-headline").textContent = smooth == null ? "—" : `Smooth ${smooth >= 99.5 && smooth < 100 ? "99.5" : smooth.toFixed(0)}% of the time`;
+
+    // Three plain stats for the range.
+    const lat = median(up.map((c) => c.latency_ms)), jit = median(up.map((c) => c.jitter_ms).filter((v) => v != null));
+    const loss = avg(up.map((c) => c.loss_pct || 0));
+    const worst = up.reduce((w, c) => (!w || c.latency_ms > w.latency_ms ? c : w), null);
+    const stat = (name, value, r, about, extra) => `<div class="qstat">
+        <div class="qstat-top"><span class="qstat-name">${name}</span><span class="pill ${LEVEL_CLS[r]}">${RATE_WORD[r]}</span></div>
+        <div class="qstat-value">${value}</div>
+        <p class="qstat-about">${about}${extra ? ` ${extra}` : ""}</p></div>`;
+    $("qstats").innerHTML = !up.length ? '<p class="muted">No quality readings in this range. Tracking started on 11 Oct, 11:04 PM.</p>' : [
+      stat("Response time", `${ms(lat)}<small>ms typical</small>`, rateLat(lat),
+        "How long data takes to reach Singapore and come back. Under 100 ms feels instant.",
+        worst && worst.latency_ms > 2 * lat ? `Slowest: ${ms(worst.latency_ms)} ms at ${when(worst.ts)}.` : ""),
+      stat("Steadiness", jit == null ? "—" : `±${ms(jit)}<small>ms</small>`, rateJit(jit),
+        "How much the response time jumps around. Big jumps cause lag spikes in games and calls."),
+      stat("Lost data", `${loss < 0.1 ? "0" : loss.toFixed(1)}<small>%</small>`, rateLoss(loss),
+        "Share of test connections that got no answer. Above 2% you'll notice stutters."),
+    ].join("");
+
+    // Rough patches: runs of sluggish/poor checks, worst first.
+    const gapOk = Math.max(90, 3 * (rows.length > 1 ? (rows[rows.length - 1].ts - rows[0].ts) / rows.length : 30));
+    const patches = [];
+    let cur = null;
+    for (const c of up) {
+      if (c.q.level && cur && c.ts - cur.end <= gapOk) { cur.end = c.ts; cur.items.push(c); continue; }
+      if (cur) { patches.push(cur); cur = null; }
+      if (c.q.level) cur = { start: c.ts, end: c.ts, items: [c] };
+    }
+    if (cur) patches.push(cur);
+    patches.forEach((p) => {
+      p.level = Math.max(...p.items.map((c) => c.q.level));
+      p.lat = avg(p.items.map((c) => c.latency_ms));
+      p.jit = avg(p.items.map((c) => c.jitter_ms).filter((v) => v != null));
+      p.loss = avg(p.items.map((c) => c.loss_pct || 0));
+      p.secs = Math.max(30, p.end - p.start);
+      p.score = p.secs * (p.level === 2 ? 3 : 1);
     });
-    legend($("quality-legend"), [["Latency", css("--series-lat")], ["Jitter", css("--series-jit")], ["Packet loss", css("--critical"), "band"]]);
+    const top = patches.filter((p) => p.secs >= 60).sort((a, b) => b.score - a.score).slice(0, 4).sort((a, b) => b.start - a.start);
+    $("rough").innerHTML = !up.length ? "" : top.length
+      ? `<h3>Rough patches</h3><ul>${top.map((p) => `<li>
+          <span class="pill ${LEVEL_CLS[p.level]}">${LEVEL[p.level]}</span>
+          <span class="rough-when">${when(p.start)}${sameDay(p.start, p.end) ? `–${time(p.end)}` : ` to ${when(p.end)}`}</span>
+          <span class="rough-why">${cap(listText(rate(p.lat, p.jit, p.loss).why) || "unsteady")} for about ${dur(p.secs)}</span></li>`).join("")}</ul>`
+      : '<p class="rough-none">No rough patches in this range. The line was steady whenever it was up.</p>';
+    if (range.lo < QUALITY_SINCE) $("rough").insertAdjacentHTML("beforeend", '<p class="muted small">Quality tracking started on 11 Oct, 11:04 PM, so earlier times show as no data.</p>');
   }
+  $("qstrip").addEventListener("mousemove", (ev) => {
+    const i = ev.target.dataset && ev.target.dataset.i;
+    if (i === undefined) return hideTip();
+    const b = qBuckets[Number(i)];
+    const head = b.to - b.from >= 86400 * 0.99 ? dFmt.format(b.from * 1000) : `${when(b.from)} – ${time(b.to)}`;
+    let body;
+    if (!b.cls) body = b.to <= QUALITY_SINCE ? "<span>Not measured yet. Quality tracking started on 11 Oct, 11:04 PM.</span>" : "<span>No data</span>";
+    else if (b.cls === "down") body = "<span>Internet down for most of this time</span>";
+    else {
+      const q = rate(b.lat, b.jit, b.loss);
+      body = `<span>${LEVEL[q.level]}${q.why.length ? `: ${esc(listText(q.why))}` : ""}</span>`
+        + `<span>Response ${ms(b.lat)} ms, steadiness ±${ms(b.jit)} ms, ${(b.loss || 0).toFixed(1)}% lost</span>`;
+    }
+    showTip(ev, `<b>${esc(head)}</b>${body}`);
+  });
+  $("qstrip").addEventListener("mouseleave", hideTip);
 
   // Drag-to-zoom on the speed chart; double-click returns to the last preset.
   (() => {
@@ -591,9 +739,16 @@
     $("outage-rows").innerHTML = rows.length ? rows.map((e) => `<tr>
       <td>${when(e.start)}</td><td>${e.ongoing ? "<strong>ongoing</strong>" : when(e.end)}</td>
       <td class="num">${dur(e.duration_s)}</td>
-      <td>${e.kind === "internet_down" ? '<span class="tag down">Internet down</span>' : e.kind === "planned_restart" ? '<span class="tag planned">Scheduled router restart</span>' : '<span class="tag">Not monitored (Pi off)</span>'}</td>
+      <td>${e.kind === "internet_down" ? '<span class="tag down">Internet down</span>' : e.kind === "planned_restart" ? '<span class="tag planned">Scheduled router restart</span>' : '<span class="tag">Monitor was off</span>'}</td>
       <td>${recoveryText(e)}</td></tr>`).join("")
       : '<tr><td colspan="5" class="muted">No outages in this range.</td></tr>';
+  }
+  function failText(err) {
+    if (!err) return "";
+    if (/Latency test failed/i.test(err)) return "No test server could be reached. The international link was probably down.";
+    if (/timed out/i.test(err)) return "The test took too long and was stopped.";
+    if (/No such file|not found|cannot find/i.test(err)) return "The speedtest program isn't available.";
+    return err.length > 80 ? `${err.slice(0, 80)}…` : err;
   }
   function renderTests() {
     const plan = data.status.plan_down;
@@ -605,7 +760,7 @@
       if (t.status !== "ok") {
         const [cls, label] = SKIP[t.status] || ["", t.status];
         const why = t.status === "skipped_busy" && t.error ? `${label}: ${t.error}` : label + (t.busy_mbps ? ` (${mbps(t.busy_mbps)} Mbit/s in use)` : "");
-        return `<tr><td>${when(t.ts)}</td><td colspan="7"><span class="tag ${cls}">${esc(why)}</span>${t.error && t.status !== "skipped_busy" ? ` <span class="muted" title="${esc(t.error)}">${esc(t.error.slice(0, 70))}</span>` : ""}</td><td>${TRIGGER[t.trigger] || esc(t.trigger)}</td><td></td></tr>`;
+        return `<tr><td>${when(t.ts)}</td><td colspan="7"><span class="tag ${cls}" title="${esc(t.error || "")}">${esc(why)}</span>${t.status === "failed" ? ` <span class="muted">${esc(failText(t.error))}</span>` : ""}</td><td>${TRIGGER[t.trigger] || esc(t.trigger)}</td><td></td></tr>`;
       }
       return `<tr><td>${when(t.ts)}</td>
         <td class="num"><strong>${mbps(t.download_mbps)}</strong></td><td>${pbar(t.download_mbps, plan)}</td>
@@ -615,14 +770,20 @@
         <td>${t.result_url ? `<a class="link" href="${esc(t.result_url)}" target="_blank" rel="noopener">result ↗</a>` : ""}</td></tr>`;
     }).join("") : '<tr><td colspan="10" class="muted">No speedtests in this range.</td></tr>';
   }
+  let showAllIps = false;
   function renderIps() {
-    $("ip-rows").innerHTML = data.ips.length
-      ? data.ips.map((r, i) => `<tr><td>${when(r.ts)}${i === 0 ? ' <span class="tag ok">current</span>' : ""}</td><td>${esc(r.ip)}</td><td>${esc(r.isp)}</td></tr>`).join("")
+    const ips = data.ips, unique = new Set(ips.map((r) => r.ip)).size;
+    $("ip-sub").textContent = ips.length > 1 ? `${unique} different address${unique === 1 ? "" : "es"} across the last ${ips.length} changes` : "";
+    $("btn-more-ips").hidden = showAllIps || ips.length <= 6;
+    $("btn-more-ips").textContent = `Show all ${ips.length}`;
+    $("ip-rows").innerHTML = ips.length
+      ? (showAllIps ? ips : ips.slice(0, 6)).map((r, i) => `<tr><td>${when(r.ts)}${i === 0 ? ' <span class="tag ok">current</span>' : ""}</td><td>${esc(r.ip)}</td><td>${esc(r.isp)}</td></tr>`).join("")
       : '<tr><td colspan="3" class="muted">Recorded after the next speedtest.</td></tr>';
   }
 
   // ------------------------------------------------------------------- lookup
   async function lookup(ts) {
+    $("lookup-result").innerHTML = '<p class="muted small">Looking…</p>';
     const r = await api(`api/at?ts=${ts}`);
     const lines = [`<div><strong>${fullFmt.format(ts * 1000)}</strong></div>`];
     if (r.event && r.event.kind === "internet_down") {
@@ -694,20 +855,22 @@
 
   async function loadAlerts() {
     const a = await api("api/alerts");
-    const off = (t) => `<span class="off">${esc(t)}</span>`;
+    const off = (t, sec) => `<span class="off">${esc(t)}</span>${sec ? ` <button type="button" class="linkbtn" data-open-settings="${sec}">Set up</button>` : ""}`;
+    const names = a.alexa_entities.map((e) => (a.alexa_names && a.alexa_names[e]) || e);
     $("alexa-facts").innerHTML = [
-      ["Echo devices", a.alexa_entities.length ? esc(a.alexa_entities.join(", ")) : off("not set (alexa_entities)")],
-      ["Volume", `${a.alexa_volume}% while speaking, then restored`],
+      ["Speaks on", names.length ? esc(listText(names)) : off("No Echo picked", "alexa")],
+      ["Volume", `${a.alexa_volume}% while speaking, then put back`],
       ["When it drops", `“${esc(a.down_message)}”`],
       ["When it's back", `“${esc(a.up_message)}”`],
-      ["Quiet hours", a.alexa_quiet_hours.length ? esc(a.alexa_quiet_hours.join(", ")) : off("none")],
-      ["Offline fallback", a.offline_tts_service ? esc(a.offline_tts_service) : off("not set (offline_tts_service)")],
+      ["Quiet hours", a.alexa_quiet_hours.length ? esc(listText(a.alexa_quiet_hours.map((w) => w.replace("-", " to ")))) : off("None")],
+      ["If Alexa can't speak", a.offline_tts_service ? `Your phone says it (${esc(a.offline_tts_service.replace(/^notify\.(mobile_app_)?/, ""))})` : off("Nothing is said", "alexa")],
     ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
     document.querySelectorAll("[data-device='alexa']").forEach((b) => { b.disabled = !a.alexa_entities.length; });
     $("btn-phone-test").disabled = !a.offline_tts_service;
     $("btn-wa-test").disabled = !a.whatsapp_configured;
-    $("wa-note").textContent = (a.whatsapp_configured ? "Sent when the internet comes back. " : "Set whatsapp_to and whatsapp_api_token to enable. ")
-      + (a.preview_is_real ? "Preview of your latest outage:" : "Sample preview (no outages recorded yet):");
+    $("wa-note").innerHTML = (a.whatsapp_configured ? "Sent when the internet comes back. "
+      : 'Off. Add your number and the bridge token to turn it on. <button type="button" class="linkbtn" data-open-settings="whatsapp">Set up</button> ')
+      + (a.preview_is_real ? "This is the report for your latest outage." : "Sample report, as no outages are recorded yet.");
     $("wa-preview").innerHTML = waFormat(a.preview);
   }
 
@@ -858,7 +1021,7 @@
     st.textContent = text;
   }
 
-  async function openSettings() {
+  async function openSettings(section) {
     const dlg = $("settings");
     settingsStatus("");
     $("settings-body").innerHTML = '<p class="muted">Loading…</p>';
@@ -878,6 +1041,7 @@
           <div>${fieldControl(f, settingsData.values[f.key])}</div>
           ${f.help ? `<p class="help">${esc(f.help)}</p>` : ""}<p class="err" hidden></p></div>`).join("")}</fieldset>`).join("");
     settingsDirty();
+    if (section) document.getElementById(`sec-${section}`).scrollIntoView({ block: "start" });
   }
   function closeSettings() {
     if (Object.keys(settingsChanges()).length && !confirm("Discard unsaved changes?")) return;
@@ -885,6 +1049,10 @@
   }
 
   $("btn-settings").addEventListener("click", () => openSettings());
+  root.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-open-settings]");
+    if (b) openSettings(b.dataset.openSettings);
+  });
   $("settings-close").addEventListener("click", closeSettings);
   $("settings-cancel").addEventListener("click", closeSettings);
   $("settings").addEventListener("cancel", (e) => { e.preventDefault(); closeSettings(); });
@@ -958,7 +1126,7 @@
     selMonth = key;
     document.querySelectorAll("#month-rows tr").forEach((tr) => tr.classList.toggle("sel", tr.dataset.month === key));
     const tr = document.querySelector(`#month-rows tr[data-month="${key}"]`);
-    $("btn-month-send").textContent = `Send ${tr ? tr.dataset.label : key} report`;
+    $("btn-month-send").textContent = `Send the ${tr ? tr.dataset.label : key} report`;
     const r = await api(`api/monthly_report?month=${key}`);
     $("month-preview").innerHTML = waFormat(r.text);
   }
@@ -990,6 +1158,11 @@
   });
 
   $("btn-more-tests").addEventListener("click", () => { showAllTests = true; renderTests(); });
+  document.querySelectorAll(".unfold").forEach((b) => b.addEventListener("click", () => {
+    const chat = b.previousElementSibling;
+    b.textContent = chat.classList.toggle("folded") ? "Show the whole message" : "Fold it up";
+  }));
+  $("btn-more-ips").addEventListener("click", () => { showAllIps = true; renderIps(); });
   $("lookup-form").addEventListener("submit", (e) => { e.preventDefault(); lookup(fromLocalInput($("lookup-at").value)); });
   osDark.addEventListener("change", () => applyTheme());
   addEventListener("focus", () => applyTheme());

@@ -79,13 +79,13 @@ to preview its report, or send it now.
 Open **Net Monitor** in the Home Assistant sidebar (enable *Show in sidebar* on the
 add-on page). It follows Home Assistant's light/dark theme.
 
-- Live status: online-for counter, latency / jitter / loss, 30-minute latency sparkline.
+- Live status: online-for counter, a plain-language verdict (Smooth / A bit sluggish / Struggling), whether browsing, streaming, calls and games work right now, and a 30-minute response-time line.
 - Latest speed as a share of your plan, and a live progress readout during tests.
 - Uptime strip for the selected range (hover a bar for details).
 - Report card: A–F grade (60% speed vs plan, 40% uptime), averages, share of tests
   below half of plan, longest outage, slowest and fastest hour of day.
 - Speed chart with your plan as a dashed line. Drag to zoom, double-click to reset.
-- Connection quality chart (latency, jitter, packet loss).
+- Connection quality: a strip of how the line felt (Smooth / Sluggish / Poor / Down), response time, steadiness and lost data rated Good / Fair / Poor, and the worst rough patches.
 - Best & worst times heatmap: average download by weekday × hour, last 30 days.
 - "What was my internet like at…" lookup, ISP / public IP history, outage and
   speedtest tables with CSV export.

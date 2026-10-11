@@ -12,12 +12,12 @@
   <header class="brand reveal">
     <div>
       <h1>Net Monitor</h1>
-      <p class="sub">International connection · Singapore</p>
+      <p class="sub">Your international connection, measured against Singapore</p>
     </div>
     <div class="actions">
       <div class="menu" id="pause-menu">
         <button class="btn ghost" id="btn-pause" aria-haspopup="true" aria-expanded="false">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span id="pause-label">Pause</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span id="pause-label">Pause tests</span>
         </button>
         <div class="menu-list" role="menu" hidden>
           <button role="menuitem" data-min="60">Pause for 1 hour</button>
@@ -45,14 +45,14 @@
           <div class="conn-since" id="conn-since">&nbsp;</div>
         </div>
       </div>
-      <div class="mini-stats">
-        <div><span class="k">Latency</span><span class="v" id="q-latency">—</span></div>
-        <div><span class="k">Jitter</span><span class="v" id="q-jitter">—</span></div>
-        <div><span class="k">Packet loss</span><span class="v" id="q-loss">—</span></div>
+      <div class="verdict" id="verdict">
+        <p class="verdict-title" id="verdict-title">&nbsp;</p>
+        <p class="verdict-text" id="verdict-text">&nbsp;</p>
       </div>
+      <ul class="uses" id="uses" aria-label="What works right now"></ul>
       <div class="spark-wrap">
-        <canvas id="spark" aria-label="Latency, last 30 minutes"></canvas>
-        <span class="spark-label">Latency · last 30 min</span>
+        <div class="spark-head"><span>Response time, last 30 minutes</span><span id="spark-now"></span></div>
+        <canvas id="spark" aria-label="Response time, last 30 minutes"></canvas>
       </div>
     </article>
 
@@ -71,7 +71,7 @@
           <span class="muted small" id="sp-up-pct">&nbsp;</span>
         </div>
       </div>
-      <div class="speed-foot" id="speed-foot">&nbsp;</div>
+      <dl class="speed-foot" id="speed-foot"></dl>
       <div class="live" id="live" hidden>
         <div class="live-head"><span id="live-phase">Connecting…</span><span id="live-value"></span></div>
         <div class="live-steps">
@@ -84,18 +84,18 @@
 
   <nav class="toolbar reveal" aria-label="Time range">
     <div class="chips" role="radiogroup" aria-label="Range">
-      <button class="chip" data-range="86400" role="radio">24h</button>
-      <button class="chip" data-range="604800" role="radio">7d</button>
-      <button class="chip" data-range="2592000" role="radio">30d</button>
-      <button class="chip" data-range="7776000" role="radio">90d</button>
-      <button class="chip" data-range="31536000" role="radio">1y</button>
+      <button class="chip" data-range="86400" role="radio">24 hours</button>
+      <button class="chip" data-range="604800" role="radio">7 days</button>
+      <button class="chip" data-range="2592000" role="radio">30 days</button>
+      <button class="chip" data-range="7776000" role="radio">90 days</button>
+      <button class="chip" data-range="31536000" role="radio">1 year</button>
       <button class="chip" data-range="custom" role="radio">Custom</button>
     </div>
     <div class="custom" id="custom-range" hidden>
       <input type="datetime-local" id="custom-from" aria-label="From">
-      <span class="muted">→</span>
+      <span class="muted">to</span>
       <input type="datetime-local" id="custom-to" aria-label="To">
-      <button class="btn" id="btn-apply-range">Apply</button>
+      <button class="btn" id="btn-apply-range">Show</button>
     </div>
     <span class="range-label muted" id="range-label"></span>
   </nav>
@@ -110,9 +110,43 @@
     <div class="legend">
       <span><i class="dotk good"></i>No downtime</span>
       <span><i class="dotk warn"></i>Some downtime</span>
-      <span><i class="dotk bad"></i>Major downtime (&gt;5%)</span>
+      <span><i class="dotk bad"></i>Down more than 5%</span>
       <span><i class="dotk none"></i>Not monitored</span>
     </div>
+  </section>
+
+  <section class="card reveal" id="quality-card">
+    <div class="card-head">
+      <div>
+        <h2>Connection quality</h2>
+        <p class="muted small head-note">How the line felt while it was up: speed of response, steadiness and lost data.</p>
+      </div>
+      <span class="head-value" id="quality-headline">—</span>
+    </div>
+    <div class="strip" id="qstrip" role="img" aria-label="Connection quality per period"></div>
+    <div class="strip-axis"><span id="qstrip-start"></span><span id="qstrip-end"></span></div>
+    <div class="legend">
+      <span><i class="dotk good"></i>Smooth</span>
+      <span><i class="dotk warn"></i>Sluggish</span>
+      <span><i class="dotk bad"></i>Poor</span>
+      <span><i class="dotk down"></i>Down</span>
+      <span><i class="dotk none"></i>No data</span>
+    </div>
+    <div class="qstats" id="qstats"></div>
+    <div class="rough" id="rough"></div>
+  </section>
+
+  <section class="card reveal">
+    <div class="card-head">
+      <h2>Speed</h2>
+      <div class="legend" id="speed-legend"></div>
+    </div>
+    <div class="chart-wrap" id="speed-wrap">
+      <canvas id="speed-chart" aria-label="Download and upload speed over time"></canvas>
+      <div class="zoom-box" id="zoom-box" hidden></div>
+    </div>
+    <p class="hint muted small" id="speed-hint">Drag across the chart to zoom in. Double-click to zoom back out.</p>
+    <p class="empty" id="speed-empty" hidden>No speedtests in this range yet.</p>
   </section>
 
   <section class="card report reveal">
@@ -129,54 +163,53 @@
     </div>
   </section>
 
-  <section class="card reveal">
-    <div class="card-head">
-      <h2>Speed</h2>
-      <div class="legend" id="speed-legend"></div>
-    </div>
-    <div class="chart-wrap" id="speed-wrap">
-      <canvas id="speed-chart" aria-label="Download and upload speed over time"></canvas>
-      <div class="zoom-box" id="zoom-box" hidden></div>
-    </div>
-    <p class="hint muted small" id="speed-hint">Drag across the chart to zoom · double-click to reset</p>
-    <p class="empty" id="speed-empty" hidden>No speedtests in this range yet.</p>
-  </section>
-
   <section class="grid-2">
     <article class="card reveal">
       <div class="card-head">
-        <h2>Connection quality</h2>
-        <div class="legend" id="quality-legend"></div>
-      </div>
-      <div class="chart-wrap small"><canvas id="latency-chart" aria-label="Latency and jitter over time"></canvas></div>
-      <div class="chart-wrap tiny"><canvas id="loss-chart" aria-label="Packet loss over time"></canvas></div>
-    </article>
-    <article class="card reveal">
-      <div class="card-head">
-        <h2>Best &amp; worst times</h2>
-        <span class="muted small">Avg download · last 30 days</span>
+        <h2>Best and worst times</h2>
+        <span class="muted small">Average download, last 30 days</span>
       </div>
       <div class="heatmap" id="heatmap"></div>
       <div class="heat-legend" id="heat-legend"></div>
     </article>
-  </section>
-
-  <section class="grid-2">
     <article class="card reveal">
       <div class="card-head"><h2>What was my internet like at…</h2></div>
       <form class="lookup" id="lookup-form">
         <input type="datetime-local" id="lookup-at" required aria-label="Date and time">
         <button class="btn primary" type="submit">Look up</button>
       </form>
-      <div id="lookup-result" class="lookup-result"></div>
-    </article>
-    <article class="card reveal">
-      <div class="card-head"><h2>ISP &amp; public IP</h2></div>
-      <div class="table-wrap">
-        <table><thead><tr><th>Since</th><th>Public IP</th><th>ISP</th></tr></thead><tbody id="ip-rows"></tbody></table>
-      </div>
+      <div id="lookup-result" class="lookup-result"><p class="muted small">Pick a moment, for example when a game lagged or a call dropped, to see whether the line was up and how fast it was around then.</p></div>
     </article>
   </section>
+
+  <section class="card reveal">
+    <div class="card-head">
+      <h2>Outages</h2>
+      <a class="link" id="export-outages" href="#">Export CSV</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Went down</th><th>Came back</th><th class="num">Lasted</th><th>What happened</th><th>Speed when it came back</th></tr></thead>
+        <tbody id="outage-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card reveal">
+    <div class="card-head">
+      <h2>Speedtests</h2>
+      <a class="link" id="export-tests" href="#">Export CSV</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th class="num">Download</th><th>vs plan</th><th class="num">Upload</th><th class="num">Ping</th><th class="num">Jitter</th><th class="num">Loss</th><th>Server</th><th>Why it ran</th><th></th></tr></thead>
+        <tbody id="test-rows"></tbody>
+      </table>
+    </div>
+    <button class="btn ghost more" id="btn-more-tests" hidden>Show all</button>
+  </section>
+
+  <h2 class="group-title reveal">Alerts and reports</h2>
 
   <section class="grid-2">
     <article class="card reveal">
@@ -189,15 +222,16 @@
       </div>
       <p class="small muted" id="announce-result" aria-live="polite"></p>
       <p class="small muted">Alexa needs Amazon's servers, so it can't speak while the international link is down.
-        The “down” warning is then spoken by the phone instead (Home Assistant app, persistent connection on).</p>
+        The “down” warning is then spoken by your phone instead, if you've picked one in Settings.</p>
     </article>
     <article class="card reveal">
       <div class="card-head">
         <h2>WhatsApp outage report</h2>
-        <button class="btn" id="btn-wa-test">Send test</button>
+        <button class="btn" id="btn-wa-test">Send a test</button>
       </div>
       <p class="small muted" id="wa-note"></p>
-      <div class="wa-chat"><div class="wa-bubble" id="wa-preview"></div></div>
+      <div class="wa-chat folded"><div class="wa-bubble" id="wa-preview"></div></div>
+      <button type="button" class="btn ghost unfold">Show the whole message</button>
       <p class="small muted" id="wa-result" aria-live="polite"></p>
     </article>
   </section>
@@ -213,38 +247,25 @@
           <thead><tr><th>Month</th><th>Grade</th><th class="num">Speed vs plan</th><th class="num">Uptime</th><th class="num">Outages</th><th class="num">Down</th></tr></thead>
           <tbody id="month-rows"></tbody>
         </table>
-        <p class="small muted">Sent on WhatsApp on the 1st of each month. Click a month to preview its report.</p>
+        <p class="small muted">Sent on WhatsApp on the 1st of each month. Pick a month to preview its report.</p>
         <p class="small muted" id="month-result" aria-live="polite"></p>
       </div>
-      <div class="wa-chat"><div class="wa-bubble" id="month-preview"></div></div>
+      <div>
+        <div class="wa-chat folded"><div class="wa-bubble" id="month-preview"></div></div>
+        <button type="button" class="btn ghost unfold">Show the whole message</button>
+      </div>
     </div>
   </section>
 
   <section class="card reveal">
     <div class="card-head">
-      <h2>Outages</h2>
-      <a class="link" id="export-outages" href="#">Export CSV</a>
+      <h2>ISP and public IP</h2>
+      <span class="muted small" id="ip-sub"></span>
     </div>
     <div class="table-wrap">
-      <table>
-        <thead><tr><th>From</th><th>To</th><th class="num">Duration</th><th>Type</th><th>Came back with</th></tr></thead>
-        <tbody id="outage-rows"></tbody>
-      </table>
+      <table><thead><tr><th>Since</th><th>Public IP</th><th>ISP</th></tr></thead><tbody id="ip-rows"></tbody></table>
     </div>
-  </section>
-
-  <section class="card reveal">
-    <div class="card-head">
-      <h2>Speedtests</h2>
-      <a class="link" id="export-tests" href="#">Export CSV</a>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Time</th><th class="num">Download</th><th>vs plan</th><th class="num">Upload</th><th class="num">Ping</th><th class="num">Jitter</th><th class="num">Loss</th><th>Server</th><th>Trigger</th><th></th></tr></thead>
-        <tbody id="test-rows"></tbody>
-      </table>
-    </div>
-    <button class="btn ghost more" id="btn-more-tests" hidden>Show all</button>
+    <button class="btn ghost more" id="btn-more-ips" hidden>Show all</button>
   </section>
 
   <footer class="foot" id="foot"></footer>
