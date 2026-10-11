@@ -19,6 +19,9 @@ aligned to 112x112 and turned into a 512-number fingerprint by InsightFace's
 MobileFaceNet (w600k_mbf; its weights are for non-commercial use, which a home system
 is). The answer per face: [score, x, y, w, h, landmarks (10), sharpness, frontal,
 fingerprint (512)], positions normalised to the picture.
+
+Who (model "who"): a model trained on this home's own footage, /config/models/who.onnx,
+turns a person crop (exactly 128x256) into a 256-number fingerprint: [[256 floats]].
 """
 
 import json
@@ -183,6 +186,24 @@ def frontal(k):
     return max(0.0, 1.0 - off * 2)
 
 
+class Who:
+    """Who-model (trained on this home's own footage, /config/models/who.onnx): a person
+    crop, 128x256 RGB, to a 256-number fingerprint of unit length."""
+    size = 256
+
+    def __init__(self, path):
+        self.sess = session(path)
+        self.inp = self.sess.get_inputs()[0].name
+
+    def detect(self, data, w, h):
+        if (w, h) != (128, 256):
+            return []
+        x = np.frombuffer(data, np.uint8).reshape(h, w, 3).astype(np.float32).transpose(2, 0, 1)[None]
+        v = self.sess.run(None, {self.inp: x})[0][0]
+        v = v / (np.linalg.norm(v) + 1e-9)
+        return [[round(float(a), 5) for a in v]]
+
+
 def main():
     ort.set_default_logger_severity(3)  # errors only
     models = {"scan": Model(MODEL)}
@@ -196,7 +217,8 @@ def main():
     if os.path.isdir(custom):
         for f in sorted(os.listdir(custom)):
             if f.endswith(".onnx"):
-                models[f[:-5]] = Model(os.path.join(custom, f))
+                path = os.path.join(custom, f)
+                models[f[:-5]] = Who(path) if f == "who.onnx" else Model(path)
     out = sys.stdout
     out.write(json.dumps({"ready": True, "size": models["scan"].size,
                           "models": {k: m.size for k, m in models.items()}}) + "\n")
