@@ -117,7 +117,7 @@ test('alert message test sends a made-up pitch in the given layout, and rejects 
   assert.equal((await s.post('/api/test-alert', {})).status, 200);
   assert.match(s.sent[0][1], /^🧪 \*Test alert\* \(made-up pitch\)\n\n🟦 \*AotF\* · 🚨 \*Duplicate\*\n/);
   assert.equal((await s.post('/api/test-alert', { template: '{site}: {new_title} ({confidence})\nExtra: {old_link}' })).status, 200);
-  assert.ok(s.sent[1][1].endsWith('AotF: A Bronx mother was allegedly pushed off a 15th-floor balcony holding her baby, and a neighbor says she heard someone pl… (92%)\nExtra: https://docs.google.com/spreadsheets/d/example/edit#gid=0&range=F7'));
+  assert.ok(s.sent[1][1].endsWith('AotF: A Bronx mother was allegedly pushed off a 15th-floor balcony holding her baby, and a neighbor says she heard someone plead (92%)\nExtra: https://docs.google.com/spreadsheets/d/example/edit#gid=0&range=F7'));
   const bad = await s.post('/api/test-alert', { template: 'Hi {writer}' });
   assert.equal(bad.status, 400); assert.match((await bad.json()).error, /unknown placeholder \{writer\}/);
   assert.equal(s.sent.length, 2);

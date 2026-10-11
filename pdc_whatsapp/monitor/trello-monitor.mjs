@@ -363,7 +363,7 @@ export function buildMonitorAlert(job, qualifies = () => true, site = TRELLO_SIT
   const findings = all.some(qualifies) ? all.filter(qualifies) : all;
   if (!findings.length) throw new Error('No findings to notify');
   const best = findings[0], old = best.candidate;
-  const title = s => { const t = clean(s, 500); return t.length > 120 ? t.slice(0, 119).trimEnd() + '…' : t; };
+  const title = s => clean(s, 500);
   const v = {
     site: site.label, site_emoji: site.emoji || '▪️',
     match: { duplicate: '🚨 *Duplicate*', same_story: '⚠️ *Similar story*' }[best.verdict] || '💡 *Possible overlap*',
