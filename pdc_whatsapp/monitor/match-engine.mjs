@@ -256,7 +256,7 @@ const SCHED_VERDICT_RUBRIC = [
   '5. When in doubt between "same_story" and "near_miss", choose "near_miss".',
 ];
 const SCHED_VERDICT_SCHEMA_LINE =
-  '{"results":[{"id":<integer>,"verdict":"duplicate"|"same_story"|"near_miss"|"different","confidence":<0-100>,"reason":"<one short sentence naming the specific overlap or the specific difference>"}]}';
+  '{"results":[{"id":<integer>,"verdict":"duplicate"|"same_story"|"near_miss"|"different","confidence":<0-100>}]}';
 
 function schedBuildAuditPrompt(targetRow, candidates) {
   const list = candidates.map((c, i) =>
