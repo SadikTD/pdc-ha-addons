@@ -18,7 +18,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
 import { runPitchMonitor, monitorLLM, withMonitorSettings, loadMonitorCards, monitorTrelloGet, formatPitchTime, TRELLO_SITE } from './monitor/trello-monitor.mjs';
-import { AOTF_SITE, OS_SITE } from './monitor/pitch-sources.mjs';
+import { AOTF_SITE, OS_SITE, loadAotfHistory } from './monitor/pitch-sources.mjs';
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
 import { monitorEngine } from './monitor/match-engine.mjs';
 import { DATA, log, remoteApi } from './bridge.mjs';
@@ -40,6 +40,74 @@ export const SITES = [TRELLO_SITE, AOTF_SITE, OS_SITE];
 const siteName = site => `${site.label} (${site.platform})`;
 const service = host => SERVICES[host] || host;
 const minutes = ms => `${Math.max(1, Math.round(ms / 60000))} min`;
+
+// Older pitches, up to HISTORY_DAYS back, that new ones are compared against
+// (never checked themselves). WGTC and OS come from the Worker's shared pitch
+// list, the same one the website uses: only what changed since the last scan
+// is downloaded, and the copy is kept in `file`. AotF re-reads its sheet's
+// archive every AOTF_EVERY. A failure keeps the last copy and is reported once.
+export const HISTORY_DAYS = 90;
+const AOTF_EVERY = 15 * 60000;
+const SHARED = { wgtc: 'trello', os: 'asana' };
+export function createHistory({ remote, file, fetcher = fetch, clock = Date.now, onProblem = () => {} }) {
+  let saved = {};
+  try { saved = JSON.parse(readFileSync(file, 'utf8')); } catch { /* first run */ }
+  const lists = { trello: saved.trello || { after: '', items: {} }, asana: saved.asana || { after: '', items: {} } };
+  const cards = { trello: new Map(), asana: new Map() }; // kept across scans: normalized once
+  const aotf = { at: 0, cards: [] };
+  const save = () => { try { writeFileSync(file + '.tmp', JSON.stringify(lists)); renameSync(file + '.tmp', file); } catch { /* next scan */ } };
+
+  async function pull(source) {
+    const s = lists[source];
+    let sync = true, changed = false;
+    for (let i = 0; i < 200; i++) {
+      const res = await remote(`/bridge/pitches?source=${source}&after=${encodeURIComponent(s.after)}${sync ? '&sync=1' : ''}`);
+      if (!res.ok) throw new Error(`the shared pitch list didn't answer (${res.status})`);
+      const info = await res.json();
+      for (const [id, created, row] of info.rows) {
+        if (row) s.items[id] = [created, row]; else delete s.items[id];
+        cards[source].delete(id);
+        changed = true;
+      }
+      s.after = info.after;
+      if (info.more) { sync = false; continue; }
+      if (info.building && info.error) throw new Error(info.error);
+      if (info.building) { sync = true; continue; }
+      break;
+    }
+    const cutoff = clock() - HISTORY_DAYS * 86400000;
+    for (const id of Object.keys(s.items)) if (s.items[id][0] < cutoff) { delete s.items[id]; cards[source].delete(id); changed = true; }
+    if (changed) save();
+  }
+  const asCard = (source, label, id, [created, r]) => ({
+    id, name: r.t, desc: (r.l || []).join(' '), idList: 'history', closed: false, shortUrl: r.e || '',
+    _listName: r.s || '', _writer: r.w || 'Unassigned', _site: label, _created: new Date(created).toISOString(),
+  });
+
+  return async function history(site) {
+    try {
+      if (site.id === 'aotf') {
+        if (clock() - aotf.at >= AOTF_EVERY) { aotf.cards = await loadAotfHistory(HISTORY_DAYS, fetcher, clock); aotf.at = clock(); }
+        onProblem(site, null);
+        return aotf.cards;
+      }
+      const source = SHARED[site.id];
+      if (!source) return [];
+      await pull(source);
+      onProblem(site, null);
+    } catch (e) {
+      onProblem(site, `Older pitches (up to ${HISTORY_DAYS} days) couldn't be updated, so the last copy was used: ${String(e?.message || e).slice(0, 160)}`);
+      if (site.id === 'aotf') return aotf.cards;
+    }
+    const source = SHARED[site.id], out = [];
+    for (const [id, item] of Object.entries(lists[source].items)) {
+      let c = cards[source].get(id);
+      if (!c) cards[source].set(id, c = asCard(source, site.label, id, item));
+      out.push(c);
+    }
+    return out;
+  };
+}
 
 // fetch with a deadline that also covers reading the body, so no outside call
 // can hold a run forever. Records what is in flight for the stall report.
@@ -141,7 +209,7 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
   const remote = remoteApi(options, fetcher);
   const runLimit = limits.run ?? RUN_LIMIT, staleAlert = limits.stale ?? STALE_ALERT;
   // Each site's calls are tracked on their own, so a stall names the right service.
-  const inFlight = Object.fromEntries(sites.map(s => [s.id, new Set()]));
+  const inFlight = Object.fromEntries([...sites.map(s => [s.id, new Set()]), ['history', new Set()]]);
   const guard = id => guardedFetch(retryReads(limits.fetch || fetch), inFlight[id], limits.call ?? CALL_LIMIT);
   const guarded = Object.fromEntries(sites.map(s => [s.id, guard(s.id)]));
   const engineFor = site => engine || { ...monitorEngine, call: (prompt, e, _fetcher, meta) => monitorLLM(prompt, e, guarded[site.id], meta) };
@@ -149,7 +217,23 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
     [TRELLO_SITE.id]: dependencies.load || (e => loadMonitorCards(e, (path, params, e2) => monitorTrelloGet(path, params, e2, guarded[TRELLO_SITE.id]))),
     ...Object.fromEntries(sites.filter(s => s !== TRELLO_SITE).map(s => [s.id, dependencies.loaders?.[s.id] || (e => s.load(e, guarded[s.id]))])),
   };
-  const depsFor = site => ({ ...dependencies, load: loaders[site.id] });
+  // Like scans, a history update is only reported after failing 3 times in a
+  // row (scans meanwhile use the last copy), and once more when it recovers.
+  const historyFails = {};
+  const history = dependencies.history || createHistory({
+    remote, file: `${DATA}/pitch-history.json`, fetcher: guard('history'), clock,
+    onProblem: (site, message) => {
+      const n = historyFails[site.id] || 0;
+      if (!message) {
+        if (n >= 3) { log(`${site.label}: older pitches are updating again`); events.add('history_ok', `${site.label}: older pitches (up to ${HISTORY_DAYS} days) are updating again`); }
+        historyFails[site.id] = 0;
+        return;
+      }
+      historyFails[site.id] = n + 1;
+      if (n + 1 === 3) { log(`${site.label}: ${message}`); events.add('history_error', `${site.label}: ${message}`); }
+    },
+  });
+  const depsFor = site => ({ ...dependencies, load: loaders[site.id], history });
   let general = null, moving = false, timer = null, watchTimer = null;
   // Per site: the run in progress, hangs in a row, the current problem, and
   // when this add-on first tried it (so a site that has never worked alerts too).

@@ -1,10 +1,13 @@
 // Cloud-only state. This module never mutates Trello.
+import { SOCIAL_KEY, linkReason } from './match-engine.mjs';
 const LIST_NAMES = ['Up For Grabs (Priority)', 'Pitched', 'Approved', 'Writing - 3 Days or Less (3 card max)'];
 const ID = /^[a-f0-9]{24}$/;
 const now = () => Math.floor(Date.now() / 1000);
 const changed = r => Number(r.meta?.changes || 0) > 0;
 const clean = (s, n = 180) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
 const titleKey = s => clean(s, 5000).normalize('NFKC').toLowerCase();
+// Same headline once punctuation, quotes and spacing are ignored (as on the website).
+const headlineKey = s => titleKey(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const sql = (db, query, ...args) => db.prepare(query).bind(...args);
 
 // ---------------------------------------------------------------------------
@@ -172,7 +175,8 @@ export async function loadMonitorCards(env, get = monitorTrelloGet) {
   const cutoffId = Math.floor(cutoff.getTime() / 1000).toString(16).padStart(8, '0') + '0000000000000000';
   const scans = [
     ...lists.filter(l => watched.includes(l.id)).map(list => ({ list, active: true })),
-    ...lists.map(list => ({ list, active: false })),
+    // Squelched cards are dropped pitches: never compared against.
+    ...lists.filter(l => !/squelch/i.test(l.name || '')).map(list => ({ list, active: false })),
   ];
   for (const { list, active } of scans) {
     let before;
@@ -231,13 +235,23 @@ export async function checkMonitorCard(card, cards, env, engine, meta = {}) {
   if (!target) throw new Error('Card title is not ready');
   const candidates = cards.filter(c => c.id !== card.id).map(c => candidateOf(c, engine)).filter(c => c.title);
   meta.compared = candidates.length;
-  const exact = candidates.filter(c => titleKey(c.title) === titleKey(target.title) ||
-    (target.normalizedUrl && c.normalizedUrl === target.normalizedUrl));
+  // Same headline, or the same source link: no AI needed. A plain (non-social)
+  // link in 5+ pitches is template text like a style guide, not a source.
+  const uses = new Map();
+  for (const c of candidates) for (const k of c.linkKeys || []) uses.set(k, (uses.get(k) || 0) + 1);
+  const keys = new Set((target.linkKeys || []).filter(k => SOCIAL_KEY.test(k) || (uses.get(k) || 0) < 5));
+  const tk = headlineKey(target.title);
+  const exact = candidates.flatMap(c => {
+    if (headlineKey(c.title) === tk) return [{ candidate: c, verdict: 'duplicate', confidence: 100, reason: 'Same headline' }];
+    const k = (c.linkKeys || []).find(x => keys.has(x));
+    return k ? [{ candidate: c, verdict: 'duplicate', confidence: 100, reason: linkReason(k) }] : [];
+  });
   if (exact.length) {
     meta.method = 'exact';
-    return exact.map(candidate => ({ candidate, verdict: 'duplicate', confidence: 100, reason: 'Exact title or source URL match' }));
+    return withSameSource(exact, candidates);
   }
-  const shortlist = engine.shortlist(target.keywords, candidates);
+  const recentSince = Date.now() - effectiveSettings(env).reference_days * 86400000;
+  const shortlist = engine.shortlist(target.keywords, candidates, { recentSince, handles: target.handles || [] });
   meta.shortlisted = shortlist.length;
   meta.method = shortlist.length ? 'ai' : 'keywords';
   if (!shortlist.length) return [];
@@ -246,13 +260,32 @@ export async function checkMonitorCard(card, cards, env, engine, meta = {}) {
     throw new Error(`Incomplete AI verdict (${meta.engine || 'AI'}: ${!parsed ? 'unreadable JSON' : `${Array.isArray(parsed.results) ? parsed.results.length : 0} of ${shortlist.length} answers`}); retry pending`);
   }
   const seen = new Set();
-  return parsed.results.map(item => {
+  const found = parsed.results.map(item => {
     if (!Number.isInteger(item.id) || item.id < 1 || item.id > shortlist.length || seen.has(item.id) ||
         !['duplicate', 'same_story', 'near_miss', 'different'].includes(item.verdict) ||
         !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 100) throw new Error('Invalid AI verdict; retry pending');
     seen.add(item.id);
     return { candidate: shortlist[item.id - 1], verdict: item.verdict, confidence: item.confidence, reason: clean(item.reason, 250) };
-  }).filter(f => f.verdict !== 'different').sort((a, b) => b.confidence - a.confidence);
+  });
+  return withSameSource(found.filter(f => f.verdict !== 'different'), candidates).sort((a, b) => b.confidence - a.confidence);
+}
+
+// A duplicate's social post settles the rest: every other pitch on the same
+// TikTok/Instagram/X post is a duplicate too, whatever the AI called it.
+function withSameSource(found, candidates) {
+  const via = new Map();
+  for (const f of found) if (f.verdict === 'duplicate') for (const k of f.candidate.linkKeys || []) if (SOCIAL_KEY.test(k) && !via.has(k)) via.set(k, f);
+  if (!via.size) return found;
+  const dup = new Set(found.filter(f => f.verdict === 'duplicate').map(f => f.candidate));
+  const extra = [];
+  for (const c of candidates) {
+    const k = !dup.has(c) && (c.linkKeys || []).find(x => via.has(x));
+    if (!k) continue;
+    const f = via.get(k);
+    extra.push({ candidate: c, verdict: 'duplicate', confidence: f.confidence, reason: `${linkReason(k)} as "${clean(f.candidate.title, 80)}"` });
+  }
+  const moved = new Set(extra.map(e => e.candidate));
+  return [...found.filter(f => !moved.has(f.candidate)), ...extra];
 }
 
 // Isolated provider calls: no shared audit budget or unbounded key rotation.
@@ -531,7 +564,12 @@ export async function runPitchMonitor(env, engine, dependencies = {}, site = TRE
   const report = { checked: 0, flagged: 0, accepted: 0 }, stats = { cards: 0 };
   try {
     const state = await sql(db, 'SELECT * FROM trello_monitor_state WHERE board_id=?', board).first();
-    const { cards, watched } = await (dependencies.load || site.load)(env);
+    const { cards: live, watched } = await (dependencies.load || site.load)(env);
+    // Older pitches (up to 90 days, add-on only) are compared against but never
+    // checked themselves; the live copy of a pitch wins.
+    const older = dependencies.history ? await dependencies.history(site, env) : [];
+    const ids = new Set(live.map(c => c.id)), sameDay = new Set(live.map(c => `${titleKey(c.name)}|${c._created || ''}`));
+    const cards = [...live, ...older.filter(c => !ids.has(c.id) && !sameDay.has(`${titleKey(c.name)}|${c._created || ''}`))];
     stats.cards = cards.length;
     const eligible = cards.filter(c => !c.closed && watched.includes(c.idList));
     // Baseline and marker commit atomically: a failed initial scan cannot seed a partial baseline.

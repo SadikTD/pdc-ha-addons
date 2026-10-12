@@ -219,3 +219,26 @@ test('one failed scan stays out of the Activity page; three in a row are reporte
   assert.deepEqual(errors(), ['monitor_error', 'monitor_ok']);
   m.stop(); s.monitor.stop();
 });
+
+test('older pitches: only changes are downloaded, removals stick, the copy survives a restart', async () => {
+  const { createHistory } = await import('./local-monitor.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'hist-')), file = join(dir, 'h.json');
+  const now = Date.UTC(2026, 9, 12), day = 86400000;
+  let calls = [], serve = [];
+  const remote = async path => { calls.push(path); return Response.json(serve.shift() || { rows: [], after: 'x', more: false, building: false }); };
+  const h = createHistory({ remote, file, clock: () => now });
+  const wgtc = { id: 'wgtc', label: 'WGTC' };
+  serve = [{ rows: [['c1', now - 10 * day, { t: 'Old pitch', w: 'Ann', s: 'Published', l: ['https://www.tiktok.com/@a/video/1'], e: 'https://trello.com/c/1' }], ['c2', now - 95 * day, { t: 'Too old' }]], after: '5.c2', more: false, building: false }];
+  let cards = await h(wgtc);
+  assert.deepEqual(cards.map(c => [c.id, c.name, c.idList, c._writer]), [['c1', 'Old pitch', 'history', 'Ann']]);
+  assert.match(calls[0], /source=trello&after=&sync=1/);
+  serve = [{ rows: [['c1', now - 10 * day, null]], after: '6.c1', more: false, building: false }];
+  assert.deepEqual(await h(wgtc), []);
+  assert.match(calls[1], /after=5\.c2/);
+  const again = createHistory({ remote, file, clock: () => now });
+  await again(wgtc);
+  assert.match(calls[2], /after=6\.c1/);
+  const failing = createHistory({ remote: async () => new Response('', { status: 503 }), file: join(dir, 'none.json'), clock: () => now, onProblem: (s, m) => { failing.msg = m; } });
+  assert.deepEqual(await failing(wgtc), []);
+  assert.match(failing.msg, /couldn't be updated/);
+});

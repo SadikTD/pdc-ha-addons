@@ -57,6 +57,8 @@ export async function sheetQuery(gid, query, fetcher = fetch) {
 }
 
 const cellText = c => (c?.v == null ? '' : clean(c.v, 2000));
+const SKIP = /^\s*skip\s*$/i;   // sheet Status of a dropped pitch
+const PASS = /^\s*pass\s*$/i;   // Asana Article Status of a dropped pitch
 // The spreadsheet's own time zone (File › Settings): every time in it is
 // California time, e.g. 9:04 PM in Bangladesh is typed in as 8:04 AM.
 // ponytail: fixed here; update it if the sheet's time zone setting ever changes.
@@ -139,6 +141,7 @@ export async function loadAotfRows(env, fetcher = fetch, clock = Date.now) {
   const read = (cells, tab, row) => {
     const name = cellText(cells[COL.title]);
     if (!name || titleKey(name) === 'proposed title') return null; // blank row, or a header that slipped through
+    if (SKIP.test(cellText(cells[COL.status]))) return null; // dropped pitch
     // A time is only used when its day matches the row's, in case rows moved between the two reads.
     const date = cellDate(cells[COL.date], row && times.get(row));
     const status = cellText(cells[COL.status]);
@@ -175,6 +178,32 @@ export async function loadAotfRows(env, fetcher = fetch, clock = Date.now) {
   }
   // Every row still on the Pitches tab is a current pitch, whatever its date.
   return { cards, watched: ['pitches'] };
+}
+
+// Up to `days` days of The Archive, for the add-on's 90-day history (read
+// every 15 minutes, not every scan). Same card shape and ids as above.
+export async function loadAotfHistory(days, fetcher = fetch, clock = Date.now) {
+  const bdtToday = Math.floor((clock() + 6 * 3600000) / DAY) * DAY;
+  const cutoff = bdtToday - days * DAY;
+  const rows = await sheetQuery(AOTF_TABS.archive, `select * where A >= date '${new Date(cutoff).toISOString().slice(0, 10)}'`, fetcher);
+  const seen = new Map(), cards = [];
+  for (const cells of rows) {
+    const name = cellText(cells[COL.title]);
+    const status = cellText(cells[COL.status]);
+    const date = cellDate(cells[COL.date]);
+    if (!name || titleKey(name) === 'proposed title' || SKIP.test(status) || !date || date.t < cutoff) continue;
+    const key = `archive|${titleKey(name)}`;
+    const n = (seen.get(key) || 0) + 1;
+    seen.set(key, n);
+    cards.push({
+      id: `a${await hash(key)}${n > 1 ? `x${n}` : ''}`, name, idList: 'history', closed: false,
+      desc: [cellText(cells[COL.source]), cellText(cells[COL.source2])].filter(Boolean).join('\n'),
+      shortUrl: `${SHEET_URL}/edit#gid=${AOTF_TABS.archive}`, _listName: status ? `${status} (archived)` : 'Archived',
+      _writer: cellText(cells[COL.writer]) || 'Unassigned', _site: 'AotF',
+      _created: new Date(date.t).toISOString(), _createdLabel: date.label,
+    });
+  }
+  return cards;
 }
 
 export const AOTF_SITE = {
@@ -236,6 +265,7 @@ export async function loadOsTasks(env, fetcher = fetch, clock = Date.now) {
     // Older tasks edited recently aren't recent pitches.
     if (!Number.isFinite(created) || created < cutoff) continue;
     const status = (t.custom_fields || []).find(f => f?.name === 'Article Status')?.display_value;
+    if (PASS.test(status || '')) continue; // dropped pitch
     const section = (t.memberships || []).find(m => m?.project?.gid === OS_PROJECT_ID)?.section?.name
       || (t.memberships || []).find(m => m?.section?.name)?.section?.name;
     cards.push({

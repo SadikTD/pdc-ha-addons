@@ -705,7 +705,7 @@ function openJob(key) {
       ${gapNote(j, b) ? `<p class="gap-note">${esc(gapNote(j, b))}</p>` : ''}</div>
       <div class="d-section"><h3>${j.findings.length === 1 ? 'Finding' : `${j.findings.length} findings`}</h3>
       ${j.findings.map(f => `<div class="finding v-${f.verdict}">${confRing(f.confidence)}<div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${chip(f.verdict)}<a class="link" href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a></div><p>${esc(f.reason || '')}</p></div></div>`).join('')}</div>`
-      : o === 'clear' ? `<div class="d-section"><div class="finding v-clear"><div class="conf" style="display:grid;place-items:center"><svg class="vi" style="width:30px;height:30px"><use href="#v-clear"/></svg></div><div><b>No duplicates found</b><p>${meta.method === 'keywords' ? `No other ${esc(site?.label || '')} pitch in the reference window shared enough keywords to need an AI comparison.` : `Compared with ${fmtN(meta.compared || 0)} ${esc(site?.label || '')} pitches${meta.shortlisted ? `; the AI reviewed the ${meta.shortlisted} closest` : ''} and found nothing that overlaps.`}</p></div></div></div>` : ''}
+      : o === 'clear' ? `<div class="d-section"><div class="finding v-clear"><div class="conf" style="display:grid;place-items:center"><svg class="vi" style="width:30px;height:30px"><use href="#v-clear"/></svg></div><div><b>No duplicates found</b><p>${meta.method === 'keywords' ? `No other ${esc(site?.label || '')} pitch from the last 90 days shared enough keywords to need an AI comparison.` : `Compared with ${fmtN(meta.compared || 0)} ${esc(site?.label || '')} pitches${meta.shortlisted ? `; the AI reviewed the ${meta.shortlisted} closest` : ''} and found nothing that overlaps.`}</p></div></div></div>` : ''}
     <div class="d-section"><h3>Timeline</h3><ol class="steps">${steps.map(s => `<li style="--c:${s.c}">${esc(s.t)}<small>${esc(s.d)}</small></li>`).join('')}</ol></div>
     ${msg ? `<div class="d-section"><h3>WhatsApp message</h3><div class="chat" style="padding:16px">${bubble(msg, { collapse: false })}</div></div>` : ''}
     <div class="d-section"><h3>Check details</h3><dl class="kv">
@@ -782,6 +782,8 @@ const EVENT_STYLE = {
   monitor_error: ['var(--critical)', 'Scan failed', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
   monitor_stuck: ['var(--critical)', 'Scan got stuck', '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'],
   monitor_ok: ['var(--good)', 'Scans working again', '<path d="m5 12 5 5 9-10"/>'],
+  history_error: ['var(--warning)', 'Older pitches not updated', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
+  history_ok: ['var(--good)', 'Older pitches updating again', '<path d="m5 12 5 5 9-10"/>'],
   monitor_alert: ['var(--info)', 'WhatsApp alert about scans', '<path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4 18-7Z"/>'],
 };
 function renderActivity() {
@@ -859,7 +861,7 @@ function renderSettings(force = false) {
       <div class="field"><div class="fl">Quiet hours<small>Hold alerts overnight and send them when the window ends (Bangladesh time)</small></div>
         <div class="pair">${toggle('quiet_on', quietOn, 'Quiet hours')}<input class="input time" type="time" name="q_from" value="${qFrom}" ${quietOn ? '' : 'disabled'} aria-label="From"><span class="muted">to</span><input class="input time" type="time" name="q_to" value="${qTo}" ${quietOn ? '' : 'disabled'} aria-label="To"></div>${err('quiet_hours')}</div>
       <div class="field"><div class="fl">Health alerts<small>WhatsApp you if scans stall, the AI fails, or an alert isn't delivered</small></div>${toggle('health_alerts', d.health_alerts, 'Health alerts')}</div>
-      <div class="field"><div class="fl">Reference window<small>How far back to look for earlier pitches on each site</small></div>
+      <div class="field"><div class="fl">Recent window<small>Pitches from these days match on fewer shared words. Every pitch from the last 90 days is always compared.</small></div>
         <div class="range"><input type="range" name="reference_days" min="1" max="14" step="1" value="${d.reference_days}"><output>${d.reference_days} d</output></div></div>
       ${st?.alertTemplate ? `<div class="field col"><label for="f-tpl">Alert message<small class="help" style="display:block;margin:2px 0 0;font-weight:400">How each WhatsApp alert looks. Words in {braces} are filled in for each pitch, and a line is left out when its {braces} come out empty. *Stars* make text bold.</small></label>
         <textarea class="input wide tpl" id="f-tpl" name="alert_template" rows="16" spellcheck="false">${esc(d.alert_template || st.alertTemplate.default)}</textarea>

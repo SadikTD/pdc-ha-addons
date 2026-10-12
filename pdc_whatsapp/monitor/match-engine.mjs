@@ -40,11 +40,8 @@ function schedNormalizeTrello(card, memberMap) {
   const title = String(card.name || '').trim();
   if (!title || title.length < 3) return null;
   const created = card._created ? new Date(card._created) : schedTrelloIdToDate(card.id);
-  let sourceUrl = '';
-  if (card.desc) {
-    const m = String(card.desc).match(/(https?:\/\/[^\s"'\)\]]+)/);
-    if (m) sourceUrl = m[0];
-  }
+  const links = schedExtractLinks(card.desc);
+  const sourceUrl = links[0] || '';
   let writer = '';
   if (Array.isArray(card.idMembers) && card.idMembers.length > 0) {
     const names = card.idMembers.map(id => memberMap[id]).filter(Boolean);
@@ -63,7 +60,69 @@ function schedNormalizeTrello(card, memberMap) {
     normalizedUrl: schedNormalizeUrl(sourceUrl),
     normalizedUrl2: '',
     keywords: schedExtractKeywords(title),
+    // Arrays, not Sets: findings (with their candidates) are stored as JSON.
+    linkKeys: [...new Set(links.map(schedLinkKey).filter(Boolean))],
+    handles: [...new Set(links.map(schedCreatorHandle).filter(Boolean))],
   };
+}
+
+// ---- Links. Same as the website (index.html): every link in a pitch counts,
+// and a social post becomes "platform:post id", so the same TikTok,
+// Instagram, X, Threads, YouTube or Reddit post matches however it was copied.
+function schedExtractLinks(text) {
+  const t = String(text || '');
+  const found = t.match(/https?:\/\/[^\s"'<>)\]]+/g);
+  if (found) return [...new Set(found)];
+  const bare = t.trim();
+  return /^[\w.-]+\.[a-z]{2,}\/\S+$/i.test(bare) ? [bare] : [];
+}
+function schedParseLink(url) {
+  try {
+    const raw = String(url || '').trim();
+    const u = new URL(/^https?:\/\//i.test(raw) ? raw : 'https://' + raw);
+    return { u, host: u.hostname.toLowerCase().replace(/^(www|m|mobile)\./, ''), p: u.pathname.split('/').filter(Boolean) };
+  } catch { return null; }
+}
+export const SOCIAL_KEY = /^(tiktok|tiktok-short|instagram|threads|x|youtube|reddit):/;
+function schedLinkKey(url) {
+  const l = schedParseLink(url);
+  if (!l) return schedNormalizeUrl(url);
+  const { u, host, p } = l;
+  const after = (word, rx = /./) => { const i = p.indexOf(word); return i >= 0 && rx.test(p[i + 1] || '') ? p[i + 1] : ''; };
+  let id;
+  if (host === 'tiktok.com') {
+    if ((id = after('video', /^\d+$/) || after('photo', /^\d+$/))) return 'tiktok:' + id;
+    if (p[0] === 't' && p[1]) return 'tiktok-short:' + p[1];
+  }
+  if ((host === 'vm.tiktok.com' || host === 'vt.tiktok.com') && p[0]) return 'tiktok-short:' + p[0];
+  if (host === 'instagram.com' && (id = after('p') || after('reel') || after('reels') || after('tv'))) return 'instagram:' + id;
+  if (/^threads\.(net|com)$/.test(host) && (id = after('post'))) return 'threads:' + id;
+  if (/^(x|twitter|fxtwitter|vxtwitter|fixupx)\.com$/.test(host) && (id = after('status', /^\d+$/))) return 'x:' + id;
+  if (host === 'youtube.com' || host === 'music.youtube.com') {
+    if (p[0] === 'watch' && u.searchParams.get('v')) return 'youtube:' + u.searchParams.get('v');
+    if (/^(shorts|live|embed)$/.test(p[0] || '') && p[1]) return 'youtube:' + p[1];
+  }
+  if (host === 'youtu.be' && p[0]) return 'youtube:' + p[0];
+  if (/(^|\.)reddit\.com$/.test(host) && (id = after('comments'))) return 'reddit:' + id.toLowerCase();
+  if (host === 'redd.it' && p[0]) return 'reddit:' + p[0].toLowerCase();
+  return schedNormalizeUrl(url);
+}
+// The creator behind a TikTok or Instagram link ("tiktok:@amy").
+function schedCreatorHandle(url) {
+  const l = schedParseLink(url);
+  if (!l) return '';
+  const { host, p } = l;
+  if (host === 'tiktok.com' && /^@[\w.]+$/.test(p[0] || '')) return 'tiktok:' + p[0].toLowerCase();
+  if (host === 'instagram.com') {
+    const name = p[0] === 'stories' ? p[1] : p[0];
+    if (name && !/^(p|reel|reels|tv|stories|explore|accounts)$/.test(name) && /^[\w.]+$/.test(name)) return 'instagram:@' + name.toLowerCase();
+  }
+  return '';
+}
+// "Same TikTok video" for a shared link key.
+export function linkReason(key) {
+  const what = { tiktok: 'TikTok video', 'tiktok-short': 'TikTok link', instagram: 'Instagram post', threads: 'Threads post', x: 'X/Twitter post', youtube: 'YouTube video', reddit: 'Reddit post' }[String(key).split(':')[0]];
+  return what ? `Same ${what}` : 'Same source link';
 }
 
 // ============================================================================
@@ -148,11 +207,17 @@ function schedKeywordOverlap(a, b) {
   return { proper, words, score: proper * 4 + words };
 }
 
-function schedStage2(inputKeywords, rows) {
+// Rows older than `recentSince` (ms) need a shared name plus more words, so
+// 90 days of titles don't fill the shortlist with loose matches. A row about
+// the same TikTok/Instagram creator always gets in, first.
+function schedStage2(inputKeywords, rows, { recentSince = 0, handles = [] } = {}) {
   const scored = [];
   for (const r of rows) {
     const o = schedKeywordOverlap(inputKeywords, r.keywords);
-    if (o.proper >= 1 || o.words >= 2) scored.push({ row: r, score: o.score });
+    const old = r.date && r.date.getTime() < recentSince;
+    const ok = old ? (o.proper >= 1 && o.words >= 3) : (o.proper >= 1 || o.words >= 2);
+    const creator = handles.length > 0 && (r.handles || []).some(h => handles.includes(h));
+    if (ok || creator) scored.push({ row: r, score: o.score + (creator ? 100 : 0) });
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, SCHED.CANDIDATE_CAP).map(s => s.row);
