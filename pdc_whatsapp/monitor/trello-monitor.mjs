@@ -250,8 +250,7 @@ export async function checkMonitorCard(card, cards, env, engine, meta = {}) {
     meta.method = 'exact';
     return withSameSource(exact, candidates);
   }
-  const recentSince = Date.now() - effectiveSettings(env).reference_days * 86400000;
-  const shortlist = engine.shortlist(target.keywords, candidates, { recentSince, handles: target.handles || [] });
+  const shortlist = engine.shortlist(target.keywords, candidates, { handles: target.handles || [] });
   meta.shortlisted = shortlist.length;
   meta.method = shortlist.length ? 'ai' : 'keywords';
   if (!shortlist.length) return [];

@@ -5,7 +5,7 @@
 // WhatsApp Bridge add-on (copied there as monitor/match-engine.mjs).
 
 const SCHED = {
-  CANDIDATE_CAP: 25,   // max shortlisted candidates sent to the AI per card
+  CANDIDATE_CAP: 15,   // max shortlisted candidates sent to the AI per card (ranked by rare shared words)
 };
 
 const SCHED_STOPWORDS = new Set([
@@ -207,18 +207,23 @@ function schedKeywordOverlap(a, b) {
   return { proper, words, score: proper * 4 + words };
 }
 
-// Rows older than `recentSince` (ms) need a shared name plus more words, so
-// 90 days of titles don't fill the shortlist with loose matches. A row about
+// Same as the website: shared words count by how rare they are across the
+// pitches compared against ("window seat" says more than "woman"), at least
+// two meaningful ones; a light stem matches "upgraded"/"upgrade". A pitch about
 // the same TikTok/Instagram creator always gets in, first.
-function schedStage2(inputKeywords, rows, { recentSince = 0, handles = [] } = {}) {
-  const scored = [];
-  for (const r of rows) {
-    const o = schedKeywordOverlap(inputKeywords, r.keywords);
-    const old = r.date && r.date.getTime() < recentSince;
-    const ok = old ? (o.proper >= 1 && o.words >= 3) : (o.proper >= 1 || o.words >= 2);
+const schedStem = w => (w.length > 4 ? w.replace(/ies$/, 'y').replace(/(ing|ed|es|s)$/, '') : w);
+const schedStems = kw => new Set([...(kw?.all || [])].map(schedStem));
+function schedStage2(inputKeywords, rows, { handles = [] } = {}) {
+  const df = new Map(), rowStems = rows.map(r => schedStems(r.keywords));
+  for (const s of rowStems) for (const w of s) df.set(w, (df.get(w) || 0) + 1);
+  const weight = w => Math.log((rows.length + 1) / ((df.get(w) || 0) + 1)), min = Math.log(rows.length + 1);
+  const stems = schedStems(inputKeywords), scored = [];
+  rows.forEach((r, i) => {
+    let score = 0;
+    for (const w of stems) if (rowStems[i].has(w)) score += weight(w);
     const creator = handles.length > 0 && (r.handles || []).some(h => handles.includes(h));
-    if (ok || creator) scored.push({ row: r, score: o.score + (creator ? 100 : 0) });
-  }
+    if (score >= min || creator) scored.push({ row: r, score: score + (creator ? 100 : 0) });
+  });
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, SCHED.CANDIDATE_CAP).map(s => s.row);
 }
