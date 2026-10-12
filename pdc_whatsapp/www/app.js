@@ -89,7 +89,7 @@ const TICK_SVG = {
   none: '<svg viewBox="0 0 24 24"><path d="M8 12h8" opacity=".6"/></svg>',
 };
 const ticks = send => { const t = SEND[send]?.tick || 'none'; return `<span class="ticks ${t === 'ok' ? 'ok' : t === 'warn' ? 'warn' : t === 'bad' ? 'bad' : ''}" title="${esc(SEND[send]?.label || send)}">${TICK_SVG[t]}</span>`; };
-const methodLabel = m => !m ? '—' : m.method === 'exact' ? 'Exact title / link match' : m.method === 'keywords' ? 'No similar keywords' : `AI${m.engine ? ` · ${m.engine}` : ''}`;
+const methodLabel = m => !m ? '—' : m.method === 'exact' ? 'Same headline or source post (no AI needed)' : m.method === 'keywords' ? 'No similar keywords' : `AI${m.engine ? ` · ${m.engine}` : ''}`;
 function source(key) {
   if (key.startsWith('trello:')) return { id: 'pitch', label: 'Pitch alert · WGTC', c: 'var(--critical)' };
   if (key.startsWith('pitch:')) return { id: 'pitch', label: `Pitch alert · ${SITE_LABEL[key.split(':')[1]] || key.split(':')[1]}`, c: 'var(--critical)' };
@@ -114,7 +114,9 @@ const serverNow = () => Date.now() + S.clockOffset;
 // (S.site) scopes Overview, Pitches and Activity; health always shows all.
 const SITE_LABEL = { wgtc: 'WGTC', aotf: 'AotF', os: 'OS' };
 const SITE_COLOR = { wgtc: 'var(--site-wgtc)', aotf: 'var(--site-aotf)', os: 'var(--site-os)' };
-const ITEMS = { Trello: 'Cards on the board', 'Google Sheet': 'Pitches in the sheet', Asana: 'Tasks in the project' };
+const ITEMS = { Trello: 'Cards compared against', 'Google Sheet': 'Pitches compared against', Asana: 'Tasks compared against' };
+// Older pitches (up to 90 days) a site is compared against, from the monitor's health.
+const historyOf = site => S.status?.monitorHealth?.sites?.[site?.id]?.history || null;
 const OPEN_IN = { Trello: 'Open in Trello', 'Google Sheet': 'Open in the sheet', Asana: 'Open in Asana' };
 const sites = () => S.monitor?.sites || [];
 const siteOf = id => sites().find(x => x.id === (id || 'wgtc'));
@@ -406,6 +408,7 @@ function renderPulse() {
     : `<dl class="kv">
     <dt>Last scan</dt><dd>${one.state?.last_ok ? esc(when(ms(one.state.last_ok))) : 'never'}</dd>
     <dt>${esc(ITEMS[one.platform] || 'Pitches read')}</dt><dd>${lastScan ? fmtN(lastScan.cards) : '—'}</dd>
+    ${historyOf(one) ? `<dt>From the last 90 days</dt><dd>${fmtN(historyOf(one).count)}${historyOf(one).at ? ` · updated ${ago(historyOf(one).at, now)}` : ''}${historyOf(one).problem ? ` · <span style="color:var(--critical-ink)" title="${esc(historyOf(one).problem)}">not updating</span>` : ''}</dd>` : ''}
     <dt>Scan time</dt><dd>${lastScan?.last_ms ? `${(lastScan.last_ms / 1000).toFixed(1)}s` : '—'}</dd>
     <dt>Scans, 24h</dt><dd>${fmtN(scans24)}${fails ? ` · <span style="color:var(--critical-ink)">${fails} failed</span>` : ''}</dd>
     <dt>Waiting for AI</dt><dd>${waiting}</dd>
@@ -471,6 +474,13 @@ function renderHealth() {
       else if (trouble) row('bad', name, `<span title="${esc(trouble)}">${last ? `Last ${ago(last, now)}` : 'Not working'}</span>`);
       else if (!last) row('warn', name, 'Starting…');
       else row(now - last > 5 * 60000 ? 'warn' : 'live', name, `Last ${ago(last, now)}`);
+    }
+    // Older pitches (up to 90 days) each site is compared against.
+    const hist = sites().filter(x => x.enabled && !x.needs).map(x => [x, historyOf(x)]).filter(([, h]) => h);
+    if (hist.length) {
+      const failing = hist.filter(([, h]) => h.problem);
+      row(failing.length ? 'warn' : hist.some(([, h]) => !h.at) ? 'warn' : 'live', 'Older pitches <span class="muted small">90 days</span>',
+        `<span title="${esc(failing.map(([x, h]) => `${x.label}: ${h.problem}`).join(' · ') || 'Every new pitch is compared against these too')}">${hist.map(([x, h]) => `${esc(x.label)} ${fmtN(h.count)}`).join(' · ')}${failing.length ? ` · ${failing.map(([x]) => esc(x.label)).join(', ')} not updating` : ''}</span>`);
     }
     const waiting = allJobs().filter(j => j.check === 'pending');
     const stuck = waiting.filter(j => now - ms(j.firstSeen) > 3600000).length;
@@ -568,10 +578,12 @@ const pitchedAt = j => ms(j.created || j.firstSeen);
 const checkedAt = j => ms(j.checkedAt || j.firstSeen);
 const dayDiff = (a, b) => Math.round((startOfDay(a) - startOfDay(b)) / 86400000);
 // When the closest match was pitched, compared with this one: "2 days earlier", "same day".
+// "3 days", "7 weeks", "2 months": matches can be up to 90 days old.
+const gapLen = n => n >= 60 ? `${Math.round(n / 30)} months` : n >= 14 ? `${Math.round(n / 7)} weeks` : `${n} day${n === 1 ? '' : 's'}`;
 function gapText(j, b) {
   if (!b?.created || !j.created) return '';
   const n = dayDiff(ms(j.created), ms(b.created));
-  return n === 0 ? 'same day' : `${Math.abs(n)} day${Math.abs(n) === 1 ? '' : 's'} ${n > 0 ? 'earlier' : 'later'}`;
+  return n === 0 ? 'same day' : `${gapLen(Math.abs(n))} ${n > 0 ? 'earlier' : 'later'}`;
 }
 function dayTitle(t) {
   const n = dayDiff(serverNow(), t);
@@ -673,7 +685,7 @@ function bubble(m, { collapse = true } = {}) {
 function gapNote(j, b) {
   if (!b.created || !j.created) return '';
   const n = dayDiff(ms(j.created), ms(b.created)), who = b.writer && b.writer !== 'Unassigned' ? `${b.writer}'s` : 'the earlier one';
-  return n === 0 ? `Pitched the same day as ${who}.` : `Pitched ${Math.abs(n)} day${Math.abs(n) === 1 ? '' : 's'} ${n > 0 ? 'after' : 'before'} ${who}.`;
+  return n === 0 ? `Pitched the same day as ${who}.` : `Pitched ${gapLen(Math.abs(n))} ${n > 0 ? 'after' : 'before'} ${who}.`;
 }
 function openJob(key) {
   const j = allJobs().find(x => jobKey(x) === key); if (!j) return;
@@ -710,7 +722,7 @@ function openJob(key) {
     ${msg ? `<div class="d-section"><h3>WhatsApp message</h3><div class="chat" style="padding:16px">${bubble(msg, { collapse: false })}</div></div>` : ''}
     <div class="d-section"><h3>Check details</h3><dl class="kv">
       <dt>Method</dt><dd>${esc(methodLabel(j.meta))}</dd>
-      <dt>Compared against</dt><dd>${meta.compared != null ? `${fmtN(meta.compared)} pitches` : '—'}</dd>
+      <dt>Compared against</dt><dd>${meta.compared != null ? `${fmtN(meta.compared)} pitches from the last 90 days` : '—'}</dd>
       <dt>Sent to AI</dt><dd>${meta.shortlisted != null ? `${meta.shortlisted} closest` : '—'}</dd>
       <dt>Took</dt><dd>${meta.ms != null ? `${(meta.ms / 1000).toFixed(1)}s` : '—'}</dd>
       <dt>Alert</dt><dd>${esc(SEND[j.send]?.label || j.send)}</dd>

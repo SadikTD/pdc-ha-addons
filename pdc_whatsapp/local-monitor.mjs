@@ -55,6 +55,7 @@ export function createHistory({ remote, file, fetcher = fetch, clock = Date.now,
   const lists = { trello: saved.trello || { after: '', items: {} }, asana: saved.asana || { after: '', items: {} } };
   const cards = { trello: new Map(), asana: new Map() }; // kept across scans: normalized once
   const aotf = { at: 0, cards: [] };
+  const seen = {}; // per site, for the dashboard: { count, at, problem }
   const save = () => { try { writeFileSync(file + '.tmp', JSON.stringify(lists)); renameSync(file + '.tmp', file); } catch { /* next scan */ } };
 
   async function pull(source) {
@@ -84,29 +85,37 @@ export function createHistory({ remote, file, fetcher = fetch, clock = Date.now,
     _listName: r.s || '', _writer: r.w || 'Unassigned', _site: label, _created: new Date(created).toISOString(),
   });
 
-  return async function history(site) {
+  async function history(site) {
+    const s = seen[site.id] ||= { count: 0, at: null, problem: null };
+    let out;
     try {
       if (site.id === 'aotf') {
         if (clock() - aotf.at >= AOTF_EVERY) { aotf.cards = await loadAotfHistory(HISTORY_DAYS, fetcher, clock); aotf.at = clock(); }
-        onProblem(site, null);
-        return aotf.cards;
-      }
-      const source = SHARED[site.id];
-      if (!source) return [];
-      await pull(source);
+      } else if (SHARED[site.id]) await pull(SHARED[site.id]);
+      else return [];
+      s.at = site.id === 'aotf' ? aotf.at : clock();
+      s.problem = null;
       onProblem(site, null);
     } catch (e) {
-      onProblem(site, `Older pitches (up to ${HISTORY_DAYS} days) couldn't be updated, so the last copy was used: ${String(e?.message || e).slice(0, 160)}`);
-      if (site.id === 'aotf') return aotf.cards;
+      s.problem = `Older pitches (up to ${HISTORY_DAYS} days) couldn't be updated, so the last copy was used: ${String(e?.message || e).slice(0, 160)}`;
+      onProblem(site, s.problem);
     }
-    const source = SHARED[site.id], out = [];
-    for (const [id, item] of Object.entries(lists[source].items)) {
-      let c = cards[source].get(id);
-      if (!c) cards[source].set(id, c = asCard(source, site.label, id, item));
-      out.push(c);
+    if (site.id === 'aotf') out = aotf.cards;
+    else {
+      const source = SHARED[site.id];
+      out = [];
+      for (const [id, item] of Object.entries(lists[source].items)) {
+        let c = cards[source].get(id);
+        if (!c) cards[source].set(id, c = asCard(source, site.label, id, item));
+        out.push(c);
+      }
     }
+    s.count = out.length;
     return out;
-  };
+  }
+  // What the dashboard shows: how many older pitches, last updated, any problem.
+  history.status = id => seen[id] || null;
+  return history;
 }
 
 // fetch with a deadline that also covers reading the body, so no outside call
@@ -392,6 +401,7 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
   const siteHealth = site => {
     const r = runs[site.id];
     return {
+      history: history.status?.(site.id) || null,
       problem: r.problem, problemSince: r.problemSince, lastOk: lastOkMs(site),
       running: r.running ? { since: r.running.since, waitingOn: waitingOn(site) } : null,
     };
