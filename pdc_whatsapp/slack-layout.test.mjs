@@ -14,7 +14,7 @@ test('duplicate alert: coloured bar by verdict, both pitches as links, buttons, 
   const [a] = m.attachments;
   assert.equal(a.color, '#E01E5A');
   const text = JSON.stringify(a.blocks);
-  assert.match(a.blocks[0].text.text, /^\*🆕 New pitch\*\n<https:\/\/docs\.google\.com\/x\?a=1%7C2\|Mother &amp; baby &lt;found&gt; below balcony>\nKelsey · Approved · /);
+  assert.match(a.blocks[0].text.text, /^\*🆕 New pitch\*\n<https:\/\/docs\.google\.com\/x\?a=1%7C2\|Mother &amp; baby &lt;found&gt; below balcony>\nKelsey · Approved · <!date\^1791557340\^\{date_short_pretty\} at \{time\}\|9 Oct, 8:49 PM BDT>$/);
   assert.match(a.blocks[1].text.text, /<https:\/\/docs\.google\.com\/y\|Witness heard a plea>/);
   assert.deepEqual(a.blocks.find(b => b.type === 'actions').elements.map(e => [e.text.text, e.url, e.style]),
     [['Open new pitch', 'https://docs.google.com/x?a=1|2', 'primary'], ['Open earlier pitch', 'https://docs.google.com/y', undefined]]);
@@ -28,6 +28,9 @@ test('a pitch without links gets plain titles and no buttons', () => {
   const { attachments: [a] } = slackAlert(j, () => true, AOTF_SITE);
   assert.equal(a.color, '#36C5F0'); assert.equal(a.blocks.some(b => b.type === 'actions'), false);
   assert.match(a.blocks[0].text.text, /\nMother &amp; baby &lt;found&gt; below balcony\n/);
+  // A sheet row that only knows its day keeps the day, with no timezone tag.
+  const day = job('possible'), c = JSON.parse(day.card_json); c._createdLabel = '9 Oct 2026'; day.card_json = JSON.stringify(c);
+  assert.match(slackAlert(day, () => true, AOTF_SITE).attachments[0].blocks[0].text.text, /Kelsey · Approved · 9 Oct$/);
 });
 
 test('other messages: headline above a green or yellow bar', () => {

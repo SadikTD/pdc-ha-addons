@@ -12,6 +12,10 @@ const isUrl = u => /^https?:\/\/\S{1,2900}$/.test(String(u || ''));
 const link = (url, label) => (isUrl(url) ? `<${url.replace(/[|<>]/g, encodeURIComponent)}|${esc(label).replace(/\|/g, '¦')}>` : esc(label));
 const section = text => ({ type: 'section', text: { type: 'mrkdwn', text: text.slice(0, 3000) } });
 const context = text => ({ type: 'context', elements: [{ type: 'mrkdwn', text: text.slice(0, 3000) }] });
+// "Writer · Status · Today at 11:13 PM": Slack shows the time in each reader's
+// own timezone; the Bangladesh time is the fallback. Day-only dates stay as is.
+const when = (label, ts) => (Number.isInteger(ts) ? `<!date^${ts}^{date_short_pretty} at {time}|${esc(label)} BDT>` : esc(label));
+const details = (writer, status, label, ts) => `${esc(writer)} · ${esc(status)} · ${when(label, ts)}`;
 const button = (text, url, primary) => ({ type: 'button', text: { type: 'plain_text', text, emoji: true }, url, ...(primary ? { style: 'primary' } : {}) });
 
 // A duplicate alert: headline, coloured bar by verdict, both pitches, the
@@ -20,8 +24,8 @@ export function slackAlert(job, qualifies, site) {
   const v = alertValues(job, qualifies, site);
   const headline = `${HEADLINE[v.verdict] || '💡 Possible overlap'} · ${site.label} (${site.platform})`;
   const blocks = [
-    section(`*🆕 New pitch*\n${link(v.new_link, v.new_title)}\n${esc(v.new_details)}`),
-    section(`*📌 Already pitched*\n${link(v.old_link, v.old_title)}\n${esc(v.old_details)}`),
+    section(`*🆕 New pitch*\n${link(v.new_link, v.new_title)}\n${details(v.new_writer, v.new_status, v.new_date, v.new_ts)}`),
+    section(`*📌 Already pitched*\n${link(v.old_link, v.old_title)}\n${details(v.old_writer, v.old_status, v.old_date, v.old_ts)}`),
   ];
   if (v.reason) blocks.push(context(`💬 ${esc(v.reason)}`));
   const buttons = [isUrl(v.new_link) && button('Open new pitch', v.new_link, true), isUrl(v.old_link) && button('Open earlier pitch', v.old_link)].filter(Boolean);

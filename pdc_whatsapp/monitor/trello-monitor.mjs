@@ -347,6 +347,13 @@ export function alertWhen(value, cardId, dayLabel, clock = Date.now) {
   const thisYear = BDT_PARTS.formatToParts(clock()).find(x => x.type === 'year').value;
   return `${p.day} ${p.month}${p.year === thisYear ? '' : ` ${p.year}`}, ${p.hour}:${p.minute} ${p.dayPeriod}`;
 }
+// The same moment as Unix seconds, for layouts that show each reader their
+// own time (Slack); null when only the day is known or the time is unknown.
+export function alertTimestamp(value, cardId, dayLabel) {
+  if (dayLabel) return null;
+  const date = value ? new Date(value) : ID.test(cardId || '') ? new Date(parseInt(cardId.slice(0, 8), 16) * 1000) : null;
+  return date && Number.isFinite(date.getTime()) ? Math.floor(date.getTime() / 1000) : null;
+}
 const BDT_FORMAT = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Dhaka', day: '2-digit', month: 'short', year: 'numeric',
   hour: '2-digit', minute: '2-digit', hour12: true,
@@ -416,6 +423,8 @@ export function alertValues(job, qualifies = () => true, site = TRELLO_SITE) {
   v.new_details = [v.new_writer, v.new_status, v.new_date].join(' · ');
   v.old_details = [v.old_writer, v.old_status, v.old_date].join(' · ');
   v.verdict = best.verdict; v.count = findings.length;
+  v.new_ts = alertTimestamp(card._created, card.id, card._createdLabel);
+  v.old_ts = alertTimestamp(old.date, old.cardId, old.dateLabel);
   return v;
 }
 export function sendMonitorAlert(job, env, site = TRELLO_SITE) {
