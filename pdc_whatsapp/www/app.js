@@ -823,7 +823,7 @@ function monitorDraftFrom(m, lists) {
   };
 }
 function bridgeDraftFrom(s) {
-  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_webhook_wgtc: '', slack_webhook_aotf: '', slack_webhook_os: '', slack_sites: s.slack_sites ?? '', route_duplicates: s.route_duplicates, route_problems: s.route_problems, route_connection: s.route_connection };
+  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_webhook_wgtc: '', slack_webhook_aotf: '', slack_webhook_os: '', slack_mentions_wgtc: s.slack_mentions_wgtc ?? '', slack_mentions_aotf: s.slack_mentions_aotf ?? '', slack_mentions_os: s.slack_mentions_os ?? '', slack_sites: s.slack_sites ?? '', route_duplicates: s.route_duplicates, route_problems: s.route_problems, route_connection: s.route_connection };
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function monitorChanges() {
@@ -870,6 +870,10 @@ function renderSettings(force = false) {
       ${[['route_duplicates', 'Duplicate alerts', 'Pitches that look like earlier ones'], ['route_problems', 'Monitor problems', 'Scans stalled, AI failing, alerts not delivered, and their recoveries'], ['route_connection', 'Connection warnings', "This add-on can't reach the pitch-checker Worker"]].map(([k, l, help]) => `
       <div class="field"><label for="f-${k}">${l}<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${help}</small></label>
         <select class="input" id="f-${k}" name="${k}">${[['slack', 'Slack'], ['whatsapp', 'WhatsApp'], ['both', 'Slack and WhatsApp']].map(([v, t]) => `<option value="${v}" ${bd[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select>${err(k)}</div>`).join('')}
+      ${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS']].map(([site, l]) => `
+      <div class="field col"><div class="fl">${l} editors to mention<small>Tagged in ${l} duplicate alerts on Slack, so they're notified even with the channel muted. Member ID: click their name in Slack › ⋮ › Copy member ID.</small></div>
+        <div class="mentions" data-mentions="slack_mentions_${site}">${bd[`slack_mentions_${site}`].split(',').filter(Boolean).map(e => mentionRow(...e.split('='))).join('')}</div>
+        <div class="pair"><button class="btn" data-mention-add="slack_mentions_${site}" type="button">Add editor</button></div>${err(`slack_mentions_${site}`)}</div>`).join('')}
       <div class="field col"><div class="fl">Sites on Slack<small>Messages from unticked sites go to WhatsApp instead</small></div>
         <div class="chips">${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS']].map(([v, l]) => `<label class="chk"><input type="checkbox" name="slack_site" value="${v}" ${bd.slack_sites.split(',').includes(v) ? 'checked' : ''}><span><i class="mark"></i>${l}</span></label>`).join('')}</div>${err('slack_sites')}</div>
       <div class="field col"><div class="help" style="margin:0">If Slack refuses an alert (for example, the webhook was removed), it goes to WhatsApp with a note, so nothing is lost.</div></div>`}
@@ -929,6 +933,15 @@ function renderSettings(force = false) {
   renderConnection(); updateSavebar();
 }
 
+// One editor in a site's mention list: name, Slack member ID, remove.
+const mentionRow = (name = '', id = '') => `<div class="pair mention" style="margin-bottom:6px"><input class="input" data-m="name" value="${esc(name)}" placeholder="Name" aria-label="Editor name" autocomplete="off"><input class="input" data-m="id" value="${esc(id)}" placeholder="U012AB3CD" aria-label="Slack member ID" autocomplete="off" spellcheck="false"><button class="btn ghost" data-mention-remove type="button">Remove</button></div>`;
+// The rows of one list back into its "Name=ID,..." setting.
+function readMentions(list) {
+  S.bridgeDraft[list.dataset.mentions] = $$('.mention', list).map(r => [$('[data-m=name]', r).value.trim(), $('[data-m=id]', r).value.trim().toUpperCase()])
+    .filter(([n, id]) => n || id).map(([n, id]) => `${n}=${id}`).join(',');
+  updateSavebar();
+}
+
 // "Send alerts to": the recipient number or one of the sender's groups.
 function chatPicker(current) {
   const groups = S.chats?.groups || [];
@@ -983,6 +996,7 @@ function onSettingsInput(e) {
     }
   }
   if (d && t.name === 'alert_template') { const def = S.status?.alertTemplate?.default || ''; d.alert_template = t.value.trim() === def.trim() ? '' : t.value; }
+  if (bd && t.dataset.m) return readMentions(t.closest('[data-mentions]'));
   if (bd && t.name === 'slack_site') bd.slack_sites = $$('input[name=slack_site]:checked').map(x => x.value).join(',');
   if (bd && t.name in bd) bd[t.name] = t.type === 'checkbox' ? t.checked : t.type === 'number' ? Number(t.value) : t.value.trim();
   updateSavebar();
@@ -1121,6 +1135,8 @@ document.addEventListener('click', async e => {
     catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
     return;
   }
+  if (t.dataset.mentionAdd) { const list = $(`[data-mentions="${t.dataset.mentionAdd}"]`); list.insertAdjacentHTML('beforeend', mentionRow()); $('.mention:last-child [data-m=name]', list).focus(); return; }
+  if ('mentionRemove' in t.dataset) { const list = t.closest('[data-mentions]'); t.closest('.mention').remove(); readMentions(list); return; }
   // null = remove the saved webhook on save ('' would mean "keep it").
   if (t.dataset.removeSlack) {
     const k = t.dataset.removeSlack, box = $(`#f-${k}`);

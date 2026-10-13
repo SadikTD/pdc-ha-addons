@@ -6,7 +6,7 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA, log, remoteApi, alertTarget, createDelivery, postSlack, SLACK_URL, SLACK_SITES, ROUTES, DEFAULT_ROUTES } from './bridge.mjs';
+import { DATA, log, remoteApi, alertTarget, createDelivery, postSlack, SLACK_URL, SLACK_SITES, SLACK_ID, ROUTES, DEFAULT_ROUTES } from './bridge.mjs';
 
 // Webhook options: the main one and each site's own channel.
 const HOOKS = ['slack_webhook_url', ...SLACK_SITES.map(s => `slack_webhook_${s}`)];
@@ -67,6 +67,12 @@ export function validateBridgeSettings(changes) {
       // Asana personal access tokens are printable ASCII with no spaces (e.g. 2/123…/456…:abc…).
       const v = String(value ?? '').trim();
       if (/^[\x21-\x7e]{20,300}$/.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Asana personal access token';
+    } else if (/^slack_mentions_(wgtc|aotf|os)$/.test(key)) {
+      // "Name=ID,..." from the editor rows; blank rows are dropped.
+      const rows = String(value ?? '').split(',').map(e => e.split('=').map(x => x.trim())).filter(([n, id]) => n || id);
+      if (rows.length > 25) errors[key] = 'Up to 25 editors per site';
+      else if (rows.some(([n, id]) => !n || n.length > 60 || /[<>=]/.test(n) || !SLACK_ID.test(id || ''))) errors[key] = 'Each editor needs a name and a Slack member ID like U012AB3CD';
+      else clean[key] = rows.map(([n, id]) => `${n}=${id}`).join(',');
     } else if (HOOKS.includes(key)) {
       const v = String(value ?? '').trim();
       if (v === '' || SLACK_URL.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Slack webhook URL (https://hooks.slack.com/services/…)';
@@ -119,6 +125,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     alert_group: options.alertGroup,
     slack_webhook_set: Boolean(options.slackWebhook), // never the URLs themselves
     ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}_set`, Boolean(options.slackSiteWebhooks?.[s])])),
+    ...Object.fromEntries(SLACK_SITES.map(s => [`slack_mentions_${s}`, (options.slackMentions?.[s] || []).map(m => `${m.name}=${m.id}`).join(',')])),
     slack_sites: (options.slackSites ?? SLACK_SITES).join(','),
     ...Object.fromEntries(Object.keys(DEFAULT_ROUTES).map(k => [`route_${k}`, options.routes?.[k] || DEFAULT_ROUTES[k]])),
   });
@@ -167,7 +174,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       await writeFile(optionsFile + '.tmp', JSON.stringify({ ...stored, ...changed }, null, 2));
       await rename(optionsFile + '.tmp', optionsFile);
     }
-    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'main Slack webhook' : 'main Slack webhook removed', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}`, `${s.toUpperCase()} Slack channel${changed[`slack_webhook_${s}`] ? '' : ' removed'}`])), slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
+    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'main Slack webhook' : 'main Slack webhook removed', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}`, `${s.toUpperCase()} Slack channel${changed[`slack_webhook_${s}`] ? '' : ' removed'}`])), slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', slack_mentions_wgtc: 'WGTC editors', slack_mentions_aotf: 'AotF editors', slack_mentions_os: 'OS editors', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
     events.add('settings', `Changed ${Object.keys(changed).map(label).join(', ')}; restarting to apply`);
     log('Settings changed:', Object.keys(changed).join(', '));
     restart();

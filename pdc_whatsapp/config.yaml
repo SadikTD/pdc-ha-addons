@@ -1,5 +1,5 @@
 name: PDC Monitor
-version: "3.11.0"
+version: "3.12.0"
 slug: pdc_whatsapp
 description: Pitch Duplicate Checker monitor for WGTC (Trello), AotF (Google Sheet) and OS (Asana) with Slack alerts, WhatsApp for monitor problems, and a sidebar dashboard
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/pdc_whatsapp
@@ -47,6 +47,10 @@ options:
   slack_webhook_wgtc: ""
   slack_webhook_aotf: ""
   slack_webhook_os: ""
+  # Editors @mentioned in each site's duplicate alerts on Slack: Name=MemberID,...
+  slack_mentions_wgtc: ""
+  slack_mentions_aotf: ""
+  slack_mentions_os: ""
   # Sites whose messages may go to Slack (comma list of wgtc,aotf,os).
   slack_sites: "wgtc,aotf,os"
   # Where each kind of message goes: slack, whatsapp or both.
@@ -67,6 +71,9 @@ schema:
   slack_webhook_wgtc: password?
   slack_webhook_aotf: password?
   slack_webhook_os: password?
+  slack_mentions_wgtc: str?
+  slack_mentions_aotf: str?
+  slack_mentions_os: str?
   slack_sites: match(^[a-z,]*$)?
   route_duplicates: list(slack|whatsapp|both)?
   route_problems: list(slack|whatsapp|both)?

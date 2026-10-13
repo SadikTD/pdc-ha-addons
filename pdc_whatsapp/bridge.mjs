@@ -22,6 +22,12 @@ export const DEFAULT_ROUTES = { duplicates: 'slack', problems: 'whatsapp', conne
 const slackUrlOption = v => (SLACK_URL.test(String(v || '').trim()) ? String(v).trim() : '');
 // The webhook for a site's messages: its own channel, else the main one.
 export const slackUrlFor = (options, site) => (site && options.slackSiteWebhooks?.[site]) || options.slackWebhook;
+// Editors to @mention in a site's duplicate alerts: "Name=U012AB3CD,..." (a
+// member ID, or S... for a Slack user group). Invalid entries are skipped.
+export const SLACK_ID = /^[UWS][A-Z0-9]{6,14}$/;
+export const parseMentions = v => String(v || '').split(',').map(e => e.split('=').map(x => x.trim()))
+  .filter(([name, id]) => name && SLACK_ID.test(id || '')).map(([name, id]) => ({ name, id }));
+const mentionTag = id => (id[0] === 'S' ? `<!subteam^${id}>` : `<@${id}>`);
 // "a,b" option string -> known values; unset means all of them.
 const pickList = (v, all) => (v == null ? all : all.filter(x => String(v).split(',').map(s => s.trim()).includes(x)));
 
@@ -43,6 +49,7 @@ export function loadOptions(file = `${DATA}/options.json`) {
     slackWebhook: slackUrlOption(o.slack_webhook_url),
     // A site's own channel; '' uses the main webhook above.
     slackSiteWebhooks: Object.fromEntries(SLACK_SITES.map(s => [s, slackUrlOption(o[`slack_webhook_${s}`])])),
+    slackMentions: Object.fromEntries(SLACK_SITES.map(s => [s, parseMentions(o[`slack_mentions_${s}`])])),
     slackSites: pickList(o.slack_sites, SLACK_SITES),
     routes: Object.fromEntries(Object.entries(DEFAULT_ROUTES).map(([k, d]) => [k, ROUTES.includes(o[`route_${k}`]) ? o[`route_${k}`] : d])),
   };
@@ -261,17 +268,22 @@ export function createDelivery({ options, ledger, wa, events, target = alertTarg
     try { return { status: 'sent', id: await wa.send(t.jid, t.text) }; }
     catch (e) { return e?.notSent ? { status: 'retry' } : { status: 'unknown', error: String(e?.message || e).slice(0, 200) }; }
   });
-  const slack = (key, text, payload, url) => once(`${key}@slack`, async start => {
+  const slack = (key, text, payload, url, as) => once(`${key}@slack`, async start => {
     start({ text, to: 'slack' });
     // The pitch may be gone or unreadable: then the plain text, laid out.
     payload ||= await rich(key).catch(e => { log(`Slack layout for ${key} failed:`, e?.message || e); return null; });
-    const r = await postSlack(url, payload || text, fetcher);
+    payload ||= slackText(text);
+    // Duplicate alerts @mention the site's editors, above the bar: mentions
+    // there notify even people who muted the channel.
+    const who = as?.kind === 'duplicates' ? options.slackMentions?.[as.site] || [] : [];
+    if (who.length) payload = { ...payload, text: `${payload.text}\n${who.map(m => mentionTag(m.id)).join(' ')}` };
+    const r = await postSlack(url, payload, fetcher);
     return r.status === 'sent' ? { status: 'sent', id: 'slack' } : r;
   });
   return async (key, text, { as = slackKind(key), slack: payload } = {}) => {
     const route = routeFor(options, as), results = [];
     if (route.slack) {
-      const r = await slack(key, text, payload, route.url);
+      const r = await slack(key, text, payload, route.url, as);
       // Slack refused it for good: never lose the alert, send it on WhatsApp saying why.
       if (r.status === 'failed' && !route.whatsapp) return whatsapp(key, `${text}\n\n_(This was meant for Slack, but Slack refused it: ${r.error}. Check the webhook in PDC Monitor › Settings.)_`);
       results.push(r);

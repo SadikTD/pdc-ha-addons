@@ -217,3 +217,10 @@ test('site Slack channels: saved separately, removable, never shown', () => {
     { slack_webhook_os: 'https://hooks.slack.com/services/T0/B1/abcdef', slack_webhook_wgtc: '' });
   assert.ok(validateBridgeSettings({ slack_webhook_aotf: 'https://example.com' }).errors.slack_webhook_aotf);
 });
+
+test('editor mentions: name and member ID per row, blank rows dropped', () => {
+  assert.deepEqual(validateBridgeSettings({ slack_mentions_wgtc: 'Kelsey=U012AB3CD,=,Abdul = U045EF6GH' }).clean, { slack_mentions_wgtc: 'Kelsey=U012AB3CD,Abdul=U045EF6GH' });
+  assert.ok(validateBridgeSettings({ slack_mentions_os: 'Kelsey=' }).errors.slack_mentions_os);
+  assert.ok(validateBridgeSettings({ slack_mentions_os: '=U012AB3CD' }).errors.slack_mentions_os);
+  assert.deepEqual(validateBridgeSettings({ slack_mentions_aotf: '' }).clean, { slack_mentions_aotf: '' });
+});

@@ -79,10 +79,10 @@ test('rejects malformed bodies and keys', async () => {
 test('options require a long token and international numbers', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pdc-')), file = join(dir, 'options.json');
   writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002' }));
-  assert.deepEqual(loadOptions(file), { ...options, notifications: true, offlineMinutes: 10, workerUrl: '', asanaToken: '', alertGroup: '', upstreamMinutes: 15, slackWebhook: '', slackSiteWebhooks: { wgtc: '', aotf: '', os: '' }, slackSites: ['wgtc', 'aotf', 'os'], routes: { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' } });
+  assert.deepEqual(loadOptions(file), { ...options, notifications: true, offlineMinutes: 10, workerUrl: '', asanaToken: '', alertGroup: '', upstreamMinutes: 15, slackWebhook: '', slackSiteWebhooks: { wgtc: '', aotf: '', os: '' }, slackMentions: { wgtc: [], aotf: [], os: [] }, slackSites: ['wgtc', 'aotf', 'os'], routes: { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' } });
   writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002',
     ha_notifications: false, offline_notify_minutes: 30, worker_url: 'https://w.example.dev/', upstream_alert_minutes: 0, asana_token: ' 2/123/456:abc ', alert_group: '120363012345678901@g.us' }));
-  assert.deepEqual(loadOptions(file), { ...options, notifications: false, offlineMinutes: 30, workerUrl: 'https://w.example.dev', asanaToken: '2/123/456:abc', alertGroup: '120363012345678901@g.us', upstreamMinutes: 0, slackWebhook: '', slackSiteWebhooks: { wgtc: '', aotf: '', os: '' }, slackSites: ['wgtc', 'aotf', 'os'], routes: { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' } });
+  assert.deepEqual(loadOptions(file), { ...options, notifications: false, offlineMinutes: 30, workerUrl: 'https://w.example.dev', asanaToken: '2/123/456:abc', alertGroup: '120363012345678901@g.us', upstreamMinutes: 0, slackWebhook: '', slackSiteWebhooks: { wgtc: '', aotf: '', os: '' }, slackMentions: { wgtc: [], aotf: [], os: [] }, slackSites: ['wgtc', 'aotf', 'os'], routes: { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' } });
   writeFileSync(file, JSON.stringify({ api_token: 'short', sender_number: '+15550000001', recipient_number: '+15550000002' }));
   assert.throws(() => loadOptions(file));
 });
@@ -346,3 +346,23 @@ test('each site can post to its own Slack channel; others and connection warning
   assert.equal((await only('pitch:os:2', 'x')).id, 'slack');
   assert.deepEqual(urls, ['os']);
 });
+
+test('duplicate alerts on Slack mention the site editors above the bar; other messages mention nobody', async () => {
+  const bodies = [];
+  const fetcher = async (url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, status: 200, text: async () => 'ok' }; };
+  const o = loadOptionsFrom({ slack_webhook_url: `${HOOK}/main`, slack_mentions_wgtc: 'Kelsey=U012AB3CD, Group=S0123ABCD, Bad=nope', route_problems: 'slack' });
+  assert.deepEqual(o.slackMentions.wgtc, [{ name: 'Kelsey', id: 'U012AB3CD' }, { name: 'Group', id: 'S0123ABCD' }]);
+  const wa = { status: () => ({ connected: true, accountOk: true }), send: async () => 'WA', groups: async () => [] };
+  const deliver = createDelivery({ options: o, ledger: createLedger(join(mkdtempSync(join(tmpdir(), 'pdc-')), 'sent.json')), wa, fetcher,
+    rich: async key => (key === 'trello:b:1' ? { text: '*🚨 Duplicate pitch · WGTC (Trello)*', attachments: [] } : null) });
+  await deliver('trello:b:1', 'dup'); await deliver('pitch:aotf:1', '🚨 dup\nbody'); await deliver('health:b:scan:1', '⚠️ stalled\nx');
+  assert.equal(bodies[0].text, '*🚨 Duplicate pitch · WGTC (Trello)*\n<@U012AB3CD> <!subteam^S0123ABCD>');
+  assert.equal(bodies[1].text, '🚨 dup'); // AotF has no editors set
+  assert.equal(bodies[2].text, '⚠️ stalled'); // monitor problems never mention
+});
+
+function loadOptionsFrom(extra) {
+  const file = join(mkdtempSync(join(tmpdir(), 'pdc-')), 'options.json');
+  writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002', ...extra }));
+  return loadOptions(file);
+}
