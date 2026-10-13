@@ -7,6 +7,7 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DATA, log, remoteApi, alertTarget, createDelivery, postSlack, SLACK_URL, SLACK_SITES, ROUTES, DEFAULT_ROUTES } from './bridge.mjs';
+import { slackAlert } from './slack-layout.mjs';
 import { buildMonitorAlert, checkAlertTemplate, DEFAULT_ALERT_TEMPLATE, ALERT_PLACEHOLDERS } from './monitor/trello-monitor.mjs';
 import { AOTF_SITE } from './monitor/pitch-sources.mjs';
 
@@ -214,7 +215,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       const { template = '' } = await readBody(req);
       try { checkAlertTemplate(template); } catch (e) { throw new HttpError(400, `Alert message ${e.message}`); }
       // Goes where real duplicate alerts go (Slack and/or WhatsApp).
-      const r = await deliver(`ui-test-alert-${Date.now()}`, `🧪 *Test alert* (made-up pitch)\n\n${sampleAlert(template)}`, { kind: 'duplicates', site: null });
+      const r = await deliver(`ui-test-alert-${Date.now()}`, `🧪 *Test alert* (made-up pitch)\n\n${sampleAlert(template)}`, { as: { kind: 'duplicates', site: null }, slack: slackAlert(SAMPLE_ALERT, () => true, AOTF_SITE) });
       if (r.status === 'retry') throw new HttpError(409, r.error || "Couldn't send it right now; try again in a minute");
       if (r.status !== 'sent') throw new HttpError(502, `The test alert wasn't confirmed: ${r.error || r.status}`);
       events.add('test', 'Test alert sent from the dashboard');

@@ -3,6 +3,7 @@
 // nothing needs to connect into this Pi. Local apps (Sentinel) use POST /send.
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { timingSafeEqual, createHash } from 'node:crypto';
+import { slackText } from './slack-layout.mjs';
 
 export const DATA = process.env.DATA_DIR || '/data';
 const MAX_TEXT = 4096;
@@ -207,16 +208,16 @@ export function routeFor(options, kind) {
 // Connection errors where the request never left this Pi: safe to retry.
 const NOT_SENT = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT']);
 
-// Posts to a Slack webhook. WhatsApp *bold* and _italic_ read the same in
-// Slack; only & < > need escaping. Resolves { status, error }: 'sent',
+// Posts a Slack message (a Block Kit payload, or text laid out by slackText)
+// to a webhook. Resolves { status, error }: 'sent',
 // 'retry' (not delivered: offline, rate limited, Slack down), 'failed' (Slack
 // refused it, e.g. the webhook was removed) or 'unknown' (may have posted).
-export async function postSlack(url, text, fetcher = fetch) {
+export async function postSlack(url, message, fetcher = fetch) {
   let res;
   try {
     res = await fetcher(url, {
       method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }),
+      body: JSON.stringify(typeof message === 'string' ? slackText(message) : message),
     });
   } catch (e) {
     const code = e?.cause?.code || e?.code;
@@ -230,10 +231,11 @@ export async function postSlack(url, text, fetcher = fetch) {
 // Sends one PDC message to its channels, each at most once per key: the
 // ledger records WhatsApp under the key and Slack under "<key>@slack", so a
 // retry only re-tries the channel that didn't go through. `as` overrides the
-// kind read from the key (dashboard test alerts).
+// kind read from the key, `slack` the Slack layout (dashboard test alerts);
+// otherwise `rich(key)` lays out duplicate alerts from the pitch itself.
 // Resolves { status, id, error, fresh }: 'retry' leaves an outbox message
 // queued; otherwise the outcome to report ('sent' if any channel took it).
-export function createDelivery({ options, ledger, wa, events, target = alertTarget(options, wa, events), fetcher = fetch }) {
+export function createDelivery({ options, ledger, wa, events, target = alertTarget(options, wa, events), fetcher = fetch, rich = async () => null }) {
   async function once(lk, send) {
     const prev = ledger.get(lk);
     if (prev?.state === 'sending') return { status: 'retry' };
@@ -253,15 +255,17 @@ export function createDelivery({ options, ledger, wa, events, target = alertTarg
     try { return { status: 'sent', id: await wa.send(t.jid, t.text) }; }
     catch (e) { return e?.notSent ? { status: 'retry' } : { status: 'unknown', error: String(e?.message || e).slice(0, 200) }; }
   });
-  const slack = (key, text) => once(`${key}@slack`, async start => {
+  const slack = (key, text, payload) => once(`${key}@slack`, async start => {
     start({ text, to: 'slack' });
-    const r = await postSlack(options.slackWebhook, text, fetcher);
+    // The pitch may be gone or unreadable: then the plain text, laid out.
+    payload ||= await rich(key).catch(e => { log(`Slack layout for ${key} failed:`, e?.message || e); return null; });
+    const r = await postSlack(options.slackWebhook, payload || text, fetcher);
     return r.status === 'sent' ? { status: 'sent', id: 'slack' } : r;
   });
-  return async (key, text, as = slackKind(key)) => {
+  return async (key, text, { as = slackKind(key), slack: payload } = {}) => {
     const route = routeFor(options, as), results = [];
     if (route.slack) {
-      const r = await slack(key, text);
+      const r = await slack(key, text, payload);
       // Slack refused it for good: never lose the alert, send it on WhatsApp saying why.
       if (r.status === 'failed' && !route.whatsapp) return whatsapp(key, `${text}\n\n_(This was meant for Slack, but Slack refused it: ${r.error}. Check the webhook in PDC Monitor › Settings.)_`);
       results.push(r);

@@ -391,6 +391,11 @@ export function fillAlertTemplate(template, values) {
 // `qualifies` picks the findings the dashboard's alert rules allow; if the
 // rules changed after the alert was queued, all findings are used instead.
 export function buildMonitorAlert(job, qualifies = () => true, site = TRELLO_SITE, template = '') {
+  return fillAlertTemplate(template, alertValues(job, qualifies, site));
+}
+// The values an alert is built from (also used for the add-on's Slack layout).
+// `verdict` and `count` are extra: the verdict key and the number of findings.
+export function alertValues(job, qualifies = () => true, site = TRELLO_SITE) {
   const card = JSON.parse(job.card_json), all = JSON.parse(job.result_json);
   const findings = all.some(qualifies) ? all.filter(qualifies) : all;
   if (!findings.length) throw new Error('No findings to notify');
@@ -410,7 +415,8 @@ export function buildMonitorAlert(job, qualifies = () => true, site = TRELLO_SIT
   };
   v.new_details = [v.new_writer, v.new_status, v.new_date].join(' · ');
   v.old_details = [v.old_writer, v.old_status, v.old_date].join(' · ');
-  return fillAlertTemplate(template, v);
+  v.verdict = best.verdict; v.count = findings.length;
+  return v;
 }
 export function sendMonitorAlert(job, env, site = TRELLO_SITE) {
   return sendWhatsAppText(buildMonitorAlert(job, alertFilter(env), site, effectiveSettings(env).alert_template), site.alertKey(job.board_id, job.card_id), env);

@@ -17,7 +17,8 @@
 // monitoring and this add-on keeps collecting its alerts.
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
-import { runPitchMonitor, monitorLLM, withMonitorSettings, loadMonitorCards, monitorTrelloGet, formatPitchTime, TRELLO_SITE } from './monitor/trello-monitor.mjs';
+import { runPitchMonitor, monitorLLM, withMonitorSettings, alertFilter, loadMonitorCards, monitorTrelloGet, formatPitchTime, TRELLO_SITE } from './monitor/trello-monitor.mjs';
+import { slackAlert } from './slack-layout.mjs';
 import { AOTF_SITE, OS_SITE, loadAotfHistory } from './monitor/pitch-sources.mjs';
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
 import { monitorEngine } from './monitor/match-engine.mjs';
@@ -417,6 +418,14 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
       const bySite = config ? Object.fromEntries(sites.map(s => [s.id, siteHealth(s)])) : {};
       const wgtc = bySite[TRELLO_SITE.id] || { problem: null, problemSince: null, lastOk: null, running: null };
       return { ...wgtc, problem: wgtc.problem || general, general, sites: bySite };
+    },
+    // The Slack layout of a duplicate alert, from its key (null: not an alert).
+    async slackPayload(key) {
+      const m = /^(trello|pitch):([^:]+):([^:]+)$/.exec(key);
+      const site = m && sites.find(s => s.alertKey(m[2], m[3]) === key && (m[1] === 'trello' ? s === TRELLO_SITE : s.board(env()) === m[2]));
+      if (!site || !config) return null;
+      const job = db.sqlite.prepare('SELECT card_json,result_json FROM trello_monitor_jobs WHERE board_id=? AND card_id=?').get(m[2], m[3]);
+      return job ? slackAlert(job, alertFilter(await withMonitorSettings(env())), site) : null;
     },
     start() {
       tick(); timer = setInterval(tick, INTERVAL);

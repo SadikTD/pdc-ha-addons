@@ -254,7 +254,8 @@ const ledger = createLedger();
 const wa = startWhatsApp(options, events);
 const target = alertTarget(options, wa, events); // the chosen group, or the recipient number
 // Sends each PDC message to Slack and/or WhatsApp, as picked in Settings.
-const deliver = createDelivery({ options, ledger, wa, events, target });
+// Duplicate alerts on Slack are laid out from the pitch (monitor on the Pi only).
+const deliver = createDelivery({ options, ledger, wa, events, target, rich: async key => (monitor.active() ? monitor.slackPayload(key) : null) });
 // Alerts the recipient directly if the Worker can't be reached for a while.
 const upstream = createUpstreamWatchdog({
   minutes: options.upstreamMinutes, events,

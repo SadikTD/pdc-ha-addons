@@ -70,6 +70,12 @@ test('the monitor moves from the Worker once, keeps its history and alerts from 
   assert.equal(s.sent.length, 2);
   const job = (await s.monitor.api('/bridge/dashboard').then(r => r.json())).jobs.find(j => j.id === card(2).id);
   assert.equal(job.send, 'accepted');
+  // Slack lays the same alert out from the stored pitch; unknown keys get none.
+  const slack = await s.monitor.slackPayload(`trello:${board}:${card(2).id}`);
+  assert.match(slack.text, /^\*🚨 Duplicate pitch · WGTC \(Trello\)\*/);
+  assert.equal(slack.attachments[0].blocks.find(b => b.type === 'actions').elements[0].url, 'https://trello.com/c/2');
+  assert.equal(await s.monitor.slackPayload(`trello:${board}:${'f'.repeat(24)}`), null);
+  assert.equal(await s.monitor.slackPayload('health:x:scan:1'), null);
   s.monitor.stop();
 });
 

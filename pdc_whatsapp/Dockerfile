@@ -3,7 +3,7 @@ FROM node:22-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
-COPY bridge.mjs auth-state.mjs server.mjs ui.mjs local-monitor.mjs ./
+COPY bridge.mjs auth-state.mjs server.mjs ui.mjs local-monitor.mjs slack-layout.mjs ./
 COPY monitor/ ./monitor/
 COPY www/ ./www/
 
