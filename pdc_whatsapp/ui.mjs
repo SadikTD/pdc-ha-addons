@@ -7,6 +7,10 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DATA, log, remoteApi, alertTarget, createDelivery, postSlack, SLACK_URL, SLACK_SITES, ROUTES, DEFAULT_ROUTES } from './bridge.mjs';
+
+// Webhook options: the main one and each site's own channel.
+const HOOKS = ['slack_webhook_url', ...SLACK_SITES.map(s => `slack_webhook_${s}`)];
+const savedHook = (options, k) => (k === 'slack_webhook_url' ? options.slackWebhook : options.slackSiteWebhooks?.[k.slice(14)]) || '';
 import { slackAlert } from './slack-layout.mjs';
 import { buildMonitorAlert, checkAlertTemplate, DEFAULT_ALERT_TEMPLATE, ALERT_PLACEHOLDERS } from './monitor/trello-monitor.mjs';
 import { AOTF_SITE } from './monitor/pitch-sources.mjs';
@@ -63,7 +67,7 @@ export function validateBridgeSettings(changes) {
       // Asana personal access tokens are printable ASCII with no spaces (e.g. 2/123…/456…:abc…).
       const v = String(value ?? '').trim();
       if (/^[\x21-\x7e]{20,300}$/.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Asana personal access token';
-    } else if (key === 'slack_webhook_url') {
+    } else if (HOOKS.includes(key)) {
       const v = String(value ?? '').trim();
       if (v === '' || SLACK_URL.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Slack webhook URL (https://hooks.slack.com/services/…)';
     } else if (key === 'slack_sites') {
@@ -113,7 +117,8 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     worker_url: options.workerUrl, api_token_set: options.token.length >= 32,
     asana_token_set: Boolean(options.asanaToken), // never the token itself
     alert_group: options.alertGroup,
-    slack_webhook_set: Boolean(options.slackWebhook), // never the URL itself
+    slack_webhook_set: Boolean(options.slackWebhook), // never the URLs themselves
+    ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}_set`, Boolean(options.slackSiteWebhooks?.[s])])),
     slack_sites: (options.slackSites ?? SLACK_SITES).join(','),
     ...Object.fromEntries(Object.keys(DEFAULT_ROUTES).map(k => [`route_${k}`, options.routes?.[k] || DEFAULT_ROUTES[k]])),
   });
@@ -137,7 +142,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     const { clean, errors } = validateBridgeSettings(changes);
     if (Object.keys(errors).length) return [400, { errors }];
     const current = safeOptions();
-    const changed = Object.fromEntries(Object.entries(clean).filter(([k, v]) => (k === 'asana_token' ? v !== options.asanaToken : k === 'slack_webhook_url' ? v !== options.slackWebhook : v !== current[k])));
+    const changed = Object.fromEntries(Object.entries(clean).filter(([k, v]) => (k === 'asana_token' ? v !== options.asanaToken : HOOKS.includes(k) ? v !== savedHook(options, k) : v !== current[k])));
     if (!Object.keys(changed).length) return [200, { ok: true, changed: [], restart: false }];
     // Only a group the sender is in right now (WhatsApp would refuse the rest).
     if (changed.alert_group) {
@@ -162,7 +167,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       await writeFile(optionsFile + '.tmp', JSON.stringify({ ...stored, ...changed }, null, 2));
       await rename(optionsFile + '.tmp', optionsFile);
     }
-    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'Slack webhook' : 'Slack turned off', slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
+    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'main Slack webhook' : 'main Slack webhook removed', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}`, `${s.toUpperCase()} Slack channel${changed[`slack_webhook_${s}`] ? '' : ' removed'}`])), slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
     events.add('settings', `Changed ${Object.keys(changed).map(label).join(', ')}; restarting to apply`);
     log('Settings changed:', Object.keys(changed).join(', '));
     restart();
@@ -221,9 +226,10 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       events.add('test', 'Test alert sent from the dashboard');
       return [200, { ok: true }];
     }
-    // Uses the URL typed in Settings (saved or not), else the saved one.
+    // Uses the URL typed in Settings (saved or not), else that field's saved one.
     if (route === 'POST /api/test-slack') {
-      const url = String((await readBody(req)).url || '').trim() || options.slackWebhook;
+      const body = await readBody(req), field = HOOKS.includes(body.field) ? body.field : 'slack_webhook_url';
+      const url = String(body.url || '').trim() || savedHook(options, field);
       if (!url) throw new HttpError(400, 'Paste the Slack webhook URL first');
       if (!SLACK_URL.test(url)) throw new HttpError(400, 'That is not a Slack webhook URL (https://hooks.slack.com/services/…)');
       const r = await postSlack(url, '🧪 *Test message*\n\nPDC Monitor can post to this Slack channel.', fetcher);

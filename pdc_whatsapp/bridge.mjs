@@ -19,6 +19,9 @@ export const SLACK_SITES = ['wgtc', 'aotf', 'os'];
 // for problems with the monitor itself, which may include Slack being down.
 export const ROUTES = ['slack', 'whatsapp', 'both'];
 export const DEFAULT_ROUTES = { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' };
+const slackUrlOption = v => (SLACK_URL.test(String(v || '').trim()) ? String(v).trim() : '');
+// The webhook for a site's messages: its own channel, else the main one.
+export const slackUrlFor = (options, site) => (site && options.slackSiteWebhooks?.[site]) || options.slackWebhook;
 // "a,b" option string -> known values; unset means all of them.
 const pickList = (v, all) => (v == null ? all : all.filter(x => String(v).split(',').map(s => s.trim()).includes(x)));
 
@@ -37,7 +40,9 @@ export function loadOptions(file = `${DATA}/options.json`) {
     upstreamMinutes: Math.min(1440, Math.max(0, Number(o.upstream_alert_minutes ?? 15) || 0)),
     // Slack Incoming Webhook ('' = everything goes to WhatsApp), the sites
     // whose messages may use it, and where each kind of message goes.
-    slackWebhook: SLACK_URL.test(String(o.slack_webhook_url || '').trim()) ? String(o.slack_webhook_url).trim() : '',
+    slackWebhook: slackUrlOption(o.slack_webhook_url),
+    // A site's own channel; '' uses the main webhook above.
+    slackSiteWebhooks: Object.fromEntries(SLACK_SITES.map(s => [s, slackUrlOption(o[`slack_webhook_${s}`])])),
     slackSites: pickList(o.slack_sites, SLACK_SITES),
     routes: Object.fromEntries(Object.entries(DEFAULT_ROUTES).map(([k, d]) => [k, ROUTES.includes(o[`route_${k}`]) ? o[`route_${k}`] : d])),
   };
@@ -196,13 +201,14 @@ export function slackKind(key) {
   return null; // dashboard tests, Sentinel's /send
 }
 
-// Which channels a message uses. Slack only with a webhook and for a picked
-// site; a Slack-only message that can't use Slack goes to WhatsApp instead.
+// Which channels a message uses. Slack only with a webhook for its site (or
+// the main one) and for a picked site; a Slack-only message that can't use
+// Slack goes to WhatsApp instead. `url` is the Slack webhook to post to.
 export function routeFor(options, kind) {
   if (!kind) return { slack: false, whatsapp: true };
-  const route = options.routes?.[kind.kind] || DEFAULT_ROUTES[kind.kind];
-  const slack = Boolean(options.slackWebhook) && (!kind.site || options.slackSites.includes(kind.site)) && route !== 'whatsapp';
-  return { slack, whatsapp: route !== 'slack' || !slack };
+  const route = options.routes?.[kind.kind] || DEFAULT_ROUTES[kind.kind], url = slackUrlFor(options, kind.site);
+  const slack = Boolean(url) && (!kind.site || options.slackSites.includes(kind.site)) && route !== 'whatsapp';
+  return { slack, url, whatsapp: route !== 'slack' || !slack };
 }
 
 // Connection errors where the request never left this Pi: safe to retry.
@@ -255,17 +261,17 @@ export function createDelivery({ options, ledger, wa, events, target = alertTarg
     try { return { status: 'sent', id: await wa.send(t.jid, t.text) }; }
     catch (e) { return e?.notSent ? { status: 'retry' } : { status: 'unknown', error: String(e?.message || e).slice(0, 200) }; }
   });
-  const slack = (key, text, payload) => once(`${key}@slack`, async start => {
+  const slack = (key, text, payload, url) => once(`${key}@slack`, async start => {
     start({ text, to: 'slack' });
     // The pitch may be gone or unreadable: then the plain text, laid out.
     payload ||= await rich(key).catch(e => { log(`Slack layout for ${key} failed:`, e?.message || e); return null; });
-    const r = await postSlack(options.slackWebhook, payload || text, fetcher);
+    const r = await postSlack(url, payload || text, fetcher);
     return r.status === 'sent' ? { status: 'sent', id: 'slack' } : r;
   });
   return async (key, text, { as = slackKind(key), slack: payload } = {}) => {
     const route = routeFor(options, as), results = [];
     if (route.slack) {
-      const r = await slack(key, text, payload);
+      const r = await slack(key, text, payload, route.url);
       // Slack refused it for good: never lose the alert, send it on WhatsApp saying why.
       if (r.status === 'failed' && !route.whatsapp) return whatsapp(key, `${text}\n\n_(This was meant for Slack, but Slack refused it: ${r.error}. Check the webhook in PDC Monitor › Settings.)_`);
       results.push(r);

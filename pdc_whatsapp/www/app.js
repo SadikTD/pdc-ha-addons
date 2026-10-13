@@ -823,7 +823,7 @@ function monitorDraftFrom(m, lists) {
   };
 }
 function bridgeDraftFrom(s) {
-  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_sites: s.slack_sites ?? '', route_duplicates: s.route_duplicates, route_problems: s.route_problems, route_connection: s.route_connection };
+  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_webhook_wgtc: '', slack_webhook_aotf: '', slack_webhook_os: '', slack_sites: s.slack_sites ?? '', route_duplicates: s.route_duplicates, route_problems: s.route_problems, route_connection: s.route_connection };
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function monitorChanges() {
@@ -856,9 +856,17 @@ function renderSettings(force = false) {
     <div class="card s-card rise">
       <div class="s-head"><span class="ico"><svg><use href="#i-chat"/></svg></span><div><h2>Slack</h2><p>Where PDC posts duplicate alerts. WhatsApp stays for problems with the monitor itself. Saving restarts the add-on.</p></div></div>
       ${!bd ? '<div class="field col"><div class="muted">Loading…</div></div>' : `
-      <div class="field col"><label for="f-slack">Webhook URL<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${st.settings.slack_webhook_set ? 'Saved. Paste a new one only to replace it.' : 'In Slack: api.slack.com/apps › Create New App › Incoming Webhooks › Add New Webhook. Until it is set, everything goes to WhatsApp.'}</small></label>
-        <input class="input wide" id="f-slack" name="slack_webhook_url" type="password" value="" placeholder="${st.settings.slack_webhook_set ? '•••••••• saved' : 'https://hooks.slack.com/services/…'}" autocomplete="off" spellcheck="false">${err('slack_webhook_url')}
-        <div class="pair" style="flex-wrap:wrap"><button class="btn" id="btn-test-slack" type="button"><svg><use href="#i-send"/></svg>Send test</button><span class="muted small">Uses the URL in the box, or the saved one.</span></div></div>
+      ${[['slack_webhook_url', 'Main webhook', 'Used for every site without its own channel below, and for connection warnings. In Slack: api.slack.com/apps › your app › Incoming Webhooks › Add New Webhook.'],
+        ['slack_webhook_wgtc', 'WGTC channel', 'Optional. A webhook for the channel WGTC messages should go to.'],
+        ['slack_webhook_aotf', 'AotF channel', 'Optional. A webhook for the channel AotF messages should go to.'],
+        ['slack_webhook_os', 'OS channel', 'Optional. A webhook for the channel OS messages should go to.']].map(([k, l, help]) => {
+        const saved = st.settings[`${k === 'slack_webhook_url' ? 'slack_webhook' : k}_set`];
+        return `
+      <div class="field col"><label for="f-${k}">${l}<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${saved ? 'Saved. Paste a new one only to replace it.' : help}</small></label>
+        <input class="input wide" id="f-${k}" name="${k}" type="password" value="" placeholder="${saved ? '•••••••• saved' : 'https://hooks.slack.com/services/…'}" autocomplete="off" spellcheck="false">${err(k)}
+        <div class="pair" style="flex-wrap:wrap"><button class="btn" data-test-slack="${k}" type="button"><svg><use href="#i-send"/></svg>Send test</button>${saved ? `<button class="btn ghost" data-remove-slack="${k}" type="button">Remove</button>` : ''}</div></div>`;
+      }).join('')}
+      ${bd.slack_webhook_url === '' && !st.settings.slack_webhook_set ? '<div class="field col"><div class="help" style="margin:0">Until a webhook is set, everything goes to WhatsApp.</div></div>' : ''}
       ${[['route_duplicates', 'Duplicate alerts', 'Pitches that look like earlier ones'], ['route_problems', 'Monitor problems', 'Scans stalled, AI failing, alerts not delivered, and their recoveries'], ['route_connection', 'Connection warnings', "This add-on can't reach the pitch-checker Worker"]].map(([k, l, help]) => `
       <div class="field"><label for="f-${k}">${l}<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${help}</small></label>
         <select class="input" id="f-${k}" name="${k}">${[['slack', 'Slack'], ['whatsapp', 'WhatsApp'], ['both', 'Slack and WhatsApp']].map(([v, t]) => `<option value="${v}" ${bd[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select>${err(k)}</div>`).join('')}
@@ -1113,9 +1121,15 @@ document.addEventListener('click', async e => {
     catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
     return;
   }
-  if (t.id === 'btn-test-slack') {
+  // null = remove the saved webhook on save ('' would mean "keep it").
+  if (t.dataset.removeSlack) {
+    const k = t.dataset.removeSlack, box = $(`#f-${k}`);
+    S.bridgeDraft[k] = null; box.value = ''; box.placeholder = 'Removed when you save'; t.remove(); updateSavebar(); return;
+  }
+  if (t.dataset.testSlack) {
+    const field = t.dataset.testSlack;
     t.classList.add('busy');
-    try { await api('api/test-slack', { method: 'POST', body: { url: $('#f-slack').value.trim() } }); toast('Test message sent. Check Slack', 'ok'); }
+    try { await api('api/test-slack', { method: 'POST', body: { field, url: $(`#f-${field}`).value.trim() } }); toast('Test message sent. Check Slack', 'ok'); }
     catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
     return;
   }

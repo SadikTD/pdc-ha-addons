@@ -211,3 +211,9 @@ test('slack settings: webhook must be a Slack URL; picks are normalised', () => 
   assert.ok(validateBridgeSettings({ slack_webhook_url: 'https://hooks.slack.com/services/T0/B0/abcdef' }).clean.slack_webhook_url);
   assert.deepEqual(Object.keys(validateBridgeSettings({ slack_webhook_url: 'https://example.com/hook', slack_sites: 'wgtc,mars' }).errors).sort(), ['slack_sites', 'slack_webhook_url']);
 });
+
+test('site Slack channels: saved separately, removable, never shown', () => {
+  assert.deepEqual(validateBridgeSettings({ slack_webhook_os: 'https://hooks.slack.com/services/T0/B1/abcdef', slack_webhook_wgtc: null }).clean,
+    { slack_webhook_os: 'https://hooks.slack.com/services/T0/B1/abcdef', slack_webhook_wgtc: '' });
+  assert.ok(validateBridgeSettings({ slack_webhook_aotf: 'https://example.com' }).errors.slack_webhook_aotf);
+});
