@@ -1,5 +1,5 @@
 name: PDC Monitor
-version: "3.10.0"
+version: "3.10.1"
 slug: pdc_whatsapp
 description: Pitch Duplicate Checker monitor for WGTC (Trello), AotF (Google Sheet) and OS (Asana) with Slack alerts, WhatsApp for monitor problems, and a sidebar dashboard
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/pdc_whatsapp

@@ -26,7 +26,6 @@ export function slackAlert(job, qualifies, site) {
   if (v.reason) blocks.push(context(`💬 ${esc(v.reason)}`));
   const buttons = [isUrl(v.new_link) && button('Open new pitch', v.new_link, true), isUrl(v.old_link) && button('Open earlier pitch', v.old_link)].filter(Boolean);
   if (buttons.length) blocks.push({ type: 'actions', elements: buttons });
-  if (v.count > 1) blocks.push(context(`➕ ${v.count - 1} more possible match${v.count === 2 ? '' : 'es'}. See PDC Monitor in Home Assistant.`));
   return {
     // Shown above the bar, and in notifications.
     text: `*${esc(headline)}*${v.confidence ? `  ·  ${esc(v.confidence)} match` : ''}`,

@@ -18,7 +18,7 @@ test('duplicate alert: coloured bar by verdict, both pitches as links, buttons, 
   assert.match(a.blocks[1].text.text, /<https:\/\/docs\.google\.com\/y\|Witness heard a plea>/);
   assert.deepEqual(a.blocks.find(b => b.type === 'actions').elements.map(e => [e.text.text, e.url, e.style]),
     [['Open new pitch', 'https://docs.google.com/x?a=1|2', 'primary'], ['Open earlier pitch', 'https://docs.google.com/y', undefined]]);
-  assert.match(text, /1 more possible match\./);
+  assert.doesNotMatch(text, /more possible match/);
   assert.equal(slackAlert(job('same_story'), () => true, AOTF_SITE).attachments[0].color, '#ECB22E');
 });
 
