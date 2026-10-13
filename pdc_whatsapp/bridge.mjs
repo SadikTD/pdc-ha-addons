@@ -12,6 +12,12 @@ const LEDGER_LIMIT = 1000;
 const digits = s => String(s || '').replace(/\D/g, '');
 export const log = (...a) => console.log(new Date().toISOString(), ...a);
 
+export const SLACK_URL = /^https:\/\/hooks\.slack\.com\/(services|workflows|triggers)\/[A-Za-z0-9/_-]{10,200}$/;
+export const SLACK_MESSAGES = ['duplicates', 'problems', 'connection'];
+export const SLACK_SITES = ['wgtc', 'aotf', 'os'];
+// "a,b" option string -> known values; unset means all of them.
+const pickList = (v, all) => (v == null ? all : all.filter(x => String(v).split(',').map(s => s.trim()).includes(x)));
+
 export function loadOptions(file = `${DATA}/options.json`) {
   const o = JSON.parse(readFileSync(file, 'utf8'));
   const options = {
@@ -25,6 +31,10 @@ export function loadOptions(file = `${DATA}/options.json`) {
     alertGroup: /^[\d-]{5,40}@g\.us$/.test(String(o.alert_group || '')) ? o.alert_group : '',
     // 0 turns the "Worker can't reach this bridge" watchdog off.
     upstreamMinutes: Math.min(1440, Math.max(0, Number(o.upstream_alert_minutes ?? 15) || 0)),
+    // Slack copy of PDC messages ('' = off), and which kinds and sites to copy.
+    slackWebhook: SLACK_URL.test(String(o.slack_webhook_url || '').trim()) ? String(o.slack_webhook_url).trim() : '',
+    slackMessages: pickList(o.slack_messages, SLACK_MESSAGES),
+    slackSites: pickList(o.slack_sites, SLACK_SITES),
   };
   if (options.token.length < 32) throw new Error('api_token must be at least 32 characters');
   if (!/^[1-9]\d{7,14}$/.test(options.sender) || !/^[1-9]\d{7,14}$/.test(options.recipient)) {
@@ -169,13 +179,46 @@ export function alertTarget(options, wa, events) {
   };
 }
 
+// What a PDC message is, from its key: duplicate alerts (trello:<board>:…,
+// pitch:aotf:…, pitch:os:…), monitor problems (health:<board>:…,
+// monitor-watch:<site>:…) or the Worker connection watchdog (watchdog:…).
+export function slackKind(key) {
+  const [type, where] = String(key).split(':');
+  const site = SLACK_SITES.includes(where) ? where : 'wgtc'; // a Trello board id is WGTC
+  if (type === 'trello' || type === 'pitch') return { kind: 'duplicates', site };
+  if (type === 'health' || type === 'monitor-watch') return { kind: 'problems', site };
+  if (type === 'watchdog') return { kind: 'connection', site: null };
+  return null; // dashboard tests, Sentinel's /send
+}
+
+// WhatsApp *bold* and _italic_ read the same in Slack; only & < > need escaping.
+export async function postSlack(url, text, fetcher = fetch) {
+  const res = await fetcher(url, {
+    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }),
+  });
+  if (!res.ok) throw new Error(`Slack said ${res.status} ${(await res.text().catch(() => '')).slice(0, 100)}`.trim());
+}
+
+// Copies a PDC message to Slack when its kind and site are picked in Settings.
+// Called after WhatsApp accepted it, so it inherits the ledger's send-once
+// guarantee. Never throws: a Slack failure is logged, not retried.
+export function createSlack(options, events, fetcher = fetch) {
+  return async (key, text) => {
+    const k = slackKind(key);
+    if (!options.slackWebhook || !k || !options.slackMessages.includes(k.kind) || (k.site && !options.slackSites.includes(k.site))) return false;
+    try { await postSlack(options.slackWebhook, text, fetcher); return true; }
+    catch (e) { log(`Slack copy of ${key} failed:`, e?.message || e); events?.add('slack_failed', `${key}: ${String(e?.message || e).slice(0, 200)}`); return false; }
+  };
+}
+
 // Collects queued pitch alerts (GET /bridge/outbox), sends each through the
 // idempotency ledger, and reports the result (POST /bridge/outbox/ack). `api`
 // answers those routes: the monitor in this add-on (local-monitor.mjs), or the
 // Worker until the monitor has moved here. A key already in the ledger is
 // re-reported, never re-sent, so a lost ack or a restart can't cause a
 // duplicate. `upstream` is told about each successful poll.
-export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, api = null, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)), target = alertTarget(options, wa, events) }) {
+export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, api = null, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)), target = alertTarget(options, wa, events), slack = () => {} }) {
   let busy = false, failing = false;
   const call = api || remoteApi(options, fetcher);
   const ack = (key, status, extra = {}) => call('/bridge/outbox/ack', { method: 'POST', body: JSON.stringify({ key, status, ...extra }) })
@@ -217,6 +260,7 @@ export function createOutboxPoller({ options, ledger, wa, events, upstream, fetc
             const id = await wa.send(t.jid, t.text);
             ledger.set(m.key, { state: 'sent', id, sentAt: Date.now() });
             log(`sent ${m.key}`);
+            slack(m.key, m.text);
             await ack(m.key, 'sent', { id });
           } catch (e) {
             if (e?.notSent) { ledger.delete(m.key); break; } // stays queued; sent after the reconnect

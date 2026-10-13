@@ -203,3 +203,10 @@ test('alerts can be pointed at a group the sender is in, and only such a group',
   assert.equal((await off.post('/api/settings', { changes: { alert_group: group } })).status, 409);
   off.close();
 });
+
+test('slack settings: webhook must be a Slack URL; picks are normalised', () => {
+  assert.deepEqual(validateBridgeSettings({ slack_webhook_url: '', slack_messages: 'connection,duplicates', slack_sites: '' }).clean,
+    { slack_webhook_url: '', slack_messages: 'duplicates,connection', slack_sites: '' });
+  assert.ok(validateBridgeSettings({ slack_webhook_url: 'https://hooks.slack.com/services/T0/B0/abcdef' }).clean.slack_webhook_url);
+  assert.deepEqual(Object.keys(validateBridgeSettings({ slack_webhook_url: 'https://example.com/hook', slack_sites: 'wgtc,mars' }).errors).sort(), ['slack_sites', 'slack_webhook_url']);
+});

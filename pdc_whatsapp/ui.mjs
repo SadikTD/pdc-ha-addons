@@ -6,7 +6,7 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA, log, remoteApi, alertTarget } from './bridge.mjs';
+import { DATA, log, remoteApi, alertTarget, postSlack, SLACK_URL, SLACK_MESSAGES, SLACK_SITES } from './bridge.mjs';
 import { buildMonitorAlert, checkAlertTemplate, DEFAULT_ALERT_TEMPLATE, ALERT_PLACEHOLDERS } from './monitor/trello-monitor.mjs';
 import { AOTF_SITE } from './monitor/pitch-sources.mjs';
 
@@ -62,6 +62,13 @@ export function validateBridgeSettings(changes) {
       // Asana personal access tokens are printable ASCII with no spaces (e.g. 2/123…/456…:abc…).
       const v = String(value ?? '').trim();
       if (/^[\x21-\x7e]{20,300}$/.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Asana personal access token';
+    } else if (key === 'slack_webhook_url') {
+      const v = String(value ?? '').trim();
+      if (v === '' || SLACK_URL.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Slack webhook URL (https://hooks.slack.com/services/…)';
+    } else if (key === 'slack_messages' || key === 'slack_sites') {
+      // Comma list in the canonical order, so an unchanged pick compares equal.
+      const all = key === 'slack_messages' ? SLACK_MESSAGES : SLACK_SITES, picked = String(value ?? '').split(',').filter(Boolean);
+      if (picked.every(x => all.includes(x))) clean[key] = all.filter(x => picked.includes(x)).join(','); else errors[key] = 'Unknown choice';
     } else if (key === 'worker_url') {
       const v = String(value || '').trim().replace(/\/+$/, '');
       if (v === '' || /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(v)) clean[key] = v; else errors[key] = 'Use the Worker address, e.g. https://name.account.workers.dev';
@@ -103,6 +110,8 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     worker_url: options.workerUrl, api_token_set: options.token.length >= 32,
     asana_token_set: Boolean(options.asanaToken), // never the token itself
     alert_group: options.alertGroup,
+    slack_webhook_set: Boolean(options.slackWebhook), // never the URL itself
+    slack_messages: (options.slackMessages ?? SLACK_MESSAGES).join(','), slack_sites: (options.slackSites ?? SLACK_SITES).join(','),
   });
 
   const status = () => {
@@ -124,7 +133,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     const { clean, errors } = validateBridgeSettings(changes);
     if (Object.keys(errors).length) return [400, { errors }];
     const current = safeOptions();
-    const changed = Object.fromEntries(Object.entries(clean).filter(([k, v]) => (k === 'asana_token' ? v !== options.asanaToken : v !== current[k])));
+    const changed = Object.fromEntries(Object.entries(clean).filter(([k, v]) => (k === 'asana_token' ? v !== options.asanaToken : k === 'slack_webhook_url' ? v !== options.slackWebhook : v !== current[k])));
     if (!Object.keys(changed).length) return [200, { ok: true, changed: [], restart: false }];
     // Only a group the sender is in right now (WhatsApp would refuse the rest).
     if (changed.alert_group) {
@@ -149,7 +158,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       await writeFile(optionsFile + '.tmp', JSON.stringify({ ...stored, ...changed }, null, 2));
       await rename(optionsFile + '.tmp', optionsFile);
     }
-    const label = k => ({ asana_token: 'Asana token', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
+    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'Slack webhook' : 'Slack turned off', slack_messages: 'Slack messages', slack_sites: 'Slack sites', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
     events.add('settings', `Changed ${Object.keys(changed).map(label).join(', ')}; restarting to apply`);
     log('Settings changed:', Object.keys(changed).join(', '));
     restart();
@@ -204,6 +213,16 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       return [200, await sendTest(`🧪 *Test alert* (made-up pitch)
 
 ${sampleAlert(template)}`)];
+    }
+    // Uses the URL typed in Settings (saved or not), else the saved one.
+    if (route === 'POST /api/test-slack') {
+      const url = String((await readBody(req)).url || '').trim() || options.slackWebhook;
+      if (!url) throw new HttpError(400, 'Paste the Slack webhook URL first');
+      if (!SLACK_URL.test(url)) throw new HttpError(400, 'That is not a Slack webhook URL (https://hooks.slack.com/services/…)');
+      try { await postSlack(url, '🧪 *Test message*\n\nPDC Monitor can post to this Slack channel.', fetcher); }
+      catch (e) { throw new HttpError(502, `Slack didn't accept the test: ${e?.message || e}`); }
+      events.add('test', 'Slack test message sent from the dashboard');
+      return [200, { ok: true }];
     }
     if (route === 'POST /api/relink') { await wa.relink(); return [200, { ok: true }]; }
     if (route === 'GET /api/settings') return [200, safeOptions()];

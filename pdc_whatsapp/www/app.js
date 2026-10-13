@@ -787,6 +787,7 @@ const EVENT_STYLE = {
   resend: ['var(--info)', 'Resend requested', '<path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4 18-7Z"/>'],
   rejected: ['var(--critical)', 'Request rejected', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
   send_failed: ['var(--critical)', 'Send not confirmed', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
+  slack_failed: ['var(--warning)', 'Slack copy not sent', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
   error: ['var(--critical)', 'Error', '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16v.1"/>'],
   upstream_lost: ['var(--critical)', 'Worker can\'t reach the bridge', '<path d="M6 6l12 12M18 6 6 18"/>'],
   upstream_ok: ['var(--good)', 'Worker reaching the bridge again', '<path d="m5 12 5 5 9-10"/>'],
@@ -822,7 +823,7 @@ function monitorDraftFrom(m, lists) {
   };
 }
 function bridgeDraftFrom(s) {
-  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '' };
+  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_messages: s.slack_messages ?? '', slack_sites: s.slack_sites ?? '' };
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function monitorChanges() {
@@ -895,6 +896,18 @@ function renderSettings(force = false) {
         <div class="help">${onPi() ? 'Only used to move the pitch monitor here from the Worker, which is already done.' : 'The pitch monitor moves here from this Worker on the next start. It signs in with this add-on’s api_token.'}</div>${err('worker_url')}</div>`}
     </div>
 
+    <div class="card s-card rise" style="animation-delay:150ms">
+      <div class="s-head"><span class="ico"><svg><use href="#i-chat"/></svg></span><div><h2>Slack</h2><p>Also posts the messages picked here to a Slack channel, after they go to WhatsApp. Saving restarts the add-on.</p></div></div>
+      ${!bd ? '<div class="field col"><div class="muted">Loading…</div></div>' : `
+      <div class="field col"><label for="f-slack">Webhook URL<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${st.settings.slack_webhook_set ? 'Saved. Paste a new one only to replace it.' : 'In Slack: api.slack.com/apps › Create New App › Incoming Webhooks › Add New Webhook. Empty means Slack is off.'}</small></label>
+        <input class="input wide" id="f-slack" name="slack_webhook_url" type="password" value="" placeholder="${st.settings.slack_webhook_set ? '•••••••• saved' : 'https://hooks.slack.com/services/…'}" autocomplete="off" spellcheck="false">${err('slack_webhook_url')}
+        <div class="pair" style="flex-wrap:wrap"><button class="btn" id="btn-test-slack" type="button"><svg><use href="#i-send"/></svg>Send test</button><span class="muted small">Uses the URL in the box, or the saved one.</span></div></div>
+      <div class="field col"><div class="fl">Send to Slack<small>Untick all to stop Slack messages without removing the URL</small></div>
+        <div class="chips">${[['duplicates', 'Duplicate alerts'], ['problems', 'Monitor problems and recoveries'], ['connection', "Can't reach the Worker"]].map(([v, l]) => `<label class="chk"><input type="checkbox" name="slack_msg" value="${v}" ${bd.slack_messages.split(',').includes(v) ? 'checked' : ''}><span><i class="mark"></i>${l}</span></label>`).join('')}</div>${err('slack_messages')}</div>
+      <div class="field col"><div class="fl">For these sites<small>Duplicate alerts and monitor problems from other sites go to WhatsApp only</small></div>
+        <div class="chips">${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS']].map(([v, l]) => `<label class="chk"><input type="checkbox" name="slack_site" value="${v}" ${bd.slack_sites.split(',').includes(v) ? 'checked' : ''}><span><i class="mark"></i>${l}</span></label>`).join('')}</div>${err('slack_sites')}</div>`}
+    </div>
+
     <div class="card s-card rise" style="animation-delay:180ms">
       <div class="s-head"><span class="ico"><svg><use href="#i-grid"/></svg></span><div><h2>Dashboard</h2><p>Saved in this browser only.</p></div></div>
       <div class="field"><div class="fl">Theme</div><div class="seg" data-pref="theme">${[['auto', 'Match Home Assistant'], ['dark', 'Dark'], ['light', 'Light']].map(([v, l]) => `<button data-v="${v}" class="${prefs.theme === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
@@ -960,6 +973,8 @@ function onSettingsInput(e) {
     }
   }
   if (d && t.name === 'alert_template') { const def = S.status?.alertTemplate?.default || ''; d.alert_template = t.value.trim() === def.trim() ? '' : t.value; }
+  if (bd && t.name === 'slack_msg') bd.slack_messages = $$('input[name=slack_msg]:checked').map(x => x.value).join(',');
+  if (bd && t.name === 'slack_site') bd.slack_sites = $$('input[name=slack_site]:checked').map(x => x.value).join(',');
   if (bd && t.name in bd) bd[t.name] = t.type === 'checkbox' ? t.checked : t.type === 'number' ? Number(t.value) : t.value.trim();
   updateSavebar();
 }
@@ -1094,6 +1109,12 @@ document.addEventListener('click', async e => {
   if (t.id === 'btn-test-alert') {
     t.classList.add('busy');
     try { await api('api/test-alert', { method: 'POST', body: { template: $('#f-tpl').value } }); toast('Test alert sent. Check WhatsApp', 'ok'); loadMessages(); }
+    catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
+    return;
+  }
+  if (t.id === 'btn-test-slack') {
+    t.classList.add('busy');
+    try { await api('api/test-slack', { method: 'POST', body: { url: $('#f-slack').value.trim() } }); toast('Test message sent. Check Slack', 'ok'); }
     catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
     return;
   }
