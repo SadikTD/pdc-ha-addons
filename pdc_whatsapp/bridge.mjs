@@ -13,8 +13,11 @@ const digits = s => String(s || '').replace(/\D/g, '');
 export const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 export const SLACK_URL = /^https:\/\/hooks\.slack\.com\/(services|workflows|triggers)\/[A-Za-z0-9/_-]{10,200}$/;
-export const SLACK_MESSAGES = ['duplicates', 'problems', 'connection'];
 export const SLACK_SITES = ['wgtc', 'aotf', 'os'];
+// Where each kind of PDC message goes. Slack carries the alerts; WhatsApp is
+// for problems with the monitor itself, which may include Slack being down.
+export const ROUTES = ['slack', 'whatsapp', 'both'];
+export const DEFAULT_ROUTES = { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' };
 // "a,b" option string -> known values; unset means all of them.
 const pickList = (v, all) => (v == null ? all : all.filter(x => String(v).split(',').map(s => s.trim()).includes(x)));
 
@@ -31,10 +34,11 @@ export function loadOptions(file = `${DATA}/options.json`) {
     alertGroup: /^[\d-]{5,40}@g\.us$/.test(String(o.alert_group || '')) ? o.alert_group : '',
     // 0 turns the "Worker can't reach this bridge" watchdog off.
     upstreamMinutes: Math.min(1440, Math.max(0, Number(o.upstream_alert_minutes ?? 15) || 0)),
-    // Slack copy of PDC messages ('' = off), and which kinds and sites to copy.
+    // Slack Incoming Webhook ('' = everything goes to WhatsApp), the sites
+    // whose messages may use it, and where each kind of message goes.
     slackWebhook: SLACK_URL.test(String(o.slack_webhook_url || '').trim()) ? String(o.slack_webhook_url).trim() : '',
-    slackMessages: pickList(o.slack_messages, SLACK_MESSAGES),
     slackSites: pickList(o.slack_sites, SLACK_SITES),
+    routes: Object.fromEntries(Object.entries(DEFAULT_ROUTES).map(([k, d]) => [k, ROUTES.includes(o[`route_${k}`]) ? o[`route_${k}`] : d])),
   };
   if (options.token.length < 32) throw new Error('api_token must be at least 32 characters');
   if (!/^[1-9]\d{7,14}$/.test(options.sender) || !/^[1-9]\d{7,14}$/.test(options.recipient)) {
@@ -191,24 +195,80 @@ export function slackKind(key) {
   return null; // dashboard tests, Sentinel's /send
 }
 
-// WhatsApp *bold* and _italic_ read the same in Slack; only & < > need escaping.
-export async function postSlack(url, text, fetcher = fetch) {
-  const res = await fetcher(url, {
-    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }),
-  });
-  if (!res.ok) throw new Error(`Slack said ${res.status} ${(await res.text().catch(() => '')).slice(0, 100)}`.trim());
+// Which channels a message uses. Slack only with a webhook and for a picked
+// site; a Slack-only message that can't use Slack goes to WhatsApp instead.
+export function routeFor(options, kind) {
+  if (!kind) return { slack: false, whatsapp: true };
+  const route = options.routes?.[kind.kind] || DEFAULT_ROUTES[kind.kind];
+  const slack = Boolean(options.slackWebhook) && (!kind.site || options.slackSites.includes(kind.site)) && route !== 'whatsapp';
+  return { slack, whatsapp: route !== 'slack' || !slack };
 }
 
-// Copies a PDC message to Slack when its kind and site are picked in Settings.
-// Called after WhatsApp accepted it, so it inherits the ledger's send-once
-// guarantee. Never throws: a Slack failure is logged, not retried.
-export function createSlack(options, events, fetcher = fetch) {
-  return async (key, text) => {
-    const k = slackKind(key);
-    if (!options.slackWebhook || !k || !options.slackMessages.includes(k.kind) || (k.site && !options.slackSites.includes(k.site))) return false;
-    try { await postSlack(options.slackWebhook, text, fetcher); return true; }
-    catch (e) { log(`Slack copy of ${key} failed:`, e?.message || e); events?.add('slack_failed', `${key}: ${String(e?.message || e).slice(0, 200)}`); return false; }
+// Connection errors where the request never left this Pi: safe to retry.
+const NOT_SENT = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT']);
+
+// Posts to a Slack webhook. WhatsApp *bold* and _italic_ read the same in
+// Slack; only & < > need escaping. Resolves { status, error }: 'sent',
+// 'retry' (not delivered: offline, rate limited, Slack down), 'failed' (Slack
+// refused it, e.g. the webhook was removed) or 'unknown' (may have posted).
+export async function postSlack(url, text, fetcher = fetch) {
+  let res;
+  try {
+    res = await fetcher(url, {
+      method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }),
+    });
+  } catch (e) {
+    const code = e?.cause?.code || e?.code;
+    return NOT_SENT.has(code) ? { status: 'retry', error: `Can't reach Slack (${code})` } : { status: 'unknown', error: `Slack didn't answer: ${e?.message || e}`.slice(0, 200) };
+  }
+  if (res.ok) return { status: 'sent' };
+  const error = `Slack said ${res.status} ${(await res.text().catch(() => '')).slice(0, 100)}`.trim();
+  return { status: res.status === 429 || res.status >= 500 ? 'retry' : 'failed', error };
+}
+
+// Sends one PDC message to its channels, each at most once per key: the
+// ledger records WhatsApp under the key and Slack under "<key>@slack", so a
+// retry only re-tries the channel that didn't go through. `as` overrides the
+// kind read from the key (dashboard test alerts).
+// Resolves { status, id, error, fresh }: 'retry' leaves an outbox message
+// queued; otherwise the outcome to report ('sent' if any channel took it).
+export function createDelivery({ options, ledger, wa, events, target = alertTarget(options, wa, events), fetcher = fetch }) {
+  async function once(lk, send) {
+    const prev = ledger.get(lk);
+    if (prev?.state === 'sending') return { status: 'retry' };
+    if (prev) return { status: prev.state, id: prev.id, error: prev.error };
+    const r = await send(entry => ledger.set(lk, { state: 'sending', sentAt: null, error: null, ...entry }));
+    if (r.status === 'retry') ledger.delete(lk);
+    else ledger.set(lk, r.status === 'sent' ? { state: 'sent', id: r.id, sentAt: Date.now() } : { state: r.status, error: r.error });
+    if (r.status === 'sent') log(`sent ${lk}`);
+    else if (r.status !== 'retry') { log(`send failed for ${lk}: ${r.error}`); events?.add(lk.endsWith('@slack') ? 'slack_failed' : 'send_failed', `${lk}: ${r.error}`); }
+    return { ...r, fresh: true };
+  }
+  const whatsapp = (key, text) => once(key, async start => {
+    const s = wa.status();
+    if (!s.connected || !s.accountOk) return { status: 'retry', error: 'WhatsApp offline' };
+    const t = await target(text); // the chosen group, or the recipient number
+    start({ text: t.text, to: t.to });
+    try { return { status: 'sent', id: await wa.send(t.jid, t.text) }; }
+    catch (e) { return e?.notSent ? { status: 'retry' } : { status: 'unknown', error: String(e?.message || e).slice(0, 200) }; }
+  });
+  const slack = (key, text) => once(`${key}@slack`, async start => {
+    start({ text, to: 'slack' });
+    const r = await postSlack(options.slackWebhook, text, fetcher);
+    return r.status === 'sent' ? { status: 'sent', id: 'slack' } : r;
+  });
+  return async (key, text, as = slackKind(key)) => {
+    const route = routeFor(options, as), results = [];
+    if (route.slack) {
+      const r = await slack(key, text);
+      // Slack refused it for good: never lose the alert, send it on WhatsApp saying why.
+      if (r.status === 'failed' && !route.whatsapp) return whatsapp(key, `${text}\n\n_(This was meant for Slack, but Slack refused it: ${r.error}. Check the webhook in PDC Monitor › Settings.)_`);
+      results.push(r);
+    }
+    if (route.whatsapp) results.push(await whatsapp(key, text));
+    const fresh = results.some(r => r.fresh), by = st => results.find(r => r.status === st);
+    return { ...(by('retry') || by('sent') || by('unknown') || results[0]), fresh };
   };
 }
 
@@ -218,7 +278,7 @@ export function createSlack(options, events, fetcher = fetch) {
 // Worker until the monitor has moved here. A key already in the ledger is
 // re-reported, never re-sent, so a lost ack or a restart can't cause a
 // duplicate. `upstream` is told about each successful poll.
-export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, api = null, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)), target = alertTarget(options, wa, events), slack = () => {} }) {
+export function createOutboxPoller({ options, ledger, wa, events, upstream, fetcher = fetch, api = null, spacingMs = 3000, sleep = ms => new Promise(r => setTimeout(r, ms)), deliver = createDelivery({ options, ledger, wa, events, fetcher }) }) {
   let busy = false, failing = false;
   const call = api || remoteApi(options, fetcher);
   const ack = (key, status, extra = {}) => call('/bridge/outbox/ack', { method: 'POST', body: JSON.stringify({ key, status, ...extra }) })
@@ -242,34 +302,16 @@ export function createOutboxPoller({ options, ledger, wa, events, upstream, fetc
         upstream?.contact();
         for (const m of messages) {
           if (typeof m?.key !== 'string' || !/^[\w:.-]{1,120}$/.test(m.key)) continue;
-          const prev = ledger.get(m.key);
-          if (prev?.state === 'sent') { await ack(m.key, 'sent', { id: prev.id }); continue; }
-          if (prev?.state === 'unknown') { await ack(m.key, 'unknown', { error: prev.error || null }); continue; }
-          if (prev?.state === 'sending') continue;
           if (digits(m.to) !== options.recipient || String(m.to).includes('@') || typeof m.text !== 'string' || !m.text.trim() || m.text.length > MAX_TEXT) {
             events?.add('rejected', `Outbox message ${m.key} is not for the configured recipient or is malformed`);
             await ack(m.key, 'failed', { error: 'recipient_not_allowed or malformed message' });
             continue;
           }
-          const s = wa.status();
-          if (!s.connected || !s.accountOk) break; // stays queued; the next poll retries
-          // Queued for the recipient number; delivered to the chosen group, if any.
-          const t = await target(m.text);
-          ledger.set(m.key, { state: 'sending', text: t.text, to: t.to, sentAt: null, error: null });
-          try {
-            const id = await wa.send(t.jid, t.text);
-            ledger.set(m.key, { state: 'sent', id, sentAt: Date.now() });
-            log(`sent ${m.key}`);
-            slack(m.key, m.text);
-            await ack(m.key, 'sent', { id });
-          } catch (e) {
-            if (e?.notSent) { ledger.delete(m.key); break; } // stays queued; sent after the reconnect
-            const error = String(e?.message || e).slice(0, 200);
-            ledger.set(m.key, { state: 'unknown', error });
-            log(`send failed for ${m.key}: ${error}`);
-            events?.add('send_failed', `${m.key}: ${error}`);
-            await ack(m.key, 'unknown', { error });
-          }
+          // Each channel is sent at most once per key; a known key is only re-reported.
+          const r = await deliver(m.key, m.text);
+          if (r.status === 'retry') continue; // stays queued; the next poll retries
+          await ack(m.key, r.status, r.status === 'sent' ? { id: r.id } : { error: r.error || null });
+          if (!r.fresh) continue;
           await sleep(spacingMs);
         }
       } finally { busy = false; }

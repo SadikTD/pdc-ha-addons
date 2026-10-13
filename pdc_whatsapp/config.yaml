@@ -1,7 +1,7 @@
-name: PDC WhatsApp Bridge
-version: "3.8.0"
+name: PDC Monitor
+version: "3.9.0"
 slug: pdc_whatsapp
-description: Pitch Duplicate Checker monitor for WGTC (Trello), AotF (Google Sheet) and OS (Asana) with self-hosted WhatsApp alerts and a sidebar dashboard
+description: Pitch Duplicate Checker monitor for WGTC (Trello), AotF (Google Sheet) and OS (Asana) with Slack alerts, WhatsApp for monitor problems, and a sidebar dashboard
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/pdc_whatsapp
 arch:
   - aarch64
@@ -40,12 +40,15 @@ options:
   # WhatsApp group for PDC alerts (its id, e.g. 1203...@g.us); empty sends them
   # to recipient_number. Easiest to pick in PDC Monitor > Settings.
   alert_group: ""
-  # Slack Incoming Webhook (https://hooks.slack.com/services/...); also gets a
-  # copy of the messages picked below. Empty = off. Easiest in PDC Monitor > Settings.
+  # Slack Incoming Webhook (https://hooks.slack.com/services/...). Empty sends
+  # everything to WhatsApp. Easiest in PDC Monitor > Settings.
   slack_webhook_url: ""
-  # Comma lists: duplicates,problems,connection and wgtc,aotf,os.
-  slack_messages: "duplicates,problems,connection"
+  # Sites whose messages may go to Slack (comma list of wgtc,aotf,os).
   slack_sites: "wgtc,aotf,os"
+  # Where each kind of message goes: slack, whatsapp or both.
+  route_duplicates: slack
+  route_problems: whatsapp
+  route_connection: whatsapp
 schema:
   api_token: password
   sender_number: match(^\+[1-9]\d{7,14}$)
@@ -57,5 +60,7 @@ schema:
   asana_token: password?
   alert_group: match(^([0-9-]{5,40}@g\.us)?$)?
   slack_webhook_url: password?
-  slack_messages: match(^[a-z,]*$)?
   slack_sites: match(^[a-z,]*$)?
+  route_duplicates: list(slack|whatsapp|both)?
+  route_problems: list(slack|whatsapp|both)?
+  route_connection: list(slack|whatsapp|both)?

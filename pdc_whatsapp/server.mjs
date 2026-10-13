@@ -4,7 +4,7 @@ import http from 'node:http';
 import { rm, mkdir, readFile } from 'node:fs/promises';
 import makeWASocket, { DisconnectReason, Browsers, fetchLatestBaileysVersion } from 'baileys';
 import pino from 'pino';
-import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, createOutboxPoller, remoteApi, alertTarget, createSlack, log } from './bridge.mjs';
+import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, createOutboxPoller, createDelivery, remoteApi, alertTarget, log } from './bridge.mjs';
 import { useAtomicAuthState } from './auth-state.mjs';
 import { createUiHandler } from './ui.mjs';
 import { createLocalMonitor } from './local-monitor.mjs';
@@ -253,19 +253,14 @@ events.add('started', `Add-on ${version} started`);
 const ledger = createLedger();
 const wa = startWhatsApp(options, events);
 const target = alertTarget(options, wa, events); // the chosen group, or the recipient number
-const slack = createSlack(options, events); // optional copy to a Slack channel
+// Sends each PDC message to Slack and/or WhatsApp, as picked in Settings.
+const deliver = createDelivery({ options, ledger, wa, events, target });
 // Alerts the recipient directly if the Worker can't be reached for a while.
 const upstream = createUpstreamWatchdog({
   minutes: options.upstreamMinutes, events,
   notify: message => haNotify(options, message, 'pdc_whatsapp_upstream'),
-  async send(text) {
-    const s = wa.status();
-    if (!s.connected || !s.accountOk) return false; // retried next minute
-    const key = `watchdog:${Date.now()}`, t = await target(text);
-    ledger.set(key, { state: 'sending', text: t.text, to: t.to, sentAt: null, error: null });
-    try { ledger.set(key, { state: 'sent', id: await wa.send(t.jid, t.text), sentAt: Date.now() }); slack(key, text); return true; }
-    catch (e) { if (e?.notSent) ledger.delete(key); else ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
-  },
+  // Not sent (or not confirmed): retried next minute.
+  send: async text => (await deliver(`watchdog:${Date.now()}`, text)).status === 'sent',
 });
 setInterval(() => upstream.tick().catch(e => log('Watchdog failed:', e?.message || e)), 60000).unref();
 // The pitch monitor scans WGTC (Trello), AotF (Google Sheet) and OS (Asana)
@@ -278,12 +273,7 @@ let outbox = null, shutdown = null;
 async function monitorAlert(text, recovered, site) {
   const id = !site || site.id === 'wgtc' ? 'pdc_monitor_scans' : `pdc_monitor_scans_${site.id}`;
   await haNotify(options, recovered ? null : text.replace(/\*/g, ''), id);
-  const s = wa.status();
-  if (!s.connected || !s.accountOk) return false; // retried next minute
-  const key = `monitor-watch:${site?.id || 'wgtc'}:${Date.now()}`, t = await target(text);
-  ledger.set(key, { state: 'sending', text: t.text, to: t.to, sentAt: null, error: null });
-  try { ledger.set(key, { state: 'sent', id: await wa.send(t.jid, t.text), sentAt: Date.now() }); log(`sent ${key}`); slack(key, text); return true; }
-  catch (e) { if (e?.notSent) ledger.delete(key); else ledger.set(key, { state: 'unknown', error: String(e?.message || e).slice(0, 200) }); return false; }
+  return (await deliver(`monitor-watch:${site?.id || 'wgtc'}:${Date.now()}`, text)).status === 'sent'; // else retried next minute
 }
 const monitor = createLocalMonitor({
   options, events, onAlert: monitorAlert,
@@ -292,7 +282,7 @@ const monitor = createLocalMonitor({
   onStuck: () => shutdown?.('monitor stuck', 1),
 });
 const alertApi = (path, init) => (monitor.active() ? monitor.api : remoteApi(options))(path, init);
-outbox = createOutboxPoller({ options, ledger, wa, events, upstream, api: alertApi, target, slack });
+outbox = createOutboxPoller({ options, ledger, wa, events, upstream, api: alertApi, deliver });
 setInterval(() => outbox.poll().catch(e => log('Outbox poll failed:', e?.message || e)), 15000);
 monitor.start();
 const server = http.createServer(createHandler({ options, ledger, wa, events }));
@@ -301,7 +291,7 @@ server.listen(PORT, () => log(`Bridge listening on :${PORT}`));
 
 // Sidebar dashboard (Ingress). Only the Supervisor's ingress proxy may connect.
 const ui = http.createServer(createUiHandler({
-  options, ledger, wa, events, version, supervisor, target, localMonitor: () => (monitor.active() ? monitor.api : null),
+  options, ledger, wa, events, version, supervisor, target, deliver, localMonitor: () => (monitor.active() ? monitor.api : null),
   monitorHealth: () => (monitor.active() ? monitor.health() : null),
   restart: () => setTimeout(() => supervisor('POST', '/addons/self/restart'), 1500),
 }));

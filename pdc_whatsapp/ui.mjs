@@ -6,7 +6,7 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA, log, remoteApi, alertTarget, postSlack, SLACK_URL, SLACK_MESSAGES, SLACK_SITES } from './bridge.mjs';
+import { DATA, log, remoteApi, alertTarget, createDelivery, postSlack, SLACK_URL, SLACK_SITES, ROUTES, DEFAULT_ROUTES } from './bridge.mjs';
 import { buildMonitorAlert, checkAlertTemplate, DEFAULT_ALERT_TEMPLATE, ALERT_PLACEHOLDERS } from './monitor/trello-monitor.mjs';
 import { AOTF_SITE } from './monitor/pitch-sources.mjs';
 
@@ -65,10 +65,12 @@ export function validateBridgeSettings(changes) {
     } else if (key === 'slack_webhook_url') {
       const v = String(value ?? '').trim();
       if (v === '' || SLACK_URL.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Slack webhook URL (https://hooks.slack.com/services/…)';
-    } else if (key === 'slack_messages' || key === 'slack_sites') {
+    } else if (key === 'slack_sites') {
       // Comma list in the canonical order, so an unchanged pick compares equal.
-      const all = key === 'slack_messages' ? SLACK_MESSAGES : SLACK_SITES, picked = String(value ?? '').split(',').filter(Boolean);
-      if (picked.every(x => all.includes(x))) clean[key] = all.filter(x => picked.includes(x)).join(','); else errors[key] = 'Unknown choice';
+      const picked = String(value ?? '').split(',').filter(Boolean);
+      if (picked.every(x => SLACK_SITES.includes(x))) clean[key] = SLACK_SITES.filter(x => picked.includes(x)).join(','); else errors[key] = 'Unknown site';
+    } else if (/^route_(duplicates|problems|connection)$/.test(key)) {
+      if (ROUTES.includes(value)) clean[key] = value; else errors[key] = 'Pick Slack, WhatsApp or both';
     } else if (key === 'worker_url') {
       const v = String(value || '').trim().replace(/\/+$/, '');
       if (v === '' || /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(v)) clean[key] = v; else errors[key] = 'Use the Worker address, e.g. https://name.account.workers.dev';
@@ -78,7 +80,7 @@ export function validateBridgeSettings(changes) {
 }
 
 // `localMonitor()` returns the in-add-on monitor's API, or null before it has moved.
-export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, optionsFile = `${DATA}/options.json`, target = alertTarget(options, wa, events) }) {
+export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, optionsFile = `${DATA}/options.json`, target = alertTarget(options, wa, events), deliver = createDelivery({ options, ledger, wa, events, target, fetcher }) }) {
   let monitorCache = null;
   const remote = remoteApi(options, fetcher);
 
@@ -111,7 +113,8 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     asana_token_set: Boolean(options.asanaToken), // never the token itself
     alert_group: options.alertGroup,
     slack_webhook_set: Boolean(options.slackWebhook), // never the URL itself
-    slack_messages: (options.slackMessages ?? SLACK_MESSAGES).join(','), slack_sites: (options.slackSites ?? SLACK_SITES).join(','),
+    slack_sites: (options.slackSites ?? SLACK_SITES).join(','),
+    ...Object.fromEntries(Object.keys(DEFAULT_ROUTES).map(k => [`route_${k}`, options.routes?.[k] || DEFAULT_ROUTES[k]])),
   });
 
   const status = () => {
@@ -158,7 +161,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       await writeFile(optionsFile + '.tmp', JSON.stringify({ ...stored, ...changed }, null, 2));
       await rename(optionsFile + '.tmp', optionsFile);
     }
-    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'Slack webhook' : 'Slack turned off', slack_messages: 'Slack messages', slack_sites: 'Slack sites', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
+    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'Slack webhook' : 'Slack turned off', slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
     events.add('settings', `Changed ${Object.keys(changed).map(label).join(', ')}; restarting to apply`);
     log('Settings changed:', Object.keys(changed).join(', '));
     restart();
@@ -202,7 +205,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       const [, site, id = job[3], , action] = job;
       const { status: code, body } = await worker(`/bridge/jobs/${site ? `${site}/${id}` : id}/${action}`, { method: 'POST' });
       // Clear this bridge's record of the alert so the retry really sends.
-      if (code === 200 && action === 'resend') ledger.delete(body.key);
+      if (code === 200 && action === 'resend') { ledger.delete(body.key); ledger.delete(`${body.key}@slack`); }
       if (code === 200) { monitorCache = null; events.add(action, `${action === 'resend' ? 'Resend' : 'Recheck'} requested for ${site ? `${site.toUpperCase()} pitch` : 'card'} ${id}`); }
       return [code, body];
     }
@@ -210,17 +213,20 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     if (route === 'POST /api/test-alert') {
       const { template = '' } = await readBody(req);
       try { checkAlertTemplate(template); } catch (e) { throw new HttpError(400, `Alert message ${e.message}`); }
-      return [200, await sendTest(`🧪 *Test alert* (made-up pitch)
-
-${sampleAlert(template)}`)];
+      // Goes where real duplicate alerts go (Slack and/or WhatsApp).
+      const r = await deliver(`ui-test-alert-${Date.now()}`, `🧪 *Test alert* (made-up pitch)\n\n${sampleAlert(template)}`, { kind: 'duplicates', site: null });
+      if (r.status === 'retry') throw new HttpError(409, r.error || "Couldn't send it right now; try again in a minute");
+      if (r.status !== 'sent') throw new HttpError(502, `The test alert wasn't confirmed: ${r.error || r.status}`);
+      events.add('test', 'Test alert sent from the dashboard');
+      return [200, { ok: true }];
     }
     // Uses the URL typed in Settings (saved or not), else the saved one.
     if (route === 'POST /api/test-slack') {
       const url = String((await readBody(req)).url || '').trim() || options.slackWebhook;
       if (!url) throw new HttpError(400, 'Paste the Slack webhook URL first');
       if (!SLACK_URL.test(url)) throw new HttpError(400, 'That is not a Slack webhook URL (https://hooks.slack.com/services/…)');
-      try { await postSlack(url, '🧪 *Test message*\n\nPDC Monitor can post to this Slack channel.', fetcher); }
-      catch (e) { throw new HttpError(502, `Slack didn't accept the test: ${e?.message || e}`); }
+      const r = await postSlack(url, '🧪 *Test message*\n\nPDC Monitor can post to this Slack channel.', fetcher);
+      if (r.status !== 'sent') throw new HttpError(502, `Slack didn't accept the test: ${r.error}`);
       events.add('test', 'Slack test message sent from the dashboard');
       return [200, { ok: true }];
     }

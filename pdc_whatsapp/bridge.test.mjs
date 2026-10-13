@@ -4,7 +4,7 @@ import http from 'node:http';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadOptions, createLedger, createHandler, createUpstreamWatchdog, createOutboxPoller, alertTarget, createSlack, slackKind } from './bridge.mjs';
+import { loadOptions, createLedger, createHandler, createUpstreamWatchdog, createOutboxPoller, alertTarget, createDelivery, slackKind } from './bridge.mjs';
 
 const token = 'x'.repeat(40);
 const options = { token, sender: '15550000001', recipient: '15550000002' };
@@ -79,10 +79,10 @@ test('rejects malformed bodies and keys', async () => {
 test('options require a long token and international numbers', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pdc-')), file = join(dir, 'options.json');
   writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002' }));
-  assert.deepEqual(loadOptions(file), { ...options, notifications: true, offlineMinutes: 10, workerUrl: '', asanaToken: '', alertGroup: '', upstreamMinutes: 15, slackWebhook: '', slackMessages: ['duplicates', 'problems', 'connection'], slackSites: ['wgtc', 'aotf', 'os'] });
+  assert.deepEqual(loadOptions(file), { ...options, notifications: true, offlineMinutes: 10, workerUrl: '', asanaToken: '', alertGroup: '', upstreamMinutes: 15, slackWebhook: '', slackSites: ['wgtc', 'aotf', 'os'], routes: { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' } });
   writeFileSync(file, JSON.stringify({ api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002',
     ha_notifications: false, offline_notify_minutes: 30, worker_url: 'https://w.example.dev/', upstream_alert_minutes: 0, asana_token: ' 2/123/456:abc ', alert_group: '120363012345678901@g.us' }));
-  assert.deepEqual(loadOptions(file), { ...options, notifications: false, offlineMinutes: 30, workerUrl: 'https://w.example.dev', asanaToken: '2/123/456:abc', alertGroup: '120363012345678901@g.us', upstreamMinutes: 0, slackWebhook: '', slackMessages: ['duplicates', 'problems', 'connection'], slackSites: ['wgtc', 'aotf', 'os'] });
+  assert.deepEqual(loadOptions(file), { ...options, notifications: false, offlineMinutes: 30, workerUrl: 'https://w.example.dev', asanaToken: '2/123/456:abc', alertGroup: '120363012345678901@g.us', upstreamMinutes: 0, slackWebhook: '', slackSites: ['wgtc', 'aotf', 'os'], routes: { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' } });
   writeFileSync(file, JSON.stringify({ api_token: 'short', sender_number: '+15550000001', recipient_number: '+15550000002' }));
   assert.throws(() => loadOptions(file));
 });
@@ -244,33 +244,87 @@ test('alerts go to the chosen group, and to the number (saying why) once the sen
   assert.equal((await alertTarget(opts, { groups: async () => { throw new Error('not connected'); } })('x')).jid, group);
 });
 
-test('slack copies only the picked kinds and sites, escaped, and never throws', async () => {
+test('message kinds and sites are read from the key', () => {
   assert.deepEqual(slackKind('trello:5f00ab:card1'), { kind: 'duplicates', site: 'wgtc' });
   assert.deepEqual(slackKind('pitch:os:123'), { kind: 'duplicates', site: 'os' });
   assert.deepEqual(slackKind('health:aotf:scan:9'), { kind: 'problems', site: 'aotf' });
   assert.deepEqual(slackKind('monitor-watch:os:1'), { kind: 'problems', site: 'os' });
   assert.deepEqual(slackKind('watchdog:1'), { kind: 'connection', site: null });
   assert.equal(slackKind('ui-test-1'), null);
-  const posts = [];
-  const fetcher = async (url, init) => { posts.push(JSON.parse(init.body).text); return { ok: true }; };
-  const slack = createSlack({ slackWebhook: 'https://hooks.slack.com/services/T0/B0/xyz', slackMessages: ['duplicates', 'connection'], slackSites: ['aotf'] }, null, fetcher);
-  assert.equal(await slack('pitch:aotf:1', '*Dup* <a & b>'), true);
-  assert.equal(await slack('pitch:os:1', 'x'), false); // site not picked
-  assert.equal(await slack('health:aotf:scan:1', 'x'), false); // kind not picked
-  assert.equal(await slack('watchdog:1', 'down'), true); // no site, kind picked
-  assert.deepEqual(posts, ['*Dup* &lt;a &amp; b&gt;', 'down']);
-  const failing = createSlack({ slackWebhook: 'https://hooks.slack.com/services/T0/B0/xyz', slackMessages: ['duplicates'], slackSites: ['wgtc'] }, null, async () => { throw new Error('offline'); });
-  assert.equal(await failing('trello:b:c', 'x'), false);
-  assert.equal(await createSlack({ slackWebhook: '', slackMessages: ['duplicates'], slackSites: ['wgtc'] }, null, fetcher)('trello:b:c', 'x'), false);
 });
 
-test('options: slack lists default to everything and drop unknown values', () => {
+const HOOK = 'https://hooks.slack.com/services/T0/B0/xyz';
+function deliveryRig({ waOnline = true, slack = () => ({ ok: true }), opts = {} } = {}) {
+  const ledger = createLedger(join(mkdtempSync(join(tmpdir(), 'pdc-')), 'sent.json'));
+  const posts = [], wa = [], events = [];
+  const fetcher = async (url, init) => { posts.push(JSON.parse(init.body).text); const r = await slack(); return { ok: r.ok, status: r.status || 200, text: async () => r.body || '' }; };
+  const waObj = { status: () => ({ connected: waOnline, accountOk: waOnline }), send: async (jid, text) => { wa.push(text); return 'WA' + wa.length; }, groups: async () => [] };
+  const o = { ...options, slackWebhook: HOOK, slackSites: ['wgtc', 'aotf', 'os'], routes: { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' }, ...opts };
+  const deliver = createDelivery({ options: o, ledger, wa: waObj, events: { add: t => events.push(t) }, fetcher });
+  return { deliver, ledger, posts, wa, events };
+}
+
+test('duplicates go to Slack even with WhatsApp offline; problems go to WhatsApp', async () => {
+  const r = deliveryRig({ waOnline: false });
+  assert.deepEqual(await r.deliver('pitch:aotf:1', '*Dup* <a & b>'), { status: 'sent', id: 'slack', fresh: true });
+  assert.deepEqual(r.posts, ['*Dup* &lt;a &amp; b&gt;']); assert.deepEqual(r.wa, []);
+  assert.equal(r.ledger.get('pitch:aotf:1@slack').to, 'slack');
+  // Asked again (lost ack): re-reported, not re-posted.
+  assert.deepEqual(await r.deliver('pitch:aotf:1', 'x'), { status: 'sent', id: 'slack', error: null, fresh: false });
+  assert.equal(r.posts.length, 1);
+  // Problems wait for WhatsApp; nothing recorded until it is sent.
+  assert.equal((await r.deliver('health:aotf:scan:1', 'stalled')).status, 'retry');
+  assert.equal(r.ledger.get('health:aotf:scan:1'), undefined); assert.equal(r.posts.length, 1);
+});
+
+test('Slack outage is retried; a refused webhook falls back to WhatsApp with a note', async () => {
+  let reply = { ok: false, status: 503 };
+  const r = deliveryRig({ slack: () => reply });
+  assert.equal((await r.deliver('trello:b:c1', 'dup')).status, 'retry');
+  assert.equal(r.ledger.get('trello:b:c1@slack'), undefined);
+  reply = { ok: true }; assert.equal((await r.deliver('trello:b:c1', 'dup')).status, 'sent');
+  reply = { ok: false, status: 404, body: 'no_service' };
+  const f = await r.deliver('trello:b:c2', 'dup2');
+  assert.equal(f.status, 'sent'); assert.match(r.wa[0], /^dup2\n\n_\(This was meant for Slack, but Slack refused it: Slack said 404 no_service/);
+  assert.equal(r.ledger.get('trello:b:c2@slack').state, 'failed'); assert.deepEqual(r.events, ['slack_failed']);
+  // Network error before the request left: retry. After it may have posted: unknown, never re-posted.
+  const net = deliveryRig({ slack: () => { throw Object.assign(new Error('fetch failed'), { cause: { code: 'ENOTFOUND' } }); } });
+  assert.equal((await net.deliver('trello:b:c3', 'x')).status, 'retry');
+  const slow = deliveryRig({ slack: () => { throw new Error('The operation was aborted due to timeout'); } });
+  assert.equal((await slow.deliver('trello:b:c4', 'x')).status, 'unknown');
+  assert.equal((await slow.deliver('trello:b:c4', 'x')).fresh, false); assert.equal(slow.posts.length, 1);
+});
+
+test('routes: both, no webhook, and sites not on Slack', async () => {
+  const both = deliveryRig({ waOnline: false, opts: { routes: { duplicates: 'both', problems: 'whatsapp', connection: 'slack' } } });
+  // Slack goes now; the alert stays queued until WhatsApp also has it, without re-posting to Slack.
+  assert.equal((await both.deliver('pitch:os:1', 'dup')).status, 'retry');
+  assert.equal((await both.deliver('pitch:os:1', 'dup')).status, 'retry'); assert.equal(both.posts.length, 1);
+  assert.equal((await both.deliver('watchdog:1', 'down')).status, 'sent'); // connection -> Slack
+  const none = deliveryRig({ opts: { slackWebhook: '' } });
+  assert.equal((await none.deliver('pitch:os:1', 'dup')).status, 'sent'); assert.deepEqual([none.posts, none.wa], [[], ['dup']]);
+  const sites = deliveryRig({ opts: { slackSites: ['wgtc'] } });
+  await sites.deliver('pitch:os:1', 'os dup'); await sites.deliver('trello:b:1', 'wgtc dup');
+  assert.deepEqual([sites.posts, sites.wa], [['wgtc dup'], ['os dup']]);
+});
+
+test('outbox: Slack alerts go out while WhatsApp is offline', async () => {
+  const ledger = createLedger(join(mkdtempSync(join(tmpdir(), 'pdc-')), 'sent.json'));
+  const acks = [];
+  const api = async (path, init) => (path === '/bridge/outbox'
+    ? Response.json({ messages: [{ key: 'health:os:scan:1', to: '+15550000002', text: 'stalled' }, { key: 'pitch:os:7', to: '+15550000002', text: 'dup' }] })
+    : (acks.push(JSON.parse(init.body)), Response.json({ ok: true })));
+  const fetcher = async () => ({ ok: true, status: 200, text: async () => 'ok' });
+  const wa = { status: () => ({ connected: false, accountOk: false }), send: async () => { throw new Error('offline'); } };
+  const o = { ...options, slackWebhook: HOOK, slackSites: ['wgtc', 'aotf', 'os'], routes: { duplicates: 'slack', problems: 'whatsapp', connection: 'whatsapp' } };
+  await createOutboxPoller({ options: o, ledger, wa, api, fetcher, sleep: async () => {} }).poll();
+  assert.deepEqual(acks, [{ key: 'pitch:os:7', status: 'sent', id: 'slack' }]);
+});
+
+test('options: Slack sites default to all, routes to Slack for duplicates', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pdc-')), file = join(dir, 'options.json');
   const base = { api_token: token, sender_number: '+15550000001', recipient_number: '+15550000002' };
-  writeFileSync(file, JSON.stringify(base));
-  let o = loadOptions(file);
-  assert.deepEqual([o.slackWebhook, o.slackMessages, o.slackSites], ['', ['duplicates', 'problems', 'connection'], ['wgtc', 'aotf', 'os']]);
-  writeFileSync(file, JSON.stringify({ ...base, slack_webhook_url: 'https://evil.example/x', slack_messages: 'problems,bogus', slack_sites: '' }));
-  o = loadOptions(file);
-  assert.deepEqual([o.slackWebhook, o.slackMessages, o.slackSites], ['', ['problems'], []]);
+  writeFileSync(file, JSON.stringify({ ...base, slack_webhook_url: 'https://evil.example/x', slack_sites: 'os,bogus', route_problems: 'both', route_connection: 'pigeon' }));
+  const o = loadOptions(file);
+  assert.deepEqual([o.slackWebhook, o.slackSites, o.routes], ['', ['os'], { duplicates: 'slack', problems: 'both', connection: 'whatsapp' }]);
 });

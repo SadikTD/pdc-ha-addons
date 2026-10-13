@@ -77,9 +77,9 @@ const SEND = {
   dry_run: { label: 'Dry run: not sent', tick: 'none' },
   pending: { label: 'Queued to send', tick: 'wait' },
   sending: { label: 'Sending now', tick: 'wait' },
-  accepted: { label: 'Sent to WhatsApp', tick: 'ok' },
+  accepted: { label: 'Sent', tick: 'ok' },
   failed: { label: 'Failed to send', tick: 'bad' },
-  uncertain: { label: 'Not confirmed; check WhatsApp', tick: 'warn' },
+  uncertain: { label: 'Not confirmed; check Slack or WhatsApp', tick: 'warn' },
 };
 const TICK_SVG = {
   ok: '<svg viewBox="0 0 24 24"><path d="m2 13 4 4 8-9"/><path d="m10 16 1 1 8-9"/></svg>',
@@ -93,7 +93,7 @@ const methodLabel = m => !m ? '—' : m.method === 'exact' ? 'Same headline or s
 function source(key) {
   if (key.startsWith('trello:')) return { id: 'pitch', label: 'Pitch alert · WGTC', c: 'var(--critical)' };
   if (key.startsWith('pitch:')) return { id: 'pitch', label: `Pitch alert · ${SITE_LABEL[key.split(':')[1]] || key.split(':')[1]}`, c: 'var(--critical)' };
-  if (key.startsWith('health:')) return { id: 'health', label: 'Monitor health', c: 'var(--warning)' };
+  if (/^(health|monitor-watch|watchdog):/.test(key)) return { id: 'health', label: 'Monitor health', c: 'var(--warning)' };
   if (key.startsWith('netmon-')) return { id: 'netmon', label: 'Net Monitor', c: 'var(--accent-2)' };
   if (key.startsWith('ui-test-')) return { id: 'test', label: 'Test', c: 'var(--accent)' };
   return { id: 'other', label: 'Other', c: 'var(--muted)' };
@@ -359,7 +359,7 @@ function renderTiles() {
     { id: 'checked', label: 'Pitches checked', value: checked, note: waiting ? `${waiting} waiting for a verdict` : `${pct(checked - flagged, checked)}% came back clear`, spark: d14(j => j.check === 'checked') },
     { id: 'flagged', label: 'Overlaps caught', value: flagged, note: `${mix.duplicate} duplicate · ${mix.same_story} similar · ${mix.near_miss} possible`, spark: d14(j => FLAGS.includes(outcome(j))) },
     { id: 'sent', label: 'Alerts sent', value: sent, note: problems ? `${problems} not delivered` : lastAlert ? `Last one ${ago(lastAlert)}` : 'None yet', spark: d14(j => j.send === 'accepted') },
-    { id: 'msgs', label: 'WhatsApp, last 24h', value: st?.messages.sent24h || 0, note: `${fmtN(st?.messages.sent || 0)} sent through this bridge`, accent: true },
+    { id: 'msgs', label: 'Messages, last 24h', value: st?.messages.sent24h || 0, note: `${fmtN(st?.messages.sent || 0)} sent to Slack and WhatsApp`, accent: true },
   ];
   if (!el.children.length) {
     el.innerHTML = tiles.map((t, i) => `<div class="card tile rise${t.accent ? ' accent' : ''}" style="animation-delay:${i * 70}ms" data-tile="${t.id}">
@@ -677,8 +677,8 @@ function bubble(m, { collapse = true } = {}) {
   const long = collapse && lines.length > 14;
   const body = m.text ? formatWa(long ? lines.slice(0, 12).join('\n') : m.text) : '<i class="muted">Message text was not recorded (sent before v2.0)</i>';
   const tick = m.state === 'sent' ? `<span class="ok">${TICK_SVG.ok}</span>` : m.state === 'unknown' ? TICK_SVG.warn : TICK_SVG.wait;
-  return `<div class="bubble${m.state === 'unknown' ? ' fail' : ''}" data-key="${esc(m.key)}"><div class="src" style="color:${src.c}">${esc(src.label)}</div>${body}${long ? `\n<button class="more-t" data-expand="${esc(m.key)}">Read more</button>` : ''}
-    <div class="meta" title="${esc(m.state === 'sent' ? 'Delivered to WhatsApp' : m.state === 'unknown' ? `Not confirmed${m.error ? `: ${m.error}` : ''}` : 'Sending')}">${new Date(m.sentAt || m.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} ${tick}</div></div>`;
+  return `<div class="bubble${m.state === 'unknown' || m.state === 'failed' ? ' fail' : ''}" data-key="${esc(m.key)}"><div class="src" style="color:${src.c}">${esc(src.label)}<span class="muted"> · ${m.to === 'slack' ? 'Slack' : 'WhatsApp'}</span></div>${body}${long ? `\n<button class="more-t" data-expand="${esc(m.key)}">Read more</button>` : ''}
+    <div class="meta" title="${esc(m.state === 'sent' ? `Delivered to ${m.to === 'slack' ? 'Slack' : 'WhatsApp'}` : m.state === 'failed' ? `Refused${m.error ? `: ${m.error}` : ''}` : m.state === 'unknown' ? `Not confirmed${m.error ? `: ${m.error}` : ''}` : 'Sending')}">${new Date(m.sentAt || m.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} ${tick}</div></div>`;
 }
 
 // "Pitched 2 days after Abdul's." (empty when either time is unknown).
@@ -719,14 +719,14 @@ function openJob(key) {
       ${j.findings.map(f => `<div class="finding v-${f.verdict}">${confRing(f.confidence)}<div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${chip(f.verdict)}<a class="link" href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a></div><p>${esc(f.reason || '')}</p></div></div>`).join('')}</div>`
       : o === 'clear' ? `<div class="d-section"><div class="finding v-clear"><div class="conf" style="display:grid;place-items:center"><svg class="vi" style="width:30px;height:30px"><use href="#v-clear"/></svg></div><div><b>No duplicates found</b><p>${meta.method === 'keywords' ? `No other ${esc(site?.label || '')} pitch from the last 90 days shared enough keywords to need an AI comparison.` : `Compared with ${fmtN(meta.compared || 0)} ${esc(site?.label || '')} pitches${meta.shortlisted ? `; the AI reviewed the ${meta.shortlisted} closest` : ''} and found nothing that overlaps.`}</p></div></div></div>` : ''}
     <div class="d-section"><h3>Timeline</h3><ol class="steps">${steps.map(s => `<li style="--c:${s.c}">${esc(s.t)}<small>${esc(s.d)}</small></li>`).join('')}</ol></div>
-    ${msg ? `<div class="d-section"><h3>WhatsApp message</h3><div class="chat" style="padding:16px">${bubble(msg, { collapse: false })}</div></div>` : ''}
+    ${msg ? `<div class="d-section"><h3>Alert message</h3><div class="chat" style="padding:16px">${bubble(msg, { collapse: false })}</div></div>` : ''}
     <div class="d-section"><h3>Check details</h3><dl class="kv">
       <dt>Method</dt><dd>${esc(methodLabel(j.meta))}</dd>
       <dt>Compared against</dt><dd>${meta.compared != null ? `${fmtN(meta.compared)} pitches from the last 90 days` : '—'}</dd>
       <dt>Sent to AI</dt><dd>${meta.shortlisted != null ? `${meta.shortlisted} closest` : '—'}</dd>
       <dt>Took</dt><dd>${meta.ms != null ? `${(meta.ms / 1000).toFixed(1)}s` : '—'}</dd>
       <dt>Alert</dt><dd>${esc(SEND[j.send]?.label || j.send)}</dd>
-      ${j.sid ? `<dt>WhatsApp ID</dt><dd class="num">${esc(j.sid)}</dd>` : ''}
+      ${j.sid ? `<dt>Message ID</dt><dd class="num">${esc(j.sid)}</dd>` : ''}
       ${j.error ? `<dt>Last error</dt><dd style="color:var(--critical-ink)" title="${esc(j.error)}">${esc(j.error)}</dd>` : ''}
       ${j.source ? `<dt>Source link</dt><dd><a class="link" href="${esc(j.source)}" target="_blank" rel="noopener">${esc(j.source)}</a></dd>` : ''}</dl></div>
 `;
@@ -740,7 +740,7 @@ async function jobAction(btn) {
   const { act, id: key } = btn.dataset;
   const j = allJobs().find(x => jobKey(x) === key);
   const [site, id] = key.split(':');
-  if (act === 'resend' && !confirm(j?.send === 'accepted' ? 'This alert was already sent. Send it to WhatsApp again?' : 'Send this alert to WhatsApp?')) return;
+  if (act === 'resend' && !confirm(j?.send === 'accepted' ? 'This alert was already sent. Send it again?' : 'Send this alert?')) return;
   btn.classList.add('busy');
   try {
     const r = await api(`api/jobs/${site}/${id}/${act}`, { method: 'POST' });
@@ -787,7 +787,7 @@ const EVENT_STYLE = {
   resend: ['var(--info)', 'Resend requested', '<path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4 18-7Z"/>'],
   rejected: ['var(--critical)', 'Request rejected', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
   send_failed: ['var(--critical)', 'Send not confirmed', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
-  slack_failed: ['var(--warning)', 'Slack copy not sent', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
+  slack_failed: ['var(--critical)', 'Slack refused or missed a message', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
   error: ['var(--critical)', 'Error', '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16v.1"/>'],
   upstream_lost: ['var(--critical)', 'Worker can\'t reach the bridge', '<path d="M6 6l12 12M18 6 6 18"/>'],
   upstream_ok: ['var(--good)', 'Worker reaching the bridge again', '<path d="m5 12 5 5 9-10"/>'],
@@ -797,7 +797,7 @@ const EVENT_STYLE = {
   monitor_ok: ['var(--good)', 'Scans working again', '<path d="m5 12 5 5 9-10"/>'],
   history_error: ['var(--warning)', 'Older pitches not updated', '<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17v.1"/>'],
   history_ok: ['var(--good)', 'Older pitches updating again', '<path d="m5 12 5 5 9-10"/>'],
-  monitor_alert: ['var(--info)', 'WhatsApp alert about scans', '<path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4 18-7Z"/>'],
+  monitor_alert: ['var(--info)', 'Alert sent about scans', '<path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4 18-7Z"/>'],
 };
 function renderActivity() {
   const series = scanSeries();
@@ -823,7 +823,7 @@ function monitorDraftFrom(m, lists) {
   };
 }
 function bridgeDraftFrom(s) {
-  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_messages: s.slack_messages ?? '', slack_sites: s.slack_sites ?? '' };
+  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_sites: s.slack_sites ?? '', route_duplicates: s.route_duplicates, route_problems: s.route_problems, route_connection: s.route_connection };
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function monitorChanges() {
@@ -853,6 +853,20 @@ function renderSettings(force = false) {
   const d = S.draft, bd = S.bridgeDraft;
   const quietOn = Boolean(d?.quiet_hours), [qFrom, qTo] = (d?.quiet_hours || '23:00-07:00').split('-');
   el.innerHTML = `
+    <div class="card s-card rise">
+      <div class="s-head"><span class="ico"><svg><use href="#i-chat"/></svg></span><div><h2>Slack</h2><p>Where PDC posts duplicate alerts. WhatsApp stays for problems with the monitor itself. Saving restarts the add-on.</p></div></div>
+      ${!bd ? '<div class="field col"><div class="muted">Loading…</div></div>' : `
+      <div class="field col"><label for="f-slack">Webhook URL<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${st.settings.slack_webhook_set ? 'Saved. Paste a new one only to replace it.' : 'In Slack: api.slack.com/apps › Create New App › Incoming Webhooks › Add New Webhook. Until it is set, everything goes to WhatsApp.'}</small></label>
+        <input class="input wide" id="f-slack" name="slack_webhook_url" type="password" value="" placeholder="${st.settings.slack_webhook_set ? '•••••••• saved' : 'https://hooks.slack.com/services/…'}" autocomplete="off" spellcheck="false">${err('slack_webhook_url')}
+        <div class="pair" style="flex-wrap:wrap"><button class="btn" id="btn-test-slack" type="button"><svg><use href="#i-send"/></svg>Send test</button><span class="muted small">Uses the URL in the box, or the saved one.</span></div></div>
+      ${[['route_duplicates', 'Duplicate alerts', 'Pitches that look like earlier ones'], ['route_problems', 'Monitor problems', 'Scans stalled, AI failing, alerts not delivered, and their recoveries'], ['route_connection', 'Connection warnings', "This add-on can't reach the pitch-checker Worker"]].map(([k, l, help]) => `
+      <div class="field"><label for="f-${k}">${l}<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${help}</small></label>
+        <select class="input" id="f-${k}" name="${k}">${[['slack', 'Slack'], ['whatsapp', 'WhatsApp'], ['both', 'Slack and WhatsApp']].map(([v, t]) => `<option value="${v}" ${bd[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select>${err(k)}</div>`).join('')}
+      <div class="field col"><div class="fl">Sites on Slack<small>Messages from unticked sites go to WhatsApp instead</small></div>
+        <div class="chips">${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS']].map(([v, l]) => `<label class="chk"><input type="checkbox" name="slack_site" value="${v}" ${bd.slack_sites.split(',').includes(v) ? 'checked' : ''}><span><i class="mark"></i>${l}</span></label>`).join('')}</div>${err('slack_sites')}</div>
+      <div class="field col"><div class="help" style="margin:0">If Slack refuses an alert (for example, the webhook was removed), it goes to WhatsApp with a note, so nothing is lost.</div></div>`}
+    </div>
+
     <div class="card s-card rise" id="s-conn"></div>
 
     <div class="card s-card rise" style="animation-delay:60ms">
@@ -862,9 +876,9 @@ function renderSettings(force = false) {
         <div class="site-toggles">${sites().map(x => {
           const key = { wgtc: 'enabled', aotf: 'aotf_enabled', os: 'os_enabled' }[x.id];
           const what = { wgtc: 'Trello board · the watched lists below', aotf: 'Google Sheet · Pitches tab, plus The Archive for earlier pitches', os: 'Asana · OS Curveball project' }[x.id] || x.platform;
-          return `<label class="site-toggle" style="--sc:${SITE_COLOR[x.id]}"><span class="st-mark">${esc(x.label)}</span><span class="st-t"><b>${esc(x.label)} <span class="muted">· ${esc(x.platform)}</span></b><small>${esc(what)}${x.needs ? `<em>${esc(x.needs)}, under WhatsApp bridge below</em>` : ''}</small></span>${toggle(key, d[key], `Watch ${x.label}`)}</label>`;
+          return `<label class="site-toggle" style="--sc:${SITE_COLOR[x.id]}"><span class="st-mark">${esc(x.label)}</span><span class="st-t"><b>${esc(x.label)} <span class="muted">· ${esc(x.platform)}</span></b><small>${esc(what)}${x.needs ? `<em>${esc(x.needs)}, under WhatsApp and add-on below</em>` : ''}</small></span>${toggle(key, d[key], `Watch ${x.label}`)}</label>`;
         }).join('')}</div></div>
-      <div class="field"><div class="fl">Send WhatsApp alerts<small>When off, findings are recorded as a dry run and nothing is sent</small></div>${toggle('sending', d.sending, 'Send WhatsApp alerts')}</div>
+      <div class="field"><div class="fl">Send alerts<small>When off, findings are recorded as a dry run and nothing is sent</small></div>${toggle('sending', d.sending, 'Send alerts')}</div>
       <div class="field col"><div class="fl">WGTC watched lists<small>A Trello card is checked the first time it appears in one of these lists</small></div>
         <div class="chips" id="lists">${S.lists ? S.lists.lists.map(l => `<label class="chk"><input type="checkbox" name="list" value="${l.id}" ${d.list_ids?.includes(l.id) ? 'checked' : ''}><span><i class="mark"></i>${esc(l.name)}</span></label>`).join('') : `<span class="muted">${esc(S.listsError || 'Loading lists from Trello…')}</span>`}</div>${err('list_ids')}</div>
       <div class="field col"><div class="fl">Alert me for<small>Other findings are still shown here but don't send a message</small></div>
@@ -873,19 +887,19 @@ function renderSettings(force = false) {
         <div class="range"><input type="range" name="min_confidence" min="0" max="100" step="5" value="${d.min_confidence}"><output>${d.min_confidence}%</output></div></div>
       <div class="field"><div class="fl">Quiet hours<small>Hold alerts overnight and send them when the window ends (Bangladesh time)</small></div>
         <div class="pair">${toggle('quiet_on', quietOn, 'Quiet hours')}<input class="input time" type="time" name="q_from" value="${qFrom}" ${quietOn ? '' : 'disabled'} aria-label="From"><span class="muted">to</span><input class="input time" type="time" name="q_to" value="${qTo}" ${quietOn ? '' : 'disabled'} aria-label="To"></div>${err('quiet_hours')}</div>
-      <div class="field"><div class="fl">Health alerts<small>WhatsApp you if scans stall, the AI fails, or an alert isn't delivered</small></div>${toggle('health_alerts', d.health_alerts, 'Health alerts')}</div>
+      <div class="field"><div class="fl">Health alerts<small>Tell you if scans stall, the AI fails, or an alert isn't delivered</small></div>${toggle('health_alerts', d.health_alerts, 'Health alerts')}</div>
       <div class="field"><div class="fl">Recent window<small>Pitches from these days match on fewer shared words. Every pitch from the last 90 days is always compared.</small></div>
         <div class="range"><input type="range" name="reference_days" min="1" max="14" step="1" value="${d.reference_days}"><output>${d.reference_days} d</output></div></div>
-      ${st?.alertTemplate ? `<div class="field col"><label for="f-tpl">Alert message<small class="help" style="display:block;margin:2px 0 0;font-weight:400">How each WhatsApp alert looks. Words in {braces} are filled in for each pitch, and a line is left out when its {braces} come out empty. *Stars* make text bold.</small></label>
+      ${st?.alertTemplate ? `<div class="field col"><label for="f-tpl">Alert message<small class="help" style="display:block;margin:2px 0 0;font-weight:400">How each alert looks in Slack and WhatsApp. Words in {braces} are filled in for each pitch, and a line is left out when its {braces} come out empty. *Stars* make text bold.</small></label>
         <textarea class="input wide tpl" id="f-tpl" name="alert_template" rows="16" spellcheck="false">${esc(d.alert_template || st.alertTemplate.default)}</textarea>
         <div class="help">You can use: ${st.alertTemplate.placeholders.map(k => `<code>{${k}}</code>`).join(' ')}</div>${err('alert_template')}
         <div class="pair" style="flex-wrap:wrap"><button class="btn" id="btn-test-alert" type="button"><svg><use href="#i-send"/></svg>Send test</button><button class="btn ghost" id="btn-tpl-reset" type="button">Reset to default</button><span class="muted small">The test uses a made-up pitch and what's in the box, saved or not.</span></div></div>` : ''}`}
     </div>
 
     <div class="card s-card rise" style="animation-delay:120ms">
-      <div class="s-head"><span class="ico"><svg><use href="#i-chat"/></svg></span><div><h2>WhatsApp bridge</h2><p>This add-on's options. Saving restarts the add-on (about 10 seconds).</p></div></div>
+      <div class="s-head"><span class="ico"><svg><use href="#i-chat"/></svg></span><div><h2>WhatsApp and add-on</h2><p>WhatsApp carries monitor problems by default. Saving restarts the add-on (about 10 seconds).</p></div></div>
       ${!bd ? '<div class="field col"><div class="muted">Loading…</div></div>' : `
-      <div class="field"><label for="f-target">Send alerts to<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${S.chatsError ? esc(S.chatsError) : 'Duplicate alerts and monitor warnings. Only groups the sender number is in are listed.'}</small></label>${chatPicker(bd.alert_group)}${err('alert_group')}</div>
+      <div class="field"><label for="f-target">WhatsApp chat<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${S.chatsError ? esc(S.chatsError) : 'Messages routed to WhatsApp under Slack above. Only groups the sender number is in are listed.'}</small></label>${chatPicker(bd.alert_group)}${err('alert_group')}</div>
       <div class="field"><label for="f-rcpt">Your WhatsApp number<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Gets the alerts when no group is picked, and if the group stops working</small></label><input class="input" id="f-rcpt" name="recipient_number" value="${esc(bd.recipient_number)}" inputmode="tel" autocomplete="off">${err('recipient_number')}</div>
       <div class="field"><label for="f-sender">Sender number<small class="help" style="display:block;margin:2px 0 0;font-weight:400">Changing it needs a new pairing</small></label><input class="input" id="f-sender" name="sender_number" value="${esc(bd.sender_number)}" inputmode="tel" autocomplete="off">${err('sender_number')}</div>
       <div class="field"><div class="fl">Home Assistant notifications<small>Warn in Home Assistant when WhatsApp is unlinked or offline</small></div>${toggle('ha_notifications', bd.ha_notifications, 'Home Assistant notifications')}</div>
@@ -894,18 +908,6 @@ function renderSettings(force = false) {
         <input class="input wide" id="f-asana" name="asana_token" type="password" value="" placeholder="${st.settings.asana_token_set ? '•••••••• saved' : 'Paste your Asana personal access token'}" autocomplete="off" spellcheck="false">${err('asana_token')}</div>
       <div class="field col"><label for="f-worker">Pitch-checker Worker address</label><input class="input wide" id="f-worker" name="worker_url" value="${esc(bd.worker_url)}" placeholder="https://name.account.workers.dev" autocomplete="off">
         <div class="help">${onPi() ? 'Only used to move the pitch monitor here from the Worker, which is already done.' : 'The pitch monitor moves here from this Worker on the next start. It signs in with this add-on’s api_token.'}</div>${err('worker_url')}</div>`}
-    </div>
-
-    <div class="card s-card rise" style="animation-delay:150ms">
-      <div class="s-head"><span class="ico"><svg><use href="#i-chat"/></svg></span><div><h2>Slack</h2><p>Also posts the messages picked here to a Slack channel, after they go to WhatsApp. Saving restarts the add-on.</p></div></div>
-      ${!bd ? '<div class="field col"><div class="muted">Loading…</div></div>' : `
-      <div class="field col"><label for="f-slack">Webhook URL<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${st.settings.slack_webhook_set ? 'Saved. Paste a new one only to replace it.' : 'In Slack: api.slack.com/apps › Create New App › Incoming Webhooks › Add New Webhook. Empty means Slack is off.'}</small></label>
-        <input class="input wide" id="f-slack" name="slack_webhook_url" type="password" value="" placeholder="${st.settings.slack_webhook_set ? '•••••••• saved' : 'https://hooks.slack.com/services/…'}" autocomplete="off" spellcheck="false">${err('slack_webhook_url')}
-        <div class="pair" style="flex-wrap:wrap"><button class="btn" id="btn-test-slack" type="button"><svg><use href="#i-send"/></svg>Send test</button><span class="muted small">Uses the URL in the box, or the saved one.</span></div></div>
-      <div class="field col"><div class="fl">Send to Slack<small>Untick all to stop Slack messages without removing the URL</small></div>
-        <div class="chips">${[['duplicates', 'Duplicate alerts'], ['problems', 'Monitor problems and recoveries'], ['connection', "Can't reach the Worker"]].map(([v, l]) => `<label class="chk"><input type="checkbox" name="slack_msg" value="${v}" ${bd.slack_messages.split(',').includes(v) ? 'checked' : ''}><span><i class="mark"></i>${l}</span></label>`).join('')}</div>${err('slack_messages')}</div>
-      <div class="field col"><div class="fl">For these sites<small>Duplicate alerts and monitor problems from other sites go to WhatsApp only</small></div>
-        <div class="chips">${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS']].map(([v, l]) => `<label class="chk"><input type="checkbox" name="slack_site" value="${v}" ${bd.slack_sites.split(',').includes(v) ? 'checked' : ''}><span><i class="mark"></i>${l}</span></label>`).join('')}</div>${err('slack_sites')}</div>`}
     </div>
 
     <div class="card s-card rise" style="animation-delay:180ms">
@@ -940,7 +942,7 @@ function renderConnection() {
   if (el.dataset.sig === sig) { const up = $('#conn-up'); if (up) up.textContent = ok ? `Connected for ${dur(Date.now() - b.connectedSince)}` : b.offlineSince ? `Offline for ${dur(Date.now() - b.offlineSince)}` : 'Offline'; return; }
   el.dataset.sig = sig;
   el.innerHTML = `
-    <div class="s-head"><span class="ico"><svg><use href="#i-link"/></svg></span><div><h2>WhatsApp connection</h2><p>The linked device that sends every alert.</p></div></div>
+    <div class="s-head"><span class="ico"><svg><use href="#i-link"/></svg></span><div><h2>WhatsApp connection</h2><p>The linked device that sends WhatsApp messages.</p></div></div>
     <div class="conn"><div class="avatar${ok ? '' : ' off'}">${esc((b.user?.name || 'WA').slice(0, 2).toUpperCase())}</div>
       <div class="who"><b>${ok ? esc(b.user?.name || 'Linked') : b.pairingCode ? 'Waiting for pairing' : b.connected ? 'Wrong account linked' : 'Not connected'}</b>
         <small>${esc(b.user?.number || b.sender)} · <span id="conn-up">${ok ? `Connected for ${dur(Date.now() - b.connectedSince)}` : b.offlineSince ? `Offline for ${dur(Date.now() - b.offlineSince)}` : 'Offline'}</span>${b.reconnects ? ` · ${b.reconnects} reconnect${b.reconnects === 1 ? '' : 's'}` : ''}</small></div>
@@ -973,7 +975,6 @@ function onSettingsInput(e) {
     }
   }
   if (d && t.name === 'alert_template') { const def = S.status?.alertTemplate?.default || ''; d.alert_template = t.value.trim() === def.trim() ? '' : t.value; }
-  if (bd && t.name === 'slack_msg') bd.slack_messages = $$('input[name=slack_msg]:checked').map(x => x.value).join(',');
   if (bd && t.name === 'slack_site') bd.slack_sites = $$('input[name=slack_site]:checked').map(x => x.value).join(',');
   if (bd && t.name in bd) bd[t.name] = t.type === 'checkbox' ? t.checked : t.type === 'number' ? Number(t.value) : t.value.trim();
   updateSavebar();
@@ -1108,7 +1109,7 @@ document.addEventListener('click', async e => {
   }
   if (t.id === 'btn-test-alert') {
     t.classList.add('busy');
-    try { await api('api/test-alert', { method: 'POST', body: { template: $('#f-tpl').value } }); toast('Test alert sent. Check WhatsApp', 'ok'); loadMessages(); }
+    try { await api('api/test-alert', { method: 'POST', body: { template: $('#f-tpl').value } }); toast('Test alert sent where duplicate alerts go', 'ok'); loadMessages(); }
     catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
     return;
   }
