@@ -816,7 +816,7 @@ const err = k => (S.fieldErrors[k] ? `<div class="err">${esc(S.fieldErrors[k])}<
 function monitorDraftFrom(m, lists, tmsLists) {
   const v = m.settings.values;
   return {
-    enabled: v.enabled, aotf_enabled: v.aotf_enabled, os_enabled: v.os_enabled, tms_enabled: v.tms_enabled,
+    enabled: v.enabled, aotf_enabled: v.aotf_enabled, os_enabled: v.os_enabled, tms_enabled: v.tms_enabled, second_opinion: v.second_opinion,
     sending: v.sending, alert_verdicts: [...v.alert_verdicts], min_confidence: v.min_confidence,
     quiet_hours: v.quiet_hours, health_alerts: v.health_alerts, reference_days: v.reference_days, alert_template: v.alert_template || '',
     list_ids: lists ? lists.lists.filter(l => l.watched).map(l => l.id) : null,
@@ -892,6 +892,7 @@ function renderSettings(force = false) {
           const what = { wgtc: 'Trello board · the watched lists below', aotf: 'Google Sheet · Pitches tab, plus The Archive for earlier pitches', os: 'Asana · OS Curveball project', tms: 'Trello board · The Mary Sue, the watched lists below' }[x.id] || x.platform;
           return `<label class="site-toggle" style="--sc:${SITE_COLOR[x.id]}"><span class="st-mark">${esc(x.label)}</span><span class="st-t"><b>${esc(x.label)} <span class="muted">· ${esc(x.platform)}</span></b><small>${esc(what)}${x.needs ? `<em>${esc(x.needs)}, under WhatsApp and add-on below</em>` : ''}</small></span>${toggle(key, d[key], `Watch ${x.label}`)}</label>`;
         }).join('')}</div></div>
+      <div class="field"><div class="fl">Double-check duplicates<small>Asks the AI a second, focused question about every possible duplicate before deciding. Catches reworded duplicates and stops look-alike stories from being flagged</small></div>${toggle('second_opinion', d.second_opinion, 'Double-check duplicates')}</div>
       <div class="field"><div class="fl">Send alerts<small>When off, findings are recorded as a dry run and nothing is sent</small></div>${toggle('sending', d.sending, 'Send alerts')}</div>
       <div class="field col"><div class="fl">WGTC watched lists<small>A Trello card is checked the first time it appears in one of these lists</small></div>
         <div class="chips" id="lists">${S.lists ? S.lists.lists.map(l => `<label class="chk"><input type="checkbox" name="list" value="${l.id}" ${d.list_ids?.includes(l.id) ? 'checked' : ''}><span><i class="mark"></i>${esc(l.name)}</span></label>`).join('') : `<span class="muted">${esc(S.listsError || 'Loading lists from Trello…')}</span>`}</div>${err('list_ids')}</div>
@@ -941,11 +942,11 @@ function renderSettings(force = false) {
 function tryResult(r) {
   const col = (name, x) => {
     const rows = x.found.length ? x.found.map(f => `<li style="margin:0 0 10px">${chip(f.verdict)} <span class="muted small">${f.confidence}%</span><br>${f.url ? `<a class="link" href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a>` : esc(f.title)}<br><span class="muted small">${esc(f.writer || '')}</span></li>`).join('')
-      : `<li class="muted">${x.method === 'keywords' ? 'No earlier pitch shares enough words to compare.' : 'Clear: no overlap found.'}</li>`;
+      : `<li class="muted">${r.method === 'keywords' ? 'No earlier pitch shares enough words to compare.' : 'Clear: no overlap found.'}</li>`;
     return `<div style="flex:1;min-width:260px"><h3 style="margin:0 0 8px">${name}</h3><ul style="list-style:none;padding:0;margin:0">${rows}</ul></div>`;
   };
-  return `<div class="field col"><div class="muted small">${esc(r.site)} · compared with ${r.current.compared} pitches${r.current.method === 'exact' ? ' · same headline or source link, so no AI needed' : ''}</div>
-    <div class="pair" style="align-items:flex-start;gap:24px;flex-wrap:wrap">${col('Current rules', r.current)}${col('New rules', r.proposed)}</div></div>`;
+  return `<div class="field col"><div class="muted small">${esc(r.site)} · compared with ${r.compared} pitches${r.method === 'exact' ? ' · same headline or source link, so no AI needed' : ''}</div>
+    <div class="pair" style="align-items:flex-start;gap:24px;flex-wrap:wrap">${col('Without double-check', r.current)}${col('With double-check', r.proposed)}</div></div>`;
 }
 
 // One editor in a site's mention list: name, Slack member ID, remove.
@@ -999,7 +1000,7 @@ function onSettingsInput(e) {
   const t = e.target, d = S.draft, bd = S.bridgeDraft;
   if (t.name === 'pref_motion') { prefs.motion = t.checked; savePrefs(); return; }
   if (d) {
-    if (['enabled', 'aotf_enabled', 'os_enabled', 'tms_enabled', 'sending', 'health_alerts'].includes(t.name)) d[t.name] = t.checked;
+    if (['enabled', 'aotf_enabled', 'os_enabled', 'tms_enabled', 'sending', 'health_alerts', 'second_opinion'].includes(t.name)) d[t.name] = t.checked;
     if (t.name === 'tms_list') d.tms_list_ids = $$('input[name=tms_list]:checked').map(x => x.value);
     if (t.name === 'list') d.list_ids = $$('input[name=list]:checked').map(x => x.value);
     if (t.name === 'verdict') d.alert_verdicts = $$('input[name=verdict]:checked').map(x => x.value);

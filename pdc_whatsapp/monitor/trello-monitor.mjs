@@ -47,6 +47,9 @@ export const MONITOR_SETTINGS = {
   aotf_enabled: { env: 'AOTF_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
   os_enabled: { env: 'OS_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
   // The Mary Sue's Trello board (TMS_SITE in pitch-sources.mjs): on/off and its watched lists.
+  // "Double-check duplicates": a second AI opinion on every duplicate or
+  // similar-story finding (match-engine.mjs schedVerifyPrompt).
+  second_opinion: { env: 'MONITOR_SECOND_OPINION', fallback: 'false', parse: v => v === 'true', store: bool },
   tms_enabled: { env: 'TMS_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
   tms_list_ids: { env: 'TMS_MONITOR_LIST_IDS', fallback: '', parse: v => v.split(',').map(x => x.trim()).filter(Boolean), store: v => {
     if (!Array.isArray(v) || v.length > 8 || v.some(id => !ID.test(id)) || new Set(v).size !== v.length) throw new Error('must be up to eight distinct Trello list IDs');
@@ -238,7 +241,9 @@ function candidateOf(c, engine) {
 }
 
 // `meta` collects how the verdict was reached, for the dashboard.
-export async function checkMonitorCard(card, cards, env, engine, meta = {}) {
+// `verify`: ask the AI a second time about each duplicate / similar-story
+// finding, and let that answer decide (meta.firstPass keeps the first one).
+export async function checkMonitorCard(card, cards, env, engine, meta = {}, { verify = false } = {}) {
   const target = engine.normalize(card, {});
   if (!target) throw new Error('Card title is not ready');
   const candidates = cards.filter(c => c.id !== card.id).map(c => candidateOf(c, engine)).filter(c => c.title);
@@ -274,7 +279,20 @@ export async function checkMonitorCard(card, cards, env, engine, meta = {}) {
     seen.add(item.id);
     return { candidate: shortlist[item.id - 1], verdict: item.verdict, confidence: item.confidence, reason: clean(item.reason, 250) };
   });
-  return withSameSource(found.filter(f => f.verdict !== 'different'), candidates).sort((a, b) => b.confidence - a.confidence);
+  meta.firstPass = found.filter(f => f.verdict !== 'different').map(f => ({ verdict: f.verdict, confidence: f.confidence, cardId: f.candidate.cardId, title: f.candidate.title }));
+  const final = verify && engine.verify ? await Promise.all(found.map(f => secondOpinion(f, target, env, engine, meta))) : found;
+  return withSameSource(final.filter(f => f.verdict !== 'different'), candidates).sort((a, b) => b.confidence - a.confidence);
+}
+
+// The second opinion decides: not the same incident -> near_miss; same
+// incident, but later news or a separate piece -> same_story; else duplicate.
+// An unreadable answer fails the check (retried), never guesses.
+async function secondOpinion(f, target, env, engine, meta) {
+  if (f.verdict !== 'duplicate' && f.verdict !== 'same_story') return f;
+  const v = engine.parse(await engine.call(engine.verify(target, f.candidate), env, undefined, meta));
+  if (!v || typeof v.same_incident !== 'boolean' || typeof v.later_or_new_kind !== 'boolean') throw new Error('Incomplete AI second opinion; retry pending');
+  meta.secondOpinions = (meta.secondOpinions || 0) + 1;
+  return { ...f, verdict: !v.same_incident ? 'near_miss' : v.later_or_new_kind ? 'same_story' : 'duplicate' };
 }
 
 // A duplicate's social post settles the rest: every other pitch on the same
@@ -646,7 +664,7 @@ export async function runPitchMonitor(env, engine, dependencies = {}, site = TRE
         // No self matches. Break ties between concurrently discovered cards by card ID.
         const peers = cards.filter(c => c.id !== card.id && (!discovered.has(c.id) || c.id < card.id));
         const meta = {}, t0 = Date.now();
-        const result = await checkMonitorCard(card, peers, env, engine, meta);
+        const result = await checkMonitorCard(card, peers, env, engine, meta, { verify: effectiveSettings(env).second_opinion });
         meta.ms = Date.now() - t0;
         // Findings outside the alert rules are kept but not sent ('skipped').
         const sendStatus = !result.length ? 'none' : !result.some(qualifies) ? 'skipped' : env.TRELLO_MONITOR_SEND === 'true' ? 'pending' : 'dry_run';
