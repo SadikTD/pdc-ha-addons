@@ -188,7 +188,8 @@ export async function loadMonitorCards(env, get = monitorTrelloGet, names = LIST
   for (const { list, active } of scans) {
     let before;
     for (;;) {
-      if (++requests > 20) throw new Error('Board exceeds monitor scan budget: ' + lists.length + ' open lists; no partial checks performed');
+      // ~1 request per list; TMS has 19 open lists + 4 watched (Trello allows 100 per 10 s).
+      if (++requests > 40) throw new Error('Board exceeds monitor scan budget: ' + lists.length + ' open lists; no partial checks performed');
       const params = { filter: active ? 'open' : 'all', fields: 'name,desc,idList,idMembers,closed,shortUrl', limit: '1000', sort: '-id' };
       if (!active) params.since = cutoff.toISOString();
       if (before) params.before = before;
