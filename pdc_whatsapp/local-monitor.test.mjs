@@ -164,6 +164,7 @@ test('the sheet and Asana sites scan beside Trello, each on its own, and a stuck
   const loaders = {
     aotf: async () => (sheetHang ? new Promise(() => {}) : { cards: sheetRows, watched: ['pitches'] }),
     os: async () => ({ cards: osTasks, watched: ['open'] }),
+    tms: async () => ({ cards: [{ ...card(7, 'A TMS pitch'), idList: 'tmslist' }], watched: ['tmslist'] }),
   };
   // Real clock (scan times are stored in real seconds); "stale" after 1.5 s.
   const s = setup({ sites: SITES, limits: { stale: 1500 }, dependencies: { loaders }, onAlert: async (text, recovered, site) => { alerts.push({ text, recovered, site: site?.id }); return true; } });
@@ -171,7 +172,7 @@ test('the sheet and Asana sites scan beside Trello, each on its own, and a stuck
   await s.monitor.tick();
   const dash = async () => s.monitor.api('/bridge/dashboard').then(r => r.json());
   let d = await dash();
-  assert.deepEqual(d.sites.map(x => [x.id, x.state?.initialized ?? null]), [['wgtc', 1], ['aotf', 1], ['os', null]], 'OS waits for its token');
+  assert.deepEqual(d.sites.map(x => [x.id, x.state?.initialized ?? null]), [['wgtc', 1], ['aotf', 1], ['os', null], ['tms', 1]], 'OS waits for its token');
   assert.equal(d.sites.find(x => x.id === 'os').needs, 'Add your Asana access token in Settings to start');
 
   // A hung sheet read never holds up Trello.

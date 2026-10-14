@@ -46,6 +46,12 @@ export const MONITOR_SETTINGS = {
   // `enabled` above stays the WGTC Trello switch.
   aotf_enabled: { env: 'AOTF_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
   os_enabled: { env: 'OS_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
+  // The Mary Sue's Trello board (TMS_SITE in pitch-sources.mjs): on/off and its watched lists.
+  tms_enabled: { env: 'TMS_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
+  tms_list_ids: { env: 'TMS_MONITOR_LIST_IDS', fallback: '', parse: v => v.split(',').map(x => x.trim()).filter(Boolean), store: v => {
+    if (!Array.isArray(v) || v.length > 8 || v.some(id => !ID.test(id)) || new Set(v).size !== v.length) throw new Error('must be up to eight distinct Trello list IDs');
+    return v.join(',');
+  } },
 };
 
 export function effectiveSettings(env) {
@@ -137,15 +143,16 @@ export function assertTrelloReadAccess(token, board) {
     throw new Error('Trello token does not grant read access to the configured board');
   }
 }
-export function resolveWatchedLists(lists, env) {
+// `names`: the board's default watched lists when none are picked (WGTC's by default).
+export function resolveWatchedLists(lists, env, names = LIST_NAMES) {
   const configured = String(env.TRELLO_MONITOR_LIST_IDS || '').split(',').map(x => x.trim()).filter(Boolean);
   // Preserve a previous three-list ID configuration while adding Writing
   // (lists picked on the dashboard are taken exactly as chosen).
   if (configured.length === 3 && !env._storedSettings?.includes('list_ids')) {
-    const writing = lists.filter(l => !l.closed && clean(l.name).toLowerCase() === LIST_NAMES[3].toLowerCase());
+    const writing = lists.filter(l => !l.closed && clean(l.name).toLowerCase() === names[3].toLowerCase());
     if (writing.length === 1 && !configured.includes(writing[0].id)) configured.push(writing[0].id);
   }
-  const watched = configured.length ? configured : LIST_NAMES.map(name => {
+  const watched = configured.length ? configured : names.map(name => {
     const matches = lists.filter(l => !l.closed && clean(l.name).toLowerCase() === name.toLowerCase());
     if (matches.length !== 1) throw new Error(`Expected one open list named ${name}; configure list IDs`);
     return matches[0].id;
@@ -156,12 +163,12 @@ export function resolveWatchedLists(lists, env) {
   return watched;
 }
 
-export async function loadMonitorCards(env, get = monitorTrelloGet) {
+export async function loadMonitorCards(env, get = monitorTrelloGet, names = LIST_NAMES) {
   const token = await get(`/tokens/${encodeURIComponent(env.TRELLO_TOKEN)}`, {}, env);
   assertTrelloReadAccess(token, env.TRELLO_MONITOR_BOARD_ID);
   const lists = await get(`/boards/${env.TRELLO_MONITOR_BOARD_ID}/lists`, { filter: 'open', fields: 'name,closed' }, env);
   if (!Array.isArray(lists)) throw new Error('Invalid Trello lists response');
-  const watched = resolveWatchedLists(lists, env);
+  const watched = resolveWatchedLists(lists, env, names);
   const members = await get(`/boards/${env.TRELLO_MONITOR_BOARD_ID}/members`, { fields: 'fullName,username' }, env);
   if (!Array.isArray(members)) throw new Error('Invalid Trello members response');
   const memberNames = new Map(members.map(m => [m.id, m.fullName || m.username || 'Unknown member']));

@@ -7,7 +7,7 @@
 // idList, closed, shortUrl, _listName, _writer, _site, _created, _createdLabel }.
 // idList 'pitches' / 'open' marks the ones that count as new pitches; the
 // rest are only earlier pitches to compare against.
-import { effectiveSettings } from './trello-monitor.mjs';
+import { effectiveSettings, loadMonitorCards, monitorTrelloGet, TRELLO_SITE } from './trello-monitor.mjs';
 
 const clean = (s, n = 180) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
 const titleKey = s => clean(s, 5000).normalize('NFKC').toLowerCase();
@@ -288,4 +288,31 @@ export const OS_SITE = {
   load: (env, fetcher) => loadOsTasks(env, fetcher),
   alertKey: (board, cardId) => `pitch:${board}:${cardId}`,
   safeError: m => /^Asana/.test(m),
+};
+
+// ============================================================================
+// TMS: The Mary Sue's Trello board, read exactly like WGTC's board
+// (loadMonitorCards) but with its own board, watched lists and on/off switch.
+// Stored under board_id 'tms', so its state, history and alerts stay separate.
+// ============================================================================
+export const TMS_BOARD = '666c5ab3bd01168df337d618';
+const TMS_LISTS = ['Up For Grabs', 'Pitches', 'Approved', 'Writing Soon'];
+// env for the Trello helpers: the TMS board and the lists picked for it.
+const tmsEnv = env => Object.assign(Object.create(env), {
+  TRELLO_MONITOR_BOARD_ID: TMS_BOARD,
+  TRELLO_MONITOR_LIST_IDS: effectiveSettings(env).tms_list_ids.join(','),
+  _storedSettings: env._storedSettings?.includes('tms_list_ids') ? ['list_ids'] : [],
+});
+
+export const TMS_SITE = {
+  id: 'tms', label: 'TMS', emoji: '🟪', platform: 'Trello', place: 'List', item: 'card', settle: 0,
+  board: () => 'tms',
+  enabled: env => effectiveSettings(env).tms_enabled,
+  validate(env) { if (!env.TRELLO_KEY || !env.TRELLO_TOKEN) throw new Error('Monitor configuration incomplete'); },
+  needs: () => null,
+  load: (env, fetcher = fetch) => loadMonitorCards(tmsEnv(env), (path, params, e) => monitorTrelloGet(path, params, e, fetcher), TMS_LISTS),
+  alertKey: (board, cardId) => `pitch:${board}:${cardId}`,
+  safeError: m => TRELLO_SITE.safeError(m),
+  // For the dashboard's watched-list picker (bridge-api.mjs).
+  trello: { env: tmsEnv, lists: TMS_LISTS, setting: 'tms_list_ids' },
 };

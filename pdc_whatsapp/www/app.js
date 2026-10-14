@@ -112,8 +112,8 @@ const serverNow = () => Date.now() + S.clockOffset;
 // ------------------------------------------------------------------ sites
 // Three sites, each checked only against its own pitches. The site switcher
 // (S.site) scopes Overview, Pitches and Activity; health always shows all.
-const SITE_LABEL = { wgtc: 'WGTC', aotf: 'AotF', os: 'OS' };
-const SITE_COLOR = { wgtc: 'var(--site-wgtc)', aotf: 'var(--site-aotf)', os: 'var(--site-os)' };
+const SITE_LABEL = { wgtc: 'WGTC', aotf: 'AotF', os: 'OS', tms: 'TMS' };
+const SITE_COLOR = { wgtc: 'var(--site-wgtc)', aotf: 'var(--site-aotf)', os: 'var(--site-os)', tms: 'var(--site-tms)' };
 const ITEMS = { Trello: 'Cards compared against', 'Google Sheet': 'Pitches compared against', Asana: 'Tasks compared against' };
 // Older pitches (up to 90 days) a site is compared against, from the monitor's health.
 const historyOf = site => S.status?.monitorHealth?.sites?.[site?.id]?.history || null;
@@ -813,22 +813,23 @@ function renderActivity() {
 // ------------------------------------------------------------------ settings
 const toggle = (name, on, label = name) => `<span class="toggle"><input type="checkbox" name="${name}" ${on ? 'checked' : ''} aria-label="${esc(label)}"><span></span></span>`;
 const err = k => (S.fieldErrors[k] ? `<div class="err">${esc(S.fieldErrors[k])}</div>` : '');
-function monitorDraftFrom(m, lists) {
+function monitorDraftFrom(m, lists, tmsLists) {
   const v = m.settings.values;
   return {
-    enabled: v.enabled, aotf_enabled: v.aotf_enabled, os_enabled: v.os_enabled,
+    enabled: v.enabled, aotf_enabled: v.aotf_enabled, os_enabled: v.os_enabled, tms_enabled: v.tms_enabled,
     sending: v.sending, alert_verdicts: [...v.alert_verdicts], min_confidence: v.min_confidence,
     quiet_hours: v.quiet_hours, health_alerts: v.health_alerts, reference_days: v.reference_days, alert_template: v.alert_template || '',
     list_ids: lists ? lists.lists.filter(l => l.watched).map(l => l.id) : null,
+    tms_list_ids: tmsLists ? tmsLists.lists.filter(l => l.watched).map(l => l.id) : null,
   };
 }
 function bridgeDraftFrom(s) {
-  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_webhook_wgtc: '', slack_webhook_aotf: '', slack_webhook_os: '', slack_mentions_wgtc: s.slack_mentions_wgtc ?? '', slack_mentions_aotf: s.slack_mentions_aotf ?? '', slack_mentions_os: s.slack_mentions_os ?? '', slack_sites: s.slack_sites ?? '', route_duplicates: s.route_duplicates, route_problems: s.route_problems, route_connection: s.route_connection };
+  return { recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_webhook_wgtc: '', slack_webhook_aotf: '', slack_webhook_os: '', slack_webhook_tms: '', slack_mentions_wgtc: s.slack_mentions_wgtc ?? '', slack_mentions_aotf: s.slack_mentions_aotf ?? '', slack_mentions_os: s.slack_mentions_os ?? '', slack_mentions_tms: s.slack_mentions_tms ?? '', slack_sites: s.slack_sites ?? '', route_duplicates: s.route_duplicates, route_problems: s.route_problems, route_connection: s.route_connection };
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function monitorChanges() {
   if (!S.draft || !S.monitor) return {};
-  const base = monitorDraftFrom(S.monitor, S.lists), out = {};
+  const base = monitorDraftFrom(S.monitor, S.lists, S.tmsLists), out = {};
   for (const k of Object.keys(S.draft)) if (S.draft[k] !== null && !same(S.draft[k], base[k])) out[k] = S.draft[k];
   return out;
 }
@@ -845,11 +846,11 @@ function renderSettings(force = false) {
   if (!force && el.dataset.built && (Object.keys(monitorChanges()).length || Object.keys(bridgeChanges()).length || el.contains(document.activeElement))) { renderConnection(); return; }
   const st = S.status, m = S.monitor;
   // Only rebuild when the saved settings themselves changed, not on every poll.
-  const sig = JSON.stringify([m?.settings, S.lists, S.listsError, st?.settings, S.monitorError, prefs, S.fieldErrors, S.chats, S.chatsError]);
+  const sig = JSON.stringify([m?.settings, S.lists, S.listsError, S.tmsLists, S.tmsListsError, st?.settings, S.monitorError, prefs, S.fieldErrors, S.chats, S.chatsError]);
   if (!force && el.dataset.built && el.dataset.sig === sig) { renderConnection(); return; }
   el.dataset.sig = sig;
   if (st) S.bridgeDraft = bridgeDraftFrom(st.settings);
-  if (m) S.draft = monitorDraftFrom(m, S.lists);
+  if (m) S.draft = monitorDraftFrom(m, S.lists, S.tmsLists);
   const d = S.draft, bd = S.bridgeDraft;
   const quietOn = Boolean(d?.quiet_hours), [qFrom, qTo] = (d?.quiet_hours || '23:00-07:00').split('-');
   el.innerHTML = `
@@ -859,7 +860,8 @@ function renderSettings(force = false) {
       ${[['slack_webhook_url', 'Main webhook', 'Used for every site without its own channel below, and for connection warnings. In Slack: api.slack.com/apps › your app › Incoming Webhooks › Add New Webhook.'],
         ['slack_webhook_wgtc', 'WGTC channel', 'Optional. A webhook for the channel WGTC messages should go to.'],
         ['slack_webhook_aotf', 'AotF channel', 'Optional. A webhook for the channel AotF messages should go to.'],
-        ['slack_webhook_os', 'OS channel', 'Optional. A webhook for the channel OS messages should go to.']].map(([k, l, help]) => {
+        ['slack_webhook_os', 'OS channel', 'Optional. A webhook for the channel OS messages should go to.'],
+        ['slack_webhook_tms', 'TMS channel', 'Optional. A webhook for the channel TMS messages should go to.']].map(([k, l, help]) => {
         const saved = st.settings[`${k === 'slack_webhook_url' ? 'slack_webhook' : k}_set`];
         return `
       <div class="field col"><label for="f-${k}">${l}<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${saved ? 'Saved. Paste a new one only to replace it.' : help}</small></label>
@@ -870,12 +872,12 @@ function renderSettings(force = false) {
       ${[['route_duplicates', 'Duplicate alerts', 'Pitches that look like earlier ones'], ['route_problems', 'Monitor problems', 'Scans stalled, AI failing, alerts not delivered, and their recoveries'], ['route_connection', 'Connection warnings', "This add-on can't reach the pitch-checker Worker"]].map(([k, l, help]) => `
       <div class="field"><label for="f-${k}">${l}<small class="help" style="display:block;margin:2px 0 0;font-weight:400">${help}</small></label>
         <select class="input" id="f-${k}" name="${k}">${[['slack', 'Slack'], ['whatsapp', 'WhatsApp'], ['both', 'Slack and WhatsApp']].map(([v, t]) => `<option value="${v}" ${bd[k] === v ? 'selected' : ''}>${t}</option>`).join('')}</select>${err(k)}</div>`).join('')}
-      ${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS']].map(([site, l]) => `
+      ${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS'], ['tms', 'TMS']].map(([site, l]) => `
       <div class="field col"><div class="fl">${l} editors to mention<small>Tagged in ${l} duplicate alerts on Slack, so they're notified even with the channel muted. Member ID: click their name in Slack › ⋮ › Copy member ID.</small></div>
         <div class="mentions" data-mentions="slack_mentions_${site}">${bd[`slack_mentions_${site}`].split(',').filter(Boolean).map(e => mentionRow(...e.split('='))).join('')}</div>
         <div class="pair"><button class="btn" data-mention-add="slack_mentions_${site}" type="button">Add editor</button></div>${err(`slack_mentions_${site}`)}</div>`).join('')}
       <div class="field col"><div class="fl">Sites on Slack<small>Messages from unticked sites go to WhatsApp instead</small></div>
-        <div class="chips">${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS']].map(([v, l]) => `<label class="chk"><input type="checkbox" name="slack_site" value="${v}" ${bd.slack_sites.split(',').includes(v) ? 'checked' : ''}><span><i class="mark"></i>${l}</span></label>`).join('')}</div>${err('slack_sites')}</div>
+        <div class="chips">${[['wgtc', 'WGTC'], ['aotf', 'AotF'], ['os', 'OS'], ['tms', 'TMS']].map(([v, l]) => `<label class="chk"><input type="checkbox" name="slack_site" value="${v}" ${bd.slack_sites.split(',').includes(v) ? 'checked' : ''}><span><i class="mark"></i>${l}</span></label>`).join('')}</div>${err('slack_sites')}</div>
       <div class="field col"><div class="help" style="margin:0">If Slack refuses an alert (for example, the webhook was removed), it goes to WhatsApp with a note, so nothing is lost.</div></div>`}
     </div>
 
@@ -886,13 +888,15 @@ function renderSettings(force = false) {
       ${!m ? `<div class="field col"><div class="muted">${esc(S.monitorError || 'Loading…')}</div></div>` : `
       <div class="field col"><div class="fl">Sites<small>Each site is scanned every minute, and a new pitch is only compared with that site's own pitches</small></div>
         <div class="site-toggles">${sites().map(x => {
-          const key = { wgtc: 'enabled', aotf: 'aotf_enabled', os: 'os_enabled' }[x.id];
-          const what = { wgtc: 'Trello board · the watched lists below', aotf: 'Google Sheet · Pitches tab, plus The Archive for earlier pitches', os: 'Asana · OS Curveball project' }[x.id] || x.platform;
+          const key = { wgtc: 'enabled', aotf: 'aotf_enabled', os: 'os_enabled', tms: 'tms_enabled' }[x.id];
+          const what = { wgtc: 'Trello board · the watched lists below', aotf: 'Google Sheet · Pitches tab, plus The Archive for earlier pitches', os: 'Asana · OS Curveball project', tms: 'Trello board · The Mary Sue, the watched lists below' }[x.id] || x.platform;
           return `<label class="site-toggle" style="--sc:${SITE_COLOR[x.id]}"><span class="st-mark">${esc(x.label)}</span><span class="st-t"><b>${esc(x.label)} <span class="muted">· ${esc(x.platform)}</span></b><small>${esc(what)}${x.needs ? `<em>${esc(x.needs)}, under WhatsApp and add-on below</em>` : ''}</small></span>${toggle(key, d[key], `Watch ${x.label}`)}</label>`;
         }).join('')}</div></div>
       <div class="field"><div class="fl">Send alerts<small>When off, findings are recorded as a dry run and nothing is sent</small></div>${toggle('sending', d.sending, 'Send alerts')}</div>
       <div class="field col"><div class="fl">WGTC watched lists<small>A Trello card is checked the first time it appears in one of these lists</small></div>
         <div class="chips" id="lists">${S.lists ? S.lists.lists.map(l => `<label class="chk"><input type="checkbox" name="list" value="${l.id}" ${d.list_ids?.includes(l.id) ? 'checked' : ''}><span><i class="mark"></i>${esc(l.name)}</span></label>`).join('') : `<span class="muted">${esc(S.listsError || 'Loading lists from Trello…')}</span>`}</div>${err('list_ids')}</div>
+      <div class="field col"><div class="fl">TMS watched lists<small>A Trello card on The Mary Sue board is checked the first time it appears in one of these lists</small></div>
+        <div class="chips">${S.tmsLists ? S.tmsLists.lists.map(l => `<label class="chk"><input type="checkbox" name="tms_list" value="${l.id}" ${d.tms_list_ids?.includes(l.id) ? 'checked' : ''}><span><i class="mark"></i>${esc(l.name)}</span></label>`).join('') : `<span class="muted">${esc(S.tmsListsError || 'Loading lists from Trello…')}</span>`}</div>${err('tms_list_ids')}</div>
       <div class="field col"><div class="fl">Alert me for<small>Other findings are still shown here but don't send a message</small></div>
         <div class="chips">${FLAGS.map(v => `<label class="chk"><input type="checkbox" name="verdict" value="${v}" ${d.alert_verdicts.includes(v) ? 'checked' : ''}><span class="v-${v}"><svg style="fill:currentColor;stroke:none"><use href="#v-${v}"/></svg><span style="color:var(--ink)">${VERDICTS[v].label}</span></span></label>`).join('')}</div>${err('alert_verdicts')}</div>
       <div class="field"><div class="fl">Minimum confidence<small>Only alert when the AI is at least this sure</small></div>
@@ -984,7 +988,8 @@ function onSettingsInput(e) {
   const t = e.target, d = S.draft, bd = S.bridgeDraft;
   if (t.name === 'pref_motion') { prefs.motion = t.checked; savePrefs(); return; }
   if (d) {
-    if (['enabled', 'aotf_enabled', 'os_enabled', 'sending', 'health_alerts'].includes(t.name)) d[t.name] = t.checked;
+    if (['enabled', 'aotf_enabled', 'os_enabled', 'tms_enabled', 'sending', 'health_alerts'].includes(t.name)) d[t.name] = t.checked;
+    if (t.name === 'tms_list') d.tms_list_ids = $$('input[name=tms_list]:checked').map(x => x.value);
     if (t.name === 'list') d.list_ids = $$('input[name=list]:checked').map(x => x.value);
     if (t.name === 'verdict') d.alert_verdicts = $$('input[name=verdict]:checked').map(x => x.value);
     if (t.name === 'min_confidence') { d.min_confidence = Number(t.value); t.nextElementSibling.textContent = `${t.value}%`; }
@@ -1006,13 +1011,14 @@ async function saveSettings() {
   const mc = monitorChanges(), bc = bridgeChanges(), btn = $('#save');
   if (mc.alert_verdicts && !mc.alert_verdicts.length) { S.fieldErrors = { alert_verdicts: 'Pick at least one' }; renderSettings(true); return; }
   if (mc.list_ids && !mc.list_ids.length) { S.fieldErrors = { list_ids: 'Pick at least one list' }; renderSettings(true); return; }
+  if (mc.tms_list_ids && !mc.tms_list_ids.length) { S.fieldErrors = { tms_list_ids: 'Pick at least one list' }; renderSettings(true); return; }
   btn.classList.add('busy'); S.fieldErrors = {};
   try {
     if (Object.keys(mc).length) {
       try { await api('api/monitor/settings', { method: 'POST', body: { settings: mc } }); }
       catch (e) { if (e.data?.errors) { S.fieldErrors = Object.fromEntries(Object.entries(e.data.errors).map(([k, v]) => [k, v])); } throw e; }
       await loadMonitor(true);
-      if (mc.list_ids) await loadLists();
+      if (mc.list_ids || mc.tms_list_ids) await loadLists();
       toast('Monitor settings saved', 'ok');
     }
     if (Object.keys(bc).length) {
@@ -1064,6 +1070,7 @@ async function loadChats() {
 }
 async function loadLists() {
   try { S.lists = await api('api/lists'); S.listsError = S.lists.error; } catch (e) { S.listsError = e.message; }
+  try { S.tmsLists = await api('api/lists/tms'); S.tmsListsError = S.tmsLists.error; } catch (e) { S.tmsListsError = e.message; }
   if (S.page === 'settings') renderSettings(true);
 }
 

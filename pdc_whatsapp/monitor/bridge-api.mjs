@@ -98,10 +98,13 @@ async function dashboard(env, url) {
   };
 }
 
-async function lists(env) {
-  const raw = await monitorTrelloGet(`/boards/${env.TRELLO_MONITOR_BOARD_ID}/lists`, { filter: 'open', fields: 'name,closed' }, env);
+// A Trello site's lists and which are watched: WGTC, or ?site=tms.
+async function lists(env, siteId) {
+  const t = sitesOf(env).find(s => s.id === siteId)?.trello;
+  const e = t ? t.env(env) : env;
+  const raw = await monitorTrelloGet(`/boards/${e.TRELLO_MONITOR_BOARD_ID}/lists`, { filter: 'open', fields: 'name,closed' }, e);
   let watched = [], error = null;
-  try { watched = resolveWatchedLists(raw, env); } catch (e) { error = e.message; }
+  try { watched = t ? resolveWatchedLists(raw, e, t.lists) : resolveWatchedLists(raw, e); } catch (err) { error = err.message; }
   return { lists: raw.map(l => ({ id: l.id, name: l.name, watched: watched.includes(l.id) })), error };
 }
 
@@ -217,7 +220,7 @@ export async function handleBridgeApi(request, env) {
     if (route === 'GET /bridge/outbox') return reply(await outbox(env));
     if (route === 'POST /bridge/outbox/ack') return outboxAck(env, await request.json().catch(() => null));
     if (route === 'GET /bridge/dashboard') return reply(await dashboard(live, url));
-    if (route === 'GET /bridge/lists') return reply(await lists(live));
+    if (route === 'GET /bridge/lists') return reply(await lists(live, url.searchParams.get('site')));
     if (route === 'POST /bridge/settings') {
       const body = await request.json().catch(() => null);
       const result = await saveMonitorSettings(env.DB, body?.settings);

@@ -67,7 +67,7 @@ export function validateBridgeSettings(changes) {
       // Asana personal access tokens are printable ASCII with no spaces (e.g. 2/123…/456…:abc…).
       const v = String(value ?? '').trim();
       if (/^[\x21-\x7e]{20,300}$/.test(v)) clean[key] = v; else errors[key] = 'Paste the whole Asana personal access token';
-    } else if (/^slack_mentions_(wgtc|aotf|os)$/.test(key)) {
+    } else if (SLACK_SITES.some(s => key === `slack_mentions_${s}`)) {
       // "Name=ID,..." from the editor rows; blank rows are dropped.
       const rows = String(value ?? '').split(',').map(e => e.split('=').map(x => x.trim())).filter(([n, id]) => n || id);
       if (rows.length > 25) errors[key] = 'Up to 25 editors per site';
@@ -174,7 +174,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       await writeFile(optionsFile + '.tmp', JSON.stringify({ ...stored, ...changed }, null, 2));
       await rename(optionsFile + '.tmp', optionsFile);
     }
-    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'main Slack webhook' : 'main Slack webhook removed', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}`, `${s.toUpperCase()} Slack channel${changed[`slack_webhook_${s}`] ? '' : ' removed'}`])), slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', slack_mentions_wgtc: 'WGTC editors', slack_mentions_aotf: 'AotF editors', slack_mentions_os: 'OS editors', alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
+    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'main Slack webhook' : 'main Slack webhook removed', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}`, `${s.toUpperCase()} Slack channel${changed[`slack_webhook_${s}`] ? '' : ' removed'}`])), slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_mentions_${s}`, `${s.toUpperCase()} editors`])), alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
     events.add('settings', `Changed ${Object.keys(changed).map(label).join(', ')}; restarting to apply`);
     log('Settings changed:', Object.keys(changed).join(', '));
     restart();
@@ -206,6 +206,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     if (route === 'GET /api/events') return [200, { events: events.list() }];
     if (route === 'GET /api/monitor') return [200, await monitor(false)];
     if (route === 'GET /api/lists') return [200, (await worker('/bridge/lists')).body];
+    if (route === 'GET /api/lists/tms') return [200, (await worker('/bridge/lists?site=tms')).body];
     if (route === 'POST /api/monitor/settings') {
       const body = await readBody(req);
       const { status: code, body: result } = await worker('/bridge/settings', { method: 'POST', body: JSON.stringify({ settings: body.settings }) });

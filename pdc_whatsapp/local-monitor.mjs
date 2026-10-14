@@ -19,7 +19,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
 import { runPitchMonitor, monitorLLM, withMonitorSettings, alertFilter, loadMonitorCards, monitorTrelloGet, formatPitchTime, TRELLO_SITE } from './monitor/trello-monitor.mjs';
 import { slackAlert } from './slack-layout.mjs';
-import { AOTF_SITE, OS_SITE, loadAotfHistory } from './monitor/pitch-sources.mjs';
+import { AOTF_SITE, OS_SITE, TMS_SITE, loadAotfHistory } from './monitor/pitch-sources.mjs';
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
 import { monitorEngine } from './monitor/match-engine.mjs';
 import { DATA, log, remoteApi } from './bridge.mjs';
@@ -37,7 +37,7 @@ const RUN_LIMIT = 4 * 60000; // a healthy run takes under two minutes
 const STALE_ALERT = 10 * 60000;
 const ALERT_REPEAT = 3 * 3600000;
 const SERVICES = { 'api.trello.com': 'Trello', 'docs.google.com': 'Google Sheets', 'app.asana.com': 'Asana', 'api.xiaomimimo.com': 'the MiMo AI', 'generativelanguage.googleapis.com': 'the Gemini AI' };
-export const SITES = [TRELLO_SITE, AOTF_SITE, OS_SITE];
+export const SITES = [TRELLO_SITE, AOTF_SITE, OS_SITE, TMS_SITE];
 const siteName = site => `${site.label} (${site.platform})`;
 const service = host => SERVICES[host] || host;
 const minutes = ms => `${Math.max(1, Math.round(ms / 60000))} min`;
@@ -49,12 +49,12 @@ const minutes = ms => `${Math.max(1, Math.round(ms / 60000))} min`;
 // archive every AOTF_EVERY. A failure keeps the last copy and is reported once.
 export const HISTORY_DAYS = 90;
 const AOTF_EVERY = 15 * 60000;
-const SHARED = { wgtc: 'trello', os: 'asana' };
+const SHARED = { wgtc: 'trello', os: 'asana', tms: 'tms' };
 export function createHistory({ remote, file, fetcher = fetch, clock = Date.now, onProblem = () => {} }) {
   let saved = {};
   try { saved = JSON.parse(readFileSync(file, 'utf8')); } catch { /* first run */ }
-  const lists = { trello: saved.trello || { after: '', items: {} }, asana: saved.asana || { after: '', items: {} } };
-  const cards = { trello: new Map(), asana: new Map() }; // kept across scans: normalized once
+  const lists = Object.fromEntries(Object.values(SHARED).map(s => [s, saved[s] || { after: '', items: {} }]));
+  const cards = Object.fromEntries(Object.values(SHARED).map(s => [s, new Map()])); // kept across scans: normalized once
   const aotf = { at: 0, cards: [] };
   const seen = {}; // per site, for the dashboard: { count, at, problem }
   const save = () => { try { writeFileSync(file + '.tmp', JSON.stringify(lists)); renameSync(file + '.tmp', file); } catch { /* next scan */ } };

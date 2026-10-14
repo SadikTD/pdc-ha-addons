@@ -14,7 +14,7 @@ const digits = s => String(s || '').replace(/\D/g, '');
 export const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 export const SLACK_URL = /^https:\/\/hooks\.slack\.com\/(services|workflows|triggers)\/[A-Za-z0-9/_-]{10,200}$/;
-export const SLACK_SITES = ['wgtc', 'aotf', 'os'];
+export const SLACK_SITES = ['wgtc', 'aotf', 'os', 'tms'];
 // Where each kind of PDC message goes. Slack carries the alerts; WhatsApp is
 // for problems with the monitor itself, which may include Slack being down.
 export const ROUTES = ['slack', 'whatsapp', 'both'];
