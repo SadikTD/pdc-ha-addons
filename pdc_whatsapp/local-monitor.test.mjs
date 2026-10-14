@@ -249,3 +249,25 @@ test('older pitches: only changes are downloaded, removals stick, the copy survi
   assert.deepEqual(await failing(wgtc), []);
   assert.match(failing.msg, /couldn't be updated/);
 });
+
+test('Test a pitch: same check as a scan, with the current and the new rules, nothing stored', async () => {
+  const prompts = [];
+  const tryEngine = {
+    normalize: c => (c.name.trim().length < 3 ? null : { title: c.name, keywords: ['x'], normalizedUrl: '', editLink: c.shortUrl }),
+    shortlist: (_k, cands) => cands, parse: JSON.parse,
+    prompt: (t, list, rubric = 'current') => { prompts.push(rubric); return rubric; },
+    call: async rubric => JSON.stringify({ results: [{ id: 1, verdict: rubric === 'new' ? 'duplicate' : 'same_story', confidence: 90 }] }),
+  };
+  const s = setup({ engine: tryEngine });
+  await runTrelloMonitor(s.worker, engine, { load: s.load });
+  await s.monitor.tick();
+  const before = (await s.monitor.api('/bridge/dashboard').then(r => r.json())).total;
+  const r = await s.monitor.tryPitch('wgtc', 'A rewritten version of the example pitch');
+  assert.deepEqual(prompts.sort(), ['current', 'new']);
+  assert.equal(r.current.found[0].verdict, 'same_story');
+  assert.equal(r.proposed.found[0].verdict, 'duplicate');
+  assert.equal(r.proposed.found[0].title, 'Example pitch');
+  assert.equal((await s.monitor.api('/bridge/dashboard').then(r => r.json())).total, before, 'nothing stored');
+  await assert.rejects(() => s.monitor.tryPitch('nope', 'x'.repeat(20)));
+  s.monitor.stop();
+});

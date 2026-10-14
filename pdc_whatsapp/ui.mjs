@@ -91,7 +91,7 @@ export function validateBridgeSettings(changes) {
 }
 
 // `localMonitor()` returns the in-add-on monitor's API, or null before it has moved.
-export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, optionsFile = `${DATA}/options.json`, target = alertTarget(options, wa, events), deliver = createDelivery({ options, ledger, wa, events, target, fetcher }) }) {
+export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, tryPitch = async () => { throw new Error('not available'); }, optionsFile = `${DATA}/options.json`, target = alertTarget(options, wa, events), deliver = createDelivery({ options, ledger, wa, events, target, fetcher }) }) {
   let monitorCache = null;
   const remote = remoteApi(options, fetcher);
 
@@ -224,6 +224,15 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       return [code, body];
     }
     if (route === 'POST /api/test') return [200, await sendTest((await readBody(req)).text)];
+    // "Test a pitch": current vs new rules on one made-up pitch; never saved or sent.
+    if (route === 'POST /api/try') {
+      const { site, title } = await readBody(req);
+      const t = String(title || '').replace(/\s+/g, ' ').trim();
+      if (t.length < 10 || t.length > 500) throw new HttpError(400, 'Type a pitch headline (10 to 500 characters)');
+      if (!localMonitor()) throw new HttpError(409, 'The pitch monitor is not running on the Pi yet');
+      try { return [200, await tryPitch(String(site || ''), t)]; }
+      catch (e) { throw new HttpError(502, `The check didn't finish: ${String(e?.message || e).slice(0, 200)}`); }
+    }
     if (route === 'POST /api/test-alert') {
       const { template = '' } = await readBody(req);
       try { checkAlertTemplate(template); } catch (e) { throw new HttpError(400, `Alert message ${e.message}`); }

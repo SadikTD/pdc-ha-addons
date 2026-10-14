@@ -294,6 +294,7 @@ server.listen(PORT, () => log(`Bridge listening on :${PORT}`));
 const ui = http.createServer(createUiHandler({
   options, ledger, wa, events, version, supervisor, target, deliver, localMonitor: () => (monitor.active() ? monitor.api : null),
   monitorHealth: () => (monitor.active() ? monitor.health() : null),
+  tryPitch: (site, title) => monitor.tryPitch(site, title),
   restart: () => setTimeout(() => supervisor('POST', '/addons/self/restart'), 1500),
 }));
 ui.listen(UI_PORT, () => log(`Dashboard listening on :${UI_PORT}`));

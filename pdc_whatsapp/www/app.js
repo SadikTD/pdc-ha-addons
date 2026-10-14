@@ -937,6 +937,17 @@ function renderSettings(force = false) {
   renderConnection(); updateSavebar();
 }
 
+// "Test a pitch" result: the top matches under each set of rules, side by side.
+function tryResult(r) {
+  const col = (name, x) => {
+    const rows = x.found.length ? x.found.map(f => `<li style="margin:0 0 10px">${chip(f.verdict)} <span class="muted small">${f.confidence}%</span><br>${f.url ? `<a class="link" href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.title)}</a>` : esc(f.title)}<br><span class="muted small">${esc(f.writer || '')}</span></li>`).join('')
+      : `<li class="muted">${x.method === 'keywords' ? 'No earlier pitch shares enough words to compare.' : 'Clear: no overlap found.'}</li>`;
+    return `<div style="flex:1;min-width:260px"><h3 style="margin:0 0 8px">${name}</h3><ul style="list-style:none;padding:0;margin:0">${rows}</ul></div>`;
+  };
+  return `<div class="field col"><div class="muted small">${esc(r.site)} · compared with ${r.current.compared} pitches${r.current.method === 'exact' ? ' · same headline or source link, so no AI needed' : ''}</div>
+    <div class="pair" style="align-items:flex-start;gap:24px;flex-wrap:wrap">${col('Current rules', r.current)}${col('New rules', r.proposed)}</div></div>`;
+}
+
 // One editor in a site's mention list: name, Slack member ID, remove.
 const mentionRow = (name = '', id = '') => `<div class="pair mention" style="margin-bottom:6px"><input class="input" data-m="name" value="${esc(name)}" placeholder="Name" aria-label="Editor name" autocomplete="off"><input class="input" data-m="id" value="${esc(id)}" placeholder="U012AB3CD" aria-label="Slack member ID" autocomplete="off" spellcheck="false"><button class="btn ghost" data-mention-remove type="button">Remove</button></div>`;
 // The rows of one list back into its "Name=ID,..." setting.
@@ -1154,6 +1165,14 @@ document.addEventListener('click', async e => {
     t.classList.add('busy');
     try { await api('api/test-slack', { method: 'POST', body: { field, url: $(`#f-${field}`).value.trim() } }); toast('Test message sent. Check Slack', 'ok'); }
     catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
+    return;
+  }
+  if (t.id === 'btn-try') {
+    const out = $('#try-result'), title = $('#try-title').value.trim();
+    t.classList.add('busy'); out.innerHTML = '<div class="field col"><div class="muted">Checking with both sets of rules…</div></div>';
+    try { out.innerHTML = tryResult(await api('api/try', { method: 'POST', body: { site: $('#try-site').value, title } })); }
+    catch (err) { out.innerHTML = `<div class="field col"><div class="err">${esc(err.message)}</div></div>`; }
+    finally { t.classList.remove('busy'); }
     return;
   }
   if (t.id === 'btn-tpl-reset') {

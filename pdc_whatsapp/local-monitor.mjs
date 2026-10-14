@@ -17,7 +17,7 @@
 // monitoring and this add-on keeps collecting its alerts.
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
-import { runPitchMonitor, monitorLLM, withMonitorSettings, alertFilter, loadMonitorCards, monitorTrelloGet, formatPitchTime, TRELLO_SITE } from './monitor/trello-monitor.mjs';
+import { runPitchMonitor, checkMonitorCard, monitorLLM, withMonitorSettings, alertFilter, loadMonitorCards, monitorTrelloGet, formatPitchTime, TRELLO_SITE } from './monitor/trello-monitor.mjs';
 import { slackAlert } from './slack-layout.mjs';
 import { AOTF_SITE, OS_SITE, TMS_SITE, loadAotfHistory } from './monitor/pitch-sources.mjs';
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
@@ -418,6 +418,23 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
       const bySite = config ? Object.fromEntries(sites.map(s => [s.id, siteHealth(s)])) : {};
       const wgtc = bySite[TRELLO_SITE.id] || { problem: null, problemSince: null, lastOk: null, running: null };
       return { ...wgtc, problem: wgtc.problem || general, general, sites: bySite };
+    },
+    // Dashboard "Test a pitch": the same check a scan runs (the site's live
+    // board plus its 90 days), once with the current rules and once with the
+    // new ones. Nothing is stored or sent.
+    async tryPitch(siteId, title) {
+      const site = sites.find(s => s.id === siteId);
+      if (!site || !config) throw new Error('Unknown site, or the monitor has not moved here yet');
+      const settings = await withMonitorSettings(env());
+      const [{ cards: live }, older] = await Promise.all([loaders[site.id](settings), history(site)]);
+      const card = { id: `try-${Date.now()}`, name: title, desc: '', idList: 'try', closed: false, shortUrl: '', _writer: 'Test', _listName: 'Test', _site: site.label, _created: new Date().toISOString() };
+      const run = async rubric => {
+        const meta = {}, base = engineFor(site);
+        const found = await checkMonitorCard(card, [...live, ...older], settings, { ...base, prompt: (t, list) => base.prompt(t, list, rubric) }, meta);
+        return { method: meta.method, compared: meta.compared, found: found.slice(0, 5).map(f => ({ verdict: f.verdict, confidence: f.confidence, title: f.candidate.title, writer: f.candidate.writer, url: f.candidate.editLink || '' })) };
+      };
+      const [current, proposed] = await Promise.all([run('current'), run('new')]);
+      return { site: site.label, current, proposed };
     },
     // The Slack layout of a duplicate alert, from its key (null: not an alert).
     async slackPayload(key) {

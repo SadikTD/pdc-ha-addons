@@ -255,17 +255,39 @@ const SCHED_VERDICT_RUBRIC = [
   '4. When in doubt between "duplicate" and "same_story", choose "same_story".',
   '5. When in doubt between "same_story" and "near_miss", choose "near_miss".',
 ];
+// Proposed 2026-10-14 (not live until approved): a retelling of the same
+// event with a different detail up front is a "duplicate"; "same_story" needs
+// a later development or a different kind of piece. Strict on the EVENT
+// itself, so different events still never match.
+const SCHED_VERDICT_RUBRIC_NEW = [
+  'VERDICTS (DEFAULT to "different" whenever you are not sure the specific news event is the same):',
+  '',
+  '- "duplicate" = SAME specific news event (the same incident, announcement, video, post, or statement), and the pitch under review retells it. An editor would publish only one of the two. Different wording, a different headline style, or leading with a different detail, quote, or reaction from that same event does NOT make it a new story.',
+  '- "same_story" = SAME specific news event, but the pitch under review is clearly a separate article an editor could run alongside the earlier one: it reports a LATER development (news that happened after the event in the earlier pitch, such as an official response, a firing, a lawsuit, or an outcome), or it is a different kind of piece (explainer, opinion, list, review) rather than a retelling.',
+  '- "near_miss" = Overlapping SUBJECT (same person, team, scandal) but the SPECIFIC news event is not the same.',
+  '- "different" = No meaningful overlap. This is the correct answer whenever the specific event AND subject are not shared. Default here when uncertain.',
+  '',
+  'STRICTNESS RULES:',
+  '1. Sharing a SUBJECT alone (same celebrity, politician, team) is not enough for any verdict above "different".',
+  '2. Sharing a THEME alone is not enough.',
+  '3. Two items on the same day about the same person are still "different" if they describe SEPARATE events.',
+  '4. First decide whether the specific news event is the same. If you are not sure it is, choose "near_miss" or "different".',
+  '5. Once the event is the same, choose "same_story" only if you can name the later development or the different kind of piece. Otherwise it is "duplicate".',
+  '6. Details from the same incident (who said what, how it ended, what happened on air, how people reacted online) are part of that event, not a later development.',
+];
+const RUBRICS = { current: SCHED_VERDICT_RUBRIC, new: SCHED_VERDICT_RUBRIC_NEW };
 const SCHED_VERDICT_SCHEMA_LINE =
   '{"results":[{"id":<integer>,"verdict":"duplicate"|"same_story"|"near_miss"|"different","confidence":<0-100>}]}';
 
-function schedBuildAuditPrompt(targetRow, candidates) {
+// `rubric`: 'current' (live) or 'new' (being tested from the dashboard).
+function schedBuildAuditPrompt(targetRow, candidates, rubric = 'current') {
   const list = candidates.map((c, i) =>
     `[${i + 1}] site=${c.site || '?'} writer=${c.writer || '?'} date=${c.dateStr || '?'} status=${c.status || 'pending'} — "${(c.title || '').replace(/"/g, '\\"')}"`
   ).join('\n');
   return [
     'You are a duplicate detector for a busy news pitch desk. Compare the pitch under review against each earlier pitch. For each one, judge whether and how it overlaps. Be strict but distinguish levels of overlap.',
     '',
-    ...SCHED_VERDICT_RUBRIC,
+    ...RUBRICS[rubric],
     '',
     'Return ONLY valid JSON (no prose, no markdown fences) in this exact shape:',
     SCHED_VERDICT_SCHEMA_LINE,
