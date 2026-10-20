@@ -117,14 +117,16 @@ const SITE_COLOR = { wgtc: 'var(--site-wgtc)', aotf: 'var(--site-aotf)', os: 'va
 const ITEMS = { Trello: 'Cards compared against', 'Google Sheet': 'Pitches compared against', Asana: 'Tasks compared against' };
 // Older pitches (up to 90 days) a site is compared against, from the monitor's health.
 const historyOf = site => S.status?.monitorHealth?.sites?.[site?.id]?.history || null;
-const OPEN_IN = { Trello: 'Open in Trello', 'Google Sheet': 'Open in the sheet', Asana: 'Open in Asana' };
+const OPEN_IN = { Trello: 'Open in Trello', 'Google Sheet': 'Open in the sheet', Asana: 'Open in Asana', 'Kanban Board': 'Open on the Kanban board' };
 const sites = () => S.monitor?.sites || [];
 const siteOf = id => sites().find(x => x.id === (id || 'wgtc'));
 const shownSites = () => (S.site === 'all' ? sites() : sites().filter(x => x.id === S.site));
 const siteOn = x => Boolean(x?.enabled && !x.needs); // scanning, or meant to be
 const siteLastOk = x => ms(x?.state?.last_ok);
 const siteTag = id => `<span class="site-tag" style="--sc:${SITE_COLOR[id || 'wgtc'] || 'var(--muted)'}">${esc(SITE_LABEL[id || 'wgtc'] || id)}</span>`;
-const openIn = j => OPEN_IN[siteOf(j.site)?.platform] || 'Open';
+// Board pitches (ids kb…) live on the Kanban board, not the site's own platform.
+const platformOf = j => (/^kb\d/.test(String(j?.id || j?.cardId || '')) ? 'Kanban Board' : siteOf(j?.site)?.platform);
+const openIn = j => OPEN_IN[platformOf(j)] || 'Open';
 const placeOf = j => siteOf(j.site)?.place || 'List';
 const allJobs = () => S.monitor?.jobs || [];
 const jobs = () => (S.site === 'all' ? allJobs() : allJobs().filter(j => (j.site || 'wgtc') === S.site));
@@ -706,10 +708,10 @@ function openJob(key) {
   const meta = j.meta || {};
   $('#drawer-body').innerHTML = `
     <div class="d-head"><div class="d-chips">${chip(o)}${siteTag(j.site)}</div><h2 id="drawer-title">${esc(j.name)}</h2>
-      <div class="d-meta"><span>${esc(site ? `${site.label} · ${site.platform}` : 'WGTC · Trello')}</span><span>${esc(j.writer)}</span><span>${esc(j.list)}</span><span>${esc(createdText(j))}</span></div>
+      <div class="d-meta"><span>${esc(site ? `${site.label} · ${platformOf(j)}` : 'WGTC · Trello')}</span><span>${esc(j.writer)}</span><span>${esc(j.list)}</span><span>${esc(createdText(j))}</span></div>
       <div class="actions top">
         ${j.url ? `<a class="btn primary" href="${esc(j.url)}" target="_blank" rel="noopener" title="${esc(openIn(j))}"><svg><use href="#i-ext"/></svg>Open pitch</a>` : ''}
-        ${b?.url ? `<a class="btn" href="${esc(b.url)}" target="_blank" rel="noopener" title="${esc(openIn(j))}"><svg><use href="#i-ext"/></svg>Open match</a>` : ''}
+        ${b?.url ? `<a class="btn" href="${esc(b.url)}" target="_blank" rel="noopener" title="${esc(openIn({ site: j.site, ...b }))}"><svg><use href="#i-ext"/></svg>Open match</a>` : ''}
         ${j.findings.length ? `<button class="btn" data-act="resend" data-id="${esc(jobKey(j))}"><svg><use href="#i-send"/></svg>${j.send === 'accepted' ? 'Send alert again' : 'Send alert'}</button>` : ''}
         ${o === 'gone' ? '' : `<button class="btn" data-act="recheck" data-id="${esc(jobKey(j))}"><svg><use href="#i-refresh"/></svg>Check again</button>`}
       </div></div>

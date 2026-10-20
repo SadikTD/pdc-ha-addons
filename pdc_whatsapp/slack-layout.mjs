@@ -16,13 +16,15 @@ const context = text => ({ type: 'context', elements: [{ type: 'mrkdwn', text: t
 // own timezone; the Bangladesh time is the fallback. Day-only dates stay as is.
 const when = (label, ts) => (Number.isInteger(ts) ? `<!date^${ts}^{date_short_pretty} at {time}|${esc(label)} BDT>` : esc(label));
 const details = (writer, status, label, ts) => `${esc(writer)} · ${esc(status)} · ${when(label, ts)}`;
+// Where a pitch lives: the Kanban board for board pitches (ids kb…), else the site's own platform.
+export const platformOf = (cardId, site) => (/^kb\d/.test(String(cardId || '')) ? 'Kanban Board' : site.platform);
 const button = (text, url, primary) => ({ type: 'button', text: { type: 'plain_text', text, emoji: true }, url, ...(primary ? { style: 'primary' } : {}) });
 
 // A duplicate alert: headline, coloured bar by verdict, both pitches, the
 // AI's reason, and buttons to open them.
 export function slackAlert(job, qualifies, site) {
   const v = alertValues(job, qualifies, site);
-  const headline = `${HEADLINE[v.verdict] || '💡 Possible overlap'} · ${site.label} (${site.platform})`;
+  const headline = `${HEADLINE[v.verdict] || '💡 Possible overlap'} · ${site.label} (${platformOf(JSON.parse(job.card_json).id, site)})`;
   const blocks = [
     section(`*🆕 New pitch*\n${link(v.new_link, v.new_title)}\n${details(v.new_writer, v.new_status, v.new_date, v.new_ts)}`),
     section(`*📌 Already pitched*\n${link(v.old_link, v.old_title)}\n${details(v.old_writer, v.old_status, v.old_date, v.old_ts)}`),

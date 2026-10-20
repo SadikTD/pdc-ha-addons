@@ -39,3 +39,8 @@ test('other messages: headline above a green or yellow bar', () => {
   assert.equal(slackText('⚠️ *Problem*\nx').attachments[0].color, '#ECB22E');
   assert.deepEqual(slackText('one line'), { text: 'one line' });
 });
+
+test('a pitch on the Kanban board names the board, not the site platform', () => {
+  const j = job('duplicate'); j.card_json = JSON.stringify({ ...JSON.parse(j.card_json), id: 'kb13' });
+  assert.equal(slackAlert(j, () => true, AOTF_SITE).text, '*🚨 Duplicate pitch · AotF (Kanban Board)*  ·  92% match');
+});
