@@ -23,6 +23,7 @@ import { AOTF_SITE, OS_SITE, TMS_SITE, loadAotfHistory } from './monitor/pitch-s
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
 import { monitorEngine } from './monitor/match-engine.mjs';
 import { DATA, log, remoteApi } from './bridge.mjs';
+import { withBoard, withBoardHistory } from './board-feed.mjs';
 
 const SCHEMA = new URL('./monitor/monitor-schema.sql', import.meta.url);
 const INTERVAL = 60000;
@@ -228,10 +229,12 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
     [TRELLO_SITE.id]: dependencies.load || (e => loadMonitorCards(e, (path, params, e2) => monitorTrelloGet(path, params, e2, guarded[TRELLO_SITE.id]))),
     ...Object.fromEntries(sites.filter(s => s !== TRELLO_SITE).map(s => [s.id, dependencies.loaders?.[s.id] || (e => s.load(e, guarded[s.id]))])),
   };
+  // Each site also reads its pitches on the Gamurs Kanban board (board-feed.mjs).
+  for (const s of sites) loaders[s.id] = withBoard(loaders[s.id], s, options, guarded[s.id]);
   // Like scans, a history update is only reported after failing 3 times in a
   // row (scans meanwhile use the last copy), and once more when it recovers.
   const historyFails = {};
-  const history = dependencies.history || createHistory({
+  const history = withBoardHistory(dependencies.history || createHistory({
     remote, file: `${DATA}/pitch-history.json`, fetcher: guard('history'), clock,
     onProblem: (site, message) => {
       const n = historyFails[site.id] || 0;
@@ -243,7 +246,7 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
       historyFails[site.id] = n + 1;
       if (n + 1 === 3) { log(`${site.label}: ${message}`); events.add('history_error', `${site.label}: ${message}`); }
     },
-  });
+  }), options, { days: HISTORY_DAYS, fetcher: guard('history'), clock, log: message => { log(message); events.add('history_error', message); } });
   const depsFor = site => ({ ...dependencies, load: loaders[site.id], history });
   let general = null, moving = false, timer = null, watchTimer = null;
   // Per site: the run in progress, hangs in a row, the current problem, and

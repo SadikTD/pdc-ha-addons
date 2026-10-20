@@ -1,7 +1,7 @@
 name: PDC Monitor
-version: "3.15.0"
+version: "3.16.0"
 slug: pdc_whatsapp
-description: Pitch Duplicate Checker monitor for WGTC and TMS (Trello), AotF (Google Sheet) and OS (Asana) with Slack alerts, WhatsApp for monitor problems, and a sidebar dashboard
+description: Pitch Duplicate Checker monitor for WGTC and TMS (Trello), AotF (Google Sheet), OS (Asana) and the Gamurs Kanban board with Slack alerts, WhatsApp for monitor problems, and a sidebar dashboard
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/pdc_whatsapp
 arch:
   - aarch64
@@ -59,6 +59,13 @@ options:
   route_duplicates: slack
   route_problems: whatsapp
   route_connection: whatsapp
+  # The Gamurs Kanban board (e.g. https://name.onrender.com) and its
+  # PDC_FEED_TOKEN. Empty: the board isn't read.
+  board_url: ""
+  board_token: ""
+  # Sites that have fully moved to the board: their old platform (Trello,
+  # sheet, Asana) is no longer read. Comma list of wgtc,aotf,os,tms.
+  board_only_sites: ""
 schema:
   api_token: password
   sender_number: match(^\+[1-9]\d{7,14}$)
@@ -82,3 +89,6 @@ schema:
   route_duplicates: list(slack|whatsapp|both)?
   route_problems: list(slack|whatsapp|both)?
   route_connection: list(slack|whatsapp|both)?
+  board_url: match(^(https?://[A-Za-z0-9.-]+(:\d+)?/?)?$)?
+  board_token: password?
+  board_only_sites: match(^[a-z,]*$)?

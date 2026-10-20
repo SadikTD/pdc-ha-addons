@@ -25,6 +25,8 @@ Runs the Pitch Duplicate Checker's Trello monitor and sends its alerts through a
 
 - **Pitch monitor (since 3.0.0):** scans the Trello board once a minute, checks each new pitch against recent ones (exact title/source match, then MiMo with Gemini as backup), and sends duplicate alerts straight away. It moved here from the pitch-checker Worker, whose free-plan CPU cap kept killing runs and delayed alerts by up to half an hour. The code in `monitor/` is copied unchanged from the pitch-checker project; a local SQLite file (`/data/monitor.db`) stands in for Cloudflare D1.
 
+- **Gamurs Kanban board (since 3.16.0):** with `board_url` and `board_token` (the board's `PDC_FEED_TOKEN`) set, each site also reads its pitches on the board. New board pitches (in Pitched) are checked against the board and the old platform, older pitches include the board's last 90 days, and alerts go to the same Slack channels. List a site in `board_only_sites` once its writers have fully moved, so its old platform stops being read (keep the site switched on).
+
 - Logs in once with a pairing code shown in the add-on log.
 - Exposes `POST /send` (bearer token, JSON `{to, text, idempotencyKey}`) and `GET /health` on port 8787 inside the Supervisor network only. No host port is published.
 - Only the configured recipient number can be messaged; `POST /send-image` (JPEG + caption, used by Sentinel's night alerts) may also go to WhatsApp groups the sender number is a member of (`GET /chats` lists them).

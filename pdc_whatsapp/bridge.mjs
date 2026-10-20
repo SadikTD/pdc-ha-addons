@@ -51,6 +51,10 @@ export function loadOptions(file = `${DATA}/options.json`) {
     slackSiteWebhooks: Object.fromEntries(SLACK_SITES.map(s => [s, slackUrlOption(o[`slack_webhook_${s}`])])),
     slackMentions: Object.fromEntries(SLACK_SITES.map(s => [s, parseMentions(o[`slack_mentions_${s}`])])),
     slackSites: pickList(o.slack_sites, SLACK_SITES),
+    // The Gamurs Kanban board's pitch feed ('' = not read), and the sites that read only the board.
+    boardUrl: /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?\/?$/.test(String(o.board_url || '').trim()) ? String(o.board_url).trim().replace(/\/+$/, '') : '',
+    boardToken: String(o.board_token || '').trim(),
+    boardOnly: o.board_only_sites ? pickList(o.board_only_sites, SLACK_SITES) : [],
     routes: Object.fromEntries(Object.entries(DEFAULT_ROUTES).map(([k, d]) => [k, ROUTES.includes(o[`route_${k}`]) ? o[`route_${k}`] : d])),
   };
   if (options.token.length < 32) throw new Error('api_token must be at least 32 characters');
