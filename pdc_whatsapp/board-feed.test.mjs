@@ -63,3 +63,11 @@ test('older pitches include 90 days of the board, re-read every 15 minutes, last
   assert.equal(logs.length, 1);
   assert.equal(history.status(), 'status');
 });
+
+test('switched off in Settings, the board is not read at all', async () => {
+  const load = async () => ({ cards: [], watched: [] });
+  const off = { ...options, boardEnabled: false };
+  assert.equal(withBoard(load, TRELLO_SITE, off, async () => { throw new Error('board read'); }), load);
+  const base = async () => [];
+  assert.equal(withBoardHistory(base, off), base);
+});

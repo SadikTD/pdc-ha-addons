@@ -55,6 +55,7 @@ export function loadOptions(file = `${DATA}/options.json`) {
     boardUrl: /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?\/?$/.test(String(o.board_url || '').trim()) ? String(o.board_url).trim().replace(/\/+$/, '') : '',
     boardToken: String(o.board_token || '').trim(),
     boardOnly: o.board_only_sites ? pickList(o.board_only_sites, SLACK_SITES) : [],
+    boardEnabled: o.board_enabled !== false, // switched off from the Settings page while testing
     routes: Object.fromEntries(Object.entries(DEFAULT_ROUTES).map(([k, d]) => [k, ROUTES.includes(o[`route_${k}`]) ? o[`route_${k}`] : d])),
   };
   if (options.token.length < 32) throw new Error('api_token must be at least 32 characters');

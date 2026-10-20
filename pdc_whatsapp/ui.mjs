@@ -63,6 +63,8 @@ export function validateBridgeSettings(changes) {
     } else if (key === 'alert_group') {
       // '' sends alerts to the recipient number.
       if (value === '' || GROUP.test(String(value))) clean[key] = String(value); else errors[key] = 'Pick your number or one of the groups';
+    } else if (key === 'board_enabled') {
+      if (typeof value === 'boolean') clean[key] = value; else errors[key] = 'Must be on or off';
     } else if (key === 'asana_token') {
       // Asana personal access tokens are printable ASCII with no spaces (e.g. 2/123…/456…:abc…).
       const v = String(value ?? '').trim();
@@ -123,6 +125,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     worker_url: options.workerUrl, api_token_set: options.token.length >= 32,
     asana_token_set: Boolean(options.asanaToken), // never the token itself
     alert_group: options.alertGroup,
+    board_enabled: options.boardEnabled !== false, board_url: options.boardUrl || '', // never the token
     slack_webhook_set: Boolean(options.slackWebhook), // never the URLs themselves
     ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}_set`, Boolean(options.slackSiteWebhooks?.[s])])),
     ...Object.fromEntries(SLACK_SITES.map(s => [`slack_mentions_${s}`, (options.slackMentions?.[s] || []).map(m => `${m.name}=${m.id}`).join(',')])),
@@ -174,7 +177,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       await writeFile(optionsFile + '.tmp', JSON.stringify({ ...stored, ...changed }, null, 2));
       await rename(optionsFile + '.tmp', optionsFile);
     }
-    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'main Slack webhook' : 'main Slack webhook removed', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}`, `${s.toUpperCase()} Slack channel${changed[`slack_webhook_${s}`] ? '' : ' removed'}`])), slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_mentions_${s}`, `${s.toUpperCase()} editors`])), alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number' }[k] || k);
+    const label = k => ({ asana_token: 'Asana token', slack_webhook_url: changed.slack_webhook_url ? 'main Slack webhook' : 'main Slack webhook removed', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_webhook_${s}`, `${s.toUpperCase()} Slack channel${changed[`slack_webhook_${s}`] ? '' : ' removed'}`])), slack_sites: 'Slack sites', route_duplicates: 'where duplicate alerts go', route_problems: 'where monitor problems go', route_connection: 'where connection warnings go', ...Object.fromEntries(SLACK_SITES.map(s => [`slack_mentions_${s}`, `${s.toUpperCase()} editors`])), alert_group: changed.alert_group ? 'alerts now go to a WhatsApp group' : 'alerts now go to the number', board_enabled: changed.board_enabled ? 'Kanban board checks on' : 'Kanban board checks off' }[k] || k);
     events.add('settings', `Changed ${Object.keys(changed).map(label).join(', ')}; restarting to apply`);
     log('Settings changed:', Object.keys(changed).join(', '));
     restart();

@@ -35,7 +35,7 @@ export async function loadBoardPitches(options, site, days, fetcher = fetch) {
   }));
 }
 
-const boardOn = options => Boolean(options.boardUrl && options.boardToken);
+const boardOn = options => Boolean(options.boardUrl && options.boardToken && options.boardEnabled !== false);
 
 // A site's loader plus the board's pitches from the same reference window.
 export function withBoard(load, site, options, fetcher = fetch) {
