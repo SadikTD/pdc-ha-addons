@@ -1,21 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { Loader2, VideoOff } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
-// go2rtc's <video-stream> web component, served through Sentinel's /go2rtc proxy.
-let loader: Promise<unknown> | null = null;
+import { VideoRTC } from "../vendor/video-rtc.js";
+
+// go2rtc's player, bundled with the app (fetching it from go2rtc at runtime made every
+// tile wait for it behind the page's pictures). Its stream comes through Sentinel's
+// /go2rtc proxy.
+if (!customElements.get("video-stream")) customElements.define("video-stream", class extends VideoRTC {});
 const base = () => location.origin + location.pathname;
-function loadPlayer() {
-  loader ??= import(/* @vite-ignore */ new URL("go2rtc/video-stream.js", base()).href).catch((e) => {
-    loader = null;
-    throw e;
-  });
-  return loader;
-}
 
 // Streams whose video this browser can't decode (go2rtc then sends only the sound):
-// shown as pictures instead, from then on without trying video first.
-const picturesOnly = new Set<string>();
+// shown as pictures instead, from then on without trying video first. Remembered across
+// visits, so a browser without H.265 doesn't try (and wait for) video on every visit.
+const PIC_KEY = "sentinel.picturesOnly";
+const picturesOnly = new Set<string>(JSON.parse(localStorage.getItem(PIC_KEY) ?? "[]"));
+const rememberPictures = (key: string) => {
+  picturesOnly.add(key);
+  localStorage.setItem(PIC_KEY, JSON.stringify([...picturesOnly]));
+};
 const neverStarted = new Map<string, number>();
 const hasVideoCodec = (codecs: string) => /avc1|hvc1|hev1/.test(codecs);
 
@@ -87,73 +90,61 @@ export function LiveStream({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement | null>(null);
-  const [state, setState] = useState<"loading" | "playing" | "error">("loading");
+  const [state, setState] = useState<"loading" | "playing">("loading");
   // Bumped by the watchdog to throw the player away and start a fresh one.
   const [attempt, setAttempt] = useState(0);
   const latest = useRef({ muted, onMutedByBrowser, onHasAudio });
   latest.current = { muted, onMutedByBrowser, onHasAudio };
 
   useEffect(() => {
-    let el: VideoStreamEl | null = null;
     let cancelled = false;
     let stallTimer = 0;
-    let retryTimer = 0;
     const key = hq ? camera : `${camera}_sub`;
     const pictures = picturesOnly.has(key);
     let posterWatch: MutationObserver | null = null;
     let lastPoster = 0;
     setState("loading");
-    loadPlayer()
-      .then(() => {
-        if (cancelled || !host.current) return;
-        el = document.createElement("video-stream") as VideoStreamEl;
-        // Smooth video (MSE) when the browser can decode the camera's codec; otherwise a
-        // stream of pictures (e.g. H.265 cameras in browsers without HEVC support).
-        el.mode = pictures ? "mjpeg" : "mse";
-        el.media = "video,audio";
-        el.background = false;
-        host.current.appendChild(el);
-        const src = new URL(`go2rtc/api/ws?src=${encodeURIComponent(pictures ? `${camera}_pic` : key)}`, base());
-        src.protocol = src.protocol === "https:" ? "wss:" : "ws:";
-        el.src = src.toString();
-        const v = el.video;
-        if (!v) return;
-        const stream = el;
-        video.current = v;
-        v.controls = false;
-        v.muted = latest.current.muted;
-        v.playsInline = true;
-        // Pictures mode shows each frame as the video's poster.
-        posterWatch = new MutationObserver(() => {
-          lastPoster = Date.now();
-          window.clearTimeout(stallTimer);
-          setState("playing");
-        });
-        posterWatch.observe(v, { attributes: true, attributeFilter: ["poster"] });
-        v.addEventListener("playing", () => {
-          if (stream.mseCodecs && !hasVideoCodec(stream.mseCodecs)) {
-            picturesOnly.add(key);
-            setAttempt((n) => n + 1);
-            return;
-          }
-          window.clearTimeout(stallTimer);
-          neverStarted.delete(key);
-          setState("playing");
-          latest.current.onHasAudio?.(/mp4a|flac|opus/.test(stream.mseCodecs ?? ""));
-        });
-        v.addEventListener("waiting", () => {
-          stallTimer = window.setTimeout(() => setState("loading"), 1500);
-        });
-        v.addEventListener("volumechange", () => {
-          // Not while closing: closeStream() mutes the video itself.
-          if (!cancelled && v.muted && !latest.current.muted) latest.current.onMutedByBrowser?.();
-        });
-        onVideo?.(v);
-      })
-      .catch(() => {
-        setState("error");
-        retryTimer = window.setTimeout(() => setAttempt((n) => n + 1), 5000);
-      });
+    const el = document.createElement("video-stream") as VideoStreamEl;
+    // Smooth video (MSE) when the browser can decode the camera's codec; otherwise a
+    // stream of pictures (e.g. H.265 cameras in browsers without HEVC support).
+    el.mode = pictures ? "mjpeg" : "mse";
+    el.media = "video,audio";
+    el.background = false;
+    host.current!.appendChild(el); // connecting creates its <video>
+    const src = new URL(`go2rtc/api/ws?src=${encodeURIComponent(pictures ? `${camera}_pic` : key)}`, base());
+    src.protocol = src.protocol === "https:" ? "wss:" : "ws:";
+    el.src = src.toString();
+    const v = el.video!;
+    video.current = v;
+    v.controls = false;
+    v.muted = latest.current.muted;
+    v.playsInline = true;
+    // Pictures mode shows each frame as the video's poster.
+    posterWatch = new MutationObserver(() => {
+      lastPoster = Date.now();
+      window.clearTimeout(stallTimer);
+      setState("playing");
+    });
+    posterWatch.observe(v, { attributes: true, attributeFilter: ["poster"] });
+    v.addEventListener("playing", () => {
+      if (el.mseCodecs && !hasVideoCodec(el.mseCodecs)) {
+        rememberPictures(key);
+        setAttempt((n) => n + 1);
+        return;
+      }
+      window.clearTimeout(stallTimer);
+      neverStarted.delete(key);
+      setState("playing");
+      latest.current.onHasAudio?.(/mp4a|flac|opus/.test(el.mseCodecs ?? ""));
+    });
+    v.addEventListener("waiting", () => {
+      stallTimer = window.setTimeout(() => setState("loading"), 1500);
+    });
+    v.addEventListener("volumechange", () => {
+      // Not while closing: closeStream() mutes the video itself.
+      if (!cancelled && v.muted && !latest.current.muted) latest.current.onMutedByBrowser?.();
+    });
+    onVideo?.(v);
     // Watchdog: a stream that never starts, or whose picture stops moving while the page
     // is visible (the socket can stay open while nothing arrives), is started again
     // instead of showing a frozen or blank tile forever.
@@ -184,11 +175,10 @@ export function LiveStream({
       cancelled = true;
       window.clearInterval(watchdog);
       posterWatch?.disconnect();
-      window.clearTimeout(retryTimer);
       window.clearTimeout(stallTimer);
       video.current = null;
       onVideo?.(null);
-      if (el) closeStream(el);
+      closeStream(el);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera, hq, attempt]);
@@ -207,13 +197,7 @@ export function LiveStream({
       <div ref={host} className="absolute inset-0" />
       {state !== "playing" && (
         <div className={clsx("absolute inset-0 flex items-center justify-center", !poster && "bg-gradient-to-b from-ink-900/40 to-ink-950/70")}>
-          {state === "loading" ? (
-            <Loader2 className="size-7 animate-spin text-white/60" />
-          ) : (
-            <div className="flex flex-col items-center gap-2 text-sm text-slate-400">
-              <VideoOff className="size-6" /> Live view unavailable
-            </div>
-          )}
+          <Loader2 className="size-7 animate-spin text-white/60" />
         </div>
       )}
     </div>
