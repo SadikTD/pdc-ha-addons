@@ -69,3 +69,10 @@ assert run([1, 0, 0, 1, 0, 1, 1]) == [True, True, False, False, False, False, Tr
 ev = m.db.one("SELECT start, end FROM events WHERE kind='internet_down' ORDER BY id DESC LIMIT 1")
 assert (ev["start"], ev["end"]) == (B + 30, B + 150), ev  # first bad round .. first of the 2 good ones
 print("ok")
+
+# Valorant: playable only with ping under the limit, little loss and a steady line.
+assert m.valorant_verdict(45.0, 3.0, 0.0, 80) == (True, [])
+assert m.valorant_verdict(177.0, 3.0, 0.0, 80) == (False, ["ping 177 ms (over 80)"])
+assert m.valorant_verdict(45.0, 25.0, 5.0, 80)[1] == ["5% packet loss", "ping jumping ±25 ms"]
+assert m.valorant_verdict(None, None, 100.0, 80)[0] is False
+print("valorant ok")

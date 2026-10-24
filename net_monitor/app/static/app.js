@@ -533,7 +533,69 @@
     charts[key] = new Chart(canvas, cfg);
   }
 
+  // ----------------------------------------------------------------- valorant
+  async function loadValorant() {
+    data.valo = await api("api/valorant");
+    renderValorant();
+  }
+
+  function renderValorant() {
+    const v = data.valo;
+    if (!v) return;
+    const l = v.latest, w = (l && l.window) || {};
+    $("valo-region").textContent = v.region_name;
+    $("valo-headline").textContent = w.ping_ms != null ? `${ms(w.ping_ms)} ms` : "—";
+    let lvl = 1, title = "Measuring…", text = "The first reading takes about a minute.";
+    if (l && l.playable) {
+      lvl = 0;
+      title = "Good to play";
+      text = `The match route answers in ${ms(w.ping_ms)} ms with ${pct(w.loss_pct, 1)} packet loss over the last 3 minutes.`;
+    } else if (l) {
+      lvl = 2;
+      title = "Hold off on ranked";
+      text = `${cap(listText(l.why))} over the last 3 minutes.`;
+      if (l.best_other_ms != null && w.ping_ms != null && l.best_other_ms < w.ping_ms - 20)
+        text += ` Other routes to ${v.region_name} are at ${ms(l.best_other_ms)} ms, so it's the route to Riot's match server that's slow, not your whole connection.`;
+    }
+    $("valo-verdict").className = `verdict lv-${LEVEL_CLS[lvl]}`;
+    $("valo-title").textContent = title;
+    $("valo-text").textContent = text;
+    $("valo-tiles").innerHTML = [
+      ["Ping (network RTT)", ms(w.ping_ms), "ms", "Round trip, as the game shows it"],
+      ["Network delay", w.ping_ms == null ? "—" : ms(w.ping_ms / 2), "ms", "One way, about half the ping"],
+      ["Jitter", w.jitter_ms == null ? "—" : `±${ms(w.jitter_ms)}`, "ms", "How much the ping jumps"],
+      ["Packet loss", w.loss_pct == null ? "—" : w.loss_pct.toFixed(1), "%", "Pings that never came back"],
+    ].map(([label, val, unit, sub]) =>
+      `<div class="tile"><div class="label">${label}</div><div class="value">${val}<small>${unit}</small></div><div class="sub">${sub}</div></div>`).join("");
+    $("valo-rows").innerHTML = (l ? l.edges : []).map((e) => `<tr>
+      <td>${e.match ? "<strong>Match route</strong>" : "Other route"} <span class="muted">${esc(e.edge)}</span></td>
+      <td class="num${e.ping_ms == null || e.ping_ms > v.max_ping_ms ? " is-bad" : ""}">${e.ping_ms == null ? "No reply" : `${ms(e.ping_ms)} ms`}</td>
+      <td class="num">${e.jitter_ms == null ? "—" : `±${ms(e.jitter_ms)} ms`}</td>
+      <td class="num${e.loss_pct >= 3 ? " is-bad" : ""}">${pct(e.loss_pct)}</td></tr>`).join("");
+    renderValorantChart();
+  }
+
+  function renderValorantChart() {
+    const v = data.valo;
+    if (!v) return;
+    const now = Date.now(), lo = now - 86400e3;
+    const pts = (key) => v.history.map((r) => ({ x: r.ts * 1000, y: r[key] }));
+    const ds = (label, key, color) => ({ label, data: pts(key), borderColor: color, backgroundColor: color, borderWidth: 2,
+      pointRadius: 0, pointHoverRadius: 4, cubicInterpolationMode: "monotone", spanGaps: false });
+    const opts = baseOptions();
+    Object.assign(opts.scales.x, { min: lo, max: now });
+    opts.scales.x.ticks.callback = (x) => hFmt.format(x);
+    opts.scales.y.suggestedMax = v.max_ping_ms * 1.5;
+    opts.plugins.tooltip.callbacks.label = (item) => ` ${item.dataset.label}: ${ms(item.parsed.y)} ms`;
+    const limit = { label: "Your limit", data: [{ x: lo, y: v.max_ping_ms }, { x: now, y: v.max_ping_ms }], borderColor: css("--critical"),
+      borderWidth: 1, borderDash: [4, 4], pointRadius: 0, pointHoverRadius: 0 };
+    mount("valo", $("valo-chart"), { type: "line", options: opts, data: { datasets: [
+      ds("Match route", "match_ms", css("--series-1")), ds("Best other route", "best_ms", css("--series-lat")), limit] } });
+    legend($("valo-legend"), [["Match route", css("--series-1")], ["Best other route", css("--series-lat")], [`Limit ${v.max_ping_ms} ms`, "", "dash"]]);
+  }
+
   function renderCharts() {
+    renderValorantChart();
     renderSpeedChart();
     renderHeatmap();
     if (data.status) drawSpark();
@@ -970,6 +1032,12 @@
       { key: "weekly_report_day", label: "Weekly report day", type: "select", options: WEEKDAY_OPTS },
       { key: "weekly_report_hour", label: "Weekly report time", type: "hour" },
     ] },
+    { id: "valorant", title: "Valorant", note: "Checked every minute through the route your matches use.", fields: [
+      { key: "valorant_region", label: "Server", type: "select", options: [["mumbai", "Mumbai"], ["singapore", "Singapore"],
+        ["hongkong", "Hong Kong"], ["manila", "Manila"], ["tokyo", "Tokyo"], ["sydney", "Sydney"]] },
+      { key: "valorant_max_ping_ms", label: "Don't queue above", type: "number", unit: "ms ping" },
+      { key: "valorant_alerts", label: "Phone alerts", type: "bool", help: "When it turns good or bad to play. Uses the notify service under Phone notifications." },
+    ] },
     { id: "speedtest", title: "Speedtests", fields: [
       { key: "speedtest_interval_minutes", label: "Run every", type: "number", unit: "min", help: "Aligned to midnight: 60 = on the hour. Restarts the add-on." },
       { key: "server_ids", label: "Ookla server IDs", type: "ints", help: "Tried in order, comma-separated." },
@@ -1210,6 +1278,8 @@
   $("lookup-at").value = toLocalInput(Date.now() / 1000 - 86400);
   selectChip(86400);
   loadAll().then(() => scheduleStatus(10000)).catch((e) => { console.error(e); scheduleStatus(10000); });
+  loadValorant().catch((e) => console.error(e));
+  setInterval(() => loadValorant().catch(() => {}), 60000);
   setInterval(tickSince, 1000);
   setInterval(() => { if (range.preset !== "custom") loadAll().catch(() => {}); }, 300000);
 })();

@@ -83,6 +83,29 @@
     </article>
   </section>
 
+  <section class="card reveal" id="valo-card">
+    <div class="card-head">
+      <div>
+        <h2>Valorant · <span id="valo-region">Mumbai</span></h2>
+        <p class="muted small head-note">Pinged every minute the same way the game pings its servers.</p>
+      </div>
+      <span class="head-value" id="valo-headline">—</span>
+    </div>
+    <div class="verdict" id="valo-verdict" aria-live="polite">
+      <p class="verdict-title" id="valo-title">&nbsp;</p>
+      <p class="verdict-text" id="valo-text">&nbsp;</p>
+    </div>
+    <div class="tiles valo-tiles" id="valo-tiles"></div>
+    <div class="card-head"><span class="muted small">Ping, last 24 hours</span><div class="legend" id="valo-legend"></div></div>
+    <div class="chart-wrap small"><canvas id="valo-chart" aria-label="Valorant ping over the last 24 hours"></canvas></div>
+    <div class="table-wrap valo-routes">
+      <table>
+        <thead><tr><th>Route</th><th class="num">Ping</th><th class="num">Jitter</th><th class="num">Packet loss</th></tr></thead>
+        <tbody id="valo-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
   <nav class="toolbar reveal" aria-label="Time range">
     <div class="chips" role="radiogroup" aria-label="Range">
       <button class="chip" data-range="86400" role="radio">24 hours</button>

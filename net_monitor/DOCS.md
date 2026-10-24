@@ -108,6 +108,18 @@ add-on page). It follows Home Assistant's light/dark theme.
 | `sensor.net_monitor_jitter` / `_packet_loss` | latest connection quality |
 | `sensor.net_monitor_last_outage` | when the last outage ended (attributes: start, duration) |
 
+## Valorant
+
+Every minute the add-on pings your VALORANT server (Mumbai by default) exactly the way
+the game does: a small UDP packet through Riot Direct (port 8181), 10 per route. The
+**match route** (`151.106.246.1`) is the one your matches connect through, so its ping
+is what you'll see in game; the other routes show whether a bad ping is that route's
+fault or the whole way there. The verdict uses the last 3 minutes: good to play when
+ping is under `valorant_max_ping_ms`, packet loss under 3% and jitter under 20 ms.
+
+Sensors: `sensor.net_monitor_valorant_ping` (with network delay, jitter, packet loss)
+and `binary_sensor.net_monitor_valorant_playable`.
+
 ## Options
 
 Change these on the dashboard's **Settings** page (gear button, top right), or on
@@ -146,5 +158,8 @@ add-on automatically. The WhatsApp token is never shown; leave it blank to keep 
 | `whatsapp_bridge_url` | auto | Override, e.g. `http://172.30.33.6:8787` |
 | `monthly_report_enabled` / `_hour` | on / 10 | Monthly ISP report on the 1st |
 | `plan_price` / `plan_currency` | 0 / ৳ | Monthly bill for the value-for-money line (`0` = off) |
+| `valorant_region` | `mumbai` | VALORANT server to watch |
+| `valorant_max_ping_ms` | 80 | Above this on the match route = don't queue |
+| `valorant_alerts` | on | Phone notification (via `notify_service`) when it turns good or bad to play |
 
 Data use: roughly 100 MB per speedtest at 40 Mbit/s (~2.4 GB/day hourly).

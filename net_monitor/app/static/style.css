@@ -305,6 +305,10 @@ input {
 .lookup-result { margin-top: 12px; display: grid; gap: 6px; color: var(--text-secondary); }
 .lookup-result strong { color: var(--text-primary); }
 
+/* ---------- valorant */
+.valo-tiles { margin: 14px 0 18px; }
+.valo-routes { margin-top: 14px; }
+
 /* ---------- tables */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }

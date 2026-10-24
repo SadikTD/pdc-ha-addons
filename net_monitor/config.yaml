@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.4.4"
+version: "1.5.0"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
@@ -85,6 +85,12 @@ options:
   # DNS server the LAN uses ("auto" = the router). If it stops resolving names,
   # websites fail even with the line up, so that counts as down too. "" = off.
   dns_check_server: auto
+  # VALORANT server to watch (mumbai, singapore, hongkong, manila, tokyo, sydney).
+  valorant_region: mumbai
+  # Above this ping (ms) on the match route, it's not a good time to queue.
+  valorant_max_ping_ms: 80
+  # Phone notification (notify_service) when it turns good or bad to play.
+  valorant_alerts: true
 schema:
   speedtest_interval_minutes: int(15,1440)
   server_ids:
@@ -126,3 +132,6 @@ schema:
   plan_price: float(0,10000000)
   plan_currency: str
   dns_check_server: match(^(auto|\d{1,3}(\.\d{1,3}){3})?$)?
+  valorant_region: list(mumbai|singapore|hongkong|manila|tokyo|sydney)
+  valorant_max_ping_ms: int(20,500)
+  valorant_alerts: bool
