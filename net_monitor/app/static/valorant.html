@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Valorant history · Net Monitor</title>
+  <link rel="stylesheet" href="static/valorant.css">
+</head>
+<body class="vh-page">
+<main class="valo vh">
+  <header class="valo-top">
+    <div class="valo-brand">
+      <a class="vh-back" href="./" aria-label="Back to Net Monitor">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </a>
+      <svg class="valo-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 3.5 10.6 16H6.3L1 9.2zM23 3.5 13 16.6H8.7L23 3.5z"/></svg>
+      <h1 class="vh-title">Valorant history</h1>
+    </div>
+    <div class="vh-range" role="radiogroup" aria-label="Period" id="vh-range">
+      <button class="valo-tab" role="radio" data-days="7">7 days</button>
+      <button class="valo-tab" role="radio" data-days="30">30 days</button>
+      <button class="valo-tab" role="radio" data-days="90">90 days</button>
+    </div>
+  </header>
+  <div class="valo-tabs" role="tablist" aria-label="Server" id="vh-tabs"></div>
+
+  <div id="vh-body" aria-live="polite"><p class="valo-empty">Loading…</p></div>
+</main>
+<div class="vh-tip" id="vh-tip" role="tooltip" hidden></div>
+<script src="static/chart.umd.min.js"></script>
+<script src="static/valorant.js"></script>
+</body>
+</html>

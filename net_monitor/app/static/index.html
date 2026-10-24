@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Net Monitor</title>
   <link rel="stylesheet" href="static/style.css">
+  <link rel="stylesheet" href="static/valorant.css">
 </head>
 <body>
 <main class="viz-root" id="root">
@@ -83,27 +84,22 @@
     </article>
   </section>
 
-  <section class="card reveal" id="valo-card">
-    <div class="card-head">
-      <div>
-        <h2>Valorant · <span id="valo-region">Mumbai</span></h2>
-        <p class="muted small head-note">Pinged every minute the same way the game pings its servers.</p>
+  <section class="valo reveal" id="valo-card" aria-labelledby="valo-h">
+    <header class="valo-top">
+      <div class="valo-brand">
+        <svg class="valo-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 3.5 10.6 16H6.3L1 9.2zM23 3.5 13 16.6H8.7L23 3.5z"/></svg>
+        <h2 id="valo-h">Valorant</h2>
+        <span class="valo-live stale" id="valo-live"><i></i><span id="valo-age">Connecting</span></span>
       </div>
-      <span class="head-value" id="valo-headline">—</span>
-    </div>
-    <div class="verdict" id="valo-verdict" aria-live="polite">
-      <p class="verdict-title" id="valo-title">&nbsp;</p>
-      <p class="verdict-text" id="valo-text">&nbsp;</p>
-    </div>
-    <div class="tiles valo-tiles" id="valo-tiles"></div>
-    <div class="card-head"><span class="muted small">Ping, last 24 hours</span><div class="legend" id="valo-legend"></div></div>
-    <div class="chart-wrap small"><canvas id="valo-chart" aria-label="Valorant ping over the last 24 hours"></canvas></div>
-    <div class="table-wrap valo-routes">
-      <table>
-        <thead><tr><th>Route</th><th class="num">Ping</th><th class="num">Jitter</th><th class="num">Packet loss</th></tr></thead>
-        <tbody id="valo-rows"></tbody>
-      </table>
-    </div>
+      <div class="valo-actions">
+        <button class="valo-btn" id="valo-refresh" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Refresh</span>
+        </button>
+        <a class="valo-btn primary" href="valorant">History</a>
+      </div>
+    </header>
+    <div class="valo-tabs" role="tablist" aria-label="Server" id="valo-tabs"></div>
+    <div id="valo-view" aria-live="polite"><p class="valo-empty">Pinging the servers…</p></div>
   </section>
 
   <nav class="toolbar reveal" aria-label="Time range">

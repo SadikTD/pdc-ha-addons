@@ -110,15 +110,25 @@ add-on page). It follows Home Assistant's light/dark theme.
 
 ## Valorant
 
-Every minute the add-on pings your VALORANT server (Mumbai by default) exactly the way
-the game does: a small UDP packet through Riot Direct (port 8181), 10 per route. The
-**match route** (`151.106.246.1`) is the one your matches connect through, so its ping
-is what you'll see in game; the other routes show whether a bad ping is that route's
-fault or the whole way there. The verdict uses the last 3 minutes: good to play when
-ping is under `valorant_max_ping_ms`, packet loss under 3% and jitter under 20 ms.
+Every 10 seconds the add-on pings all six VALORANT servers in Asia-Pacific exactly the
+way the game does: a small UDP packet through Riot Direct (port 8181), 3 per route.
+That's about 4 packets a second in total, nothing next to a game, so it's safe to
+leave running while you play. **Refresh** pings them all again on the spot.
 
-Sensors: `sensor.net_monitor_valorant_ping` (with network delay, jitter, packet loss)
-and `binary_sensor.net_monitor_valorant_playable`.
+The card opens on your main server (`valorant_region`). **All servers** lists them
+sorted by ping like the game does. Pick one to see its verdict, ping, network delay,
+jitter, packet loss and the last hour. For Mumbai the **match route**
+(`151.106.246.1`) is the one your matches connect through, so its ping is what you'll
+see in game; the other routes show whether a bad ping is that route's fault or the
+whole way there. It's ready to queue when, over the last 2 minutes, ping is under
+`valorant_max_ping_ms`, packet loss under 3% and jitter under 20 ms.
+
+**History** shows, per server, the best and worst times of day to play, a
+week-at-a-glance heatmap, ping over time, all servers compared, and every rough patch
+of 10 minutes or more. One reading per server per minute is kept for 90 days.
+
+Sensors (main server): `sensor.net_monitor_valorant_ping` (with network delay, jitter,
+packet loss) and `binary_sensor.net_monitor_valorant_playable`.
 
 ## Options
 
@@ -158,7 +168,7 @@ add-on automatically. The WhatsApp token is never shown; leave it blank to keep 
 | `whatsapp_bridge_url` | auto | Override, e.g. `http://172.30.33.6:8787` |
 | `monthly_report_enabled` / `_hour` | on / 10 | Monthly ISP report on the 1st |
 | `plan_price` / `plan_currency` | 0 / ৳ | Monthly bill for the value-for-money line (`0` = off) |
-| `valorant_region` | `mumbai` | VALORANT server to watch |
+| `valorant_region` | `mumbai` | Main VALORANT server: alerts and sensors follow it |
 | `valorant_max_ping_ms` | 80 | Above this on the match route = don't queue |
 | `valorant_alerts` | on | Phone notification (via `notify_service`) when it turns good or bad to play |
 

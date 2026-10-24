@@ -534,65 +534,171 @@
   }
 
   // ----------------------------------------------------------------- valorant
-  async function loadValorant() {
-    data.valo = await api("api/valorant");
+  // Live every 10 s. One tab per server plus "All servers", remembered per browser.
+  const valo = { data: null, view: localStorage.getItem("valoView"), lastVerdict: {}, busy: false };
+  const vcss = (n) => getComputedStyle($("valo-card")).getPropertyValue(n).trim();
+  const vLevel = (r, limit) => (r.playable ? "good" : r.ping_ms != null && r.ping_ms <= limit * 1.5 && r.why.length === 1 && /^ping/.test(r.why[0]) ? "warn" : "bad");
+  const V_STATE = { good: "Ready", warn: "Laggy", bad: "Avoid" };
+  const vBars = (p, limit) => (p == null ? 0 : p <= limit * 0.6 ? 4 : p <= limit ? 3 : p <= limit * 1.5 ? 2 : 1);
+  const vMs = (v) => (v == null ? "—" : Math.round(v));
+
+  async function loadValorant(refresh) {
+    valo.data = await api(refresh ? "api/valorant/refresh" : "api/valorant", refresh ? { method: "POST" } : undefined);
     renderValorant();
   }
 
+  function valoAge() {
+    const v = valo.data, el = $("valo-age");
+    if (!v || !v.ts) return;
+    const age = Date.now() / 1000 - v.ts;
+    $("valo-live").classList.toggle("stale", age > v.interval * 3);
+    el.textContent = age < 5 ? "Live, just now" : age > v.interval * 3 ? `Last reading ${dur(age)} ago` : `Live, ${Math.round(age)}s ago`;
+  }
+
   function renderValorant() {
-    const v = data.valo;
-    if (!v) return;
-    const l = v.latest, w = (l && l.window) || {};
-    $("valo-region").textContent = v.region_name;
-    $("valo-headline").textContent = w.ping_ms != null ? `${ms(w.ping_ms)} ms` : "—";
-    let lvl = 1, title = "Measuring…", text = "The first reading takes about a minute.";
-    if (l && l.playable) {
-      lvl = 0;
-      title = "Good to play";
-      text = `The match route answers in ${ms(w.ping_ms)} ms with ${pct(w.loss_pct, 1)} packet loss over the last 3 minutes.`;
-    } else if (l) {
-      lvl = 2;
-      title = "Hold off on ranked";
-      text = `${cap(listText(l.why))} over the last 3 minutes.`;
-      if (l.best_other_ms != null && w.ping_ms != null && l.best_other_ms < w.ping_ms - 20)
-        text += ` Other routes to ${v.region_name} are at ${ms(l.best_other_ms)} ms, so it's the route to Riot's match server that's slow, not your whole connection.`;
+    const v = valo.data;
+    if (!v || !v.regions.length) return;
+    if (!v.regions.some((r) => r.key === valo.view) && valo.view !== "all") valo.view = v.main;
+    const limit = v.max_ping_ms;
+    $("valo-tabs").innerHTML = [{ key: "all", name: "All servers" }, ...v.regions].map((r) => {
+      const sel = r.key === valo.view, lv = r.key === "all" ? "" : `lv-${vLevel(r, limit)}`;
+      return `<button class="valo-tab ${lv}" role="tab" aria-selected="${sel}" data-key="${r.key}">${r.key === v.main ? '<i class="main-mark" title="Main server"></i>' : ""}${esc(r.name)}${r.key === "all" ? "" : `<small>${vMs(r.ping_ms)}</small>`}</button>`;
+    }).join("");
+    if (valo.view === "all") renderValoAll(v); else renderValoOne(v, v.regions.find((r) => r.key === valo.view));
+    valoAge();
+  }
+
+  function sparkSvg(v, key) {
+    const pts = v.live.slice(-90).map((p) => p[key]);
+    const vals = pts.filter((x) => x != null);
+    if (vals.length < 2) return "";
+    const hi = Math.max(v.max_ping_ms * 1.2, ...vals) * 1.05, n = pts.length - 1;
+    const line = pts.map((y, i) => (y == null ? null : `${((i / n) * 100).toFixed(1)},${(30 - (y / hi) * 28).toFixed(1)}`)).filter(Boolean).join(" ");
+    const ly = (30 - (v.max_ping_ms / hi) * 28).toFixed(1);
+    return `<svg class="vr-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><line x1="0" x2="100" y1="${ly}" y2="${ly}"/><polyline points="${line}"/></svg>`;
+  }
+
+  function renderValoAll(v) {
+    const limit = v.max_ping_ms;
+    const rows = [...v.regions].sort((a, b) => (a.ping_ms ?? 1e9) - (b.ping_ms ?? 1e9));
+    $("valo-view").innerHTML = `<div class="valo-list">${rows.map((r) => {
+      const lv = vLevel(r, limit), bars = vBars(r.ping_ms, limit), w = r.window;
+      return `<button class="vr lv-${lv}" data-key="${r.key}" aria-label="${esc(r.name)}: ${vMs(r.ping_ms)} ms, ${V_STATE[lv]}. Show details">
+        <span class="vr-name"><b>${r.key === v.main ? '<i class="main-mark" title="Main server"></i>' : ""}${esc(r.name)}</b>
+          <span>${pct(w.loss_pct)} loss, ±${ms(w.jitter_ms)} ms jitter</span></span>
+        <span class="vr-bars" aria-hidden="true">${[1, 2, 3, 4].map((i) => `<i class="${i <= bars ? "on" : ""}"></i>`).join("")}</span>
+        ${sparkSvg(v, r.key) || "<span></span>"}
+        <span class="vr-ping">${vMs(r.ping_ms)}<small>ms</small></span>
+        <span class="vr-state">${V_STATE[lv]}</span></button>`;
+    }).join("")}</div>
+      <p class="valo-note">Sorted by ping, like the game's server list. Ready means under your ${limit} ms limit with steady, lossless pings for the last 2 minutes. Mumbai is measured through the route your matches use.</p>`;
+  }
+
+  function renderValoOne(v, r) {
+    const limit = v.max_ping_ms, lv = vLevel(r, limit), w = r.window, usual = v.usual[r.key];
+    const changed = valo.lastVerdict[r.key] !== undefined && valo.lastVerdict[r.key] !== r.playable;
+    valo.lastVerdict[r.key] = r.playable;
+    let why;
+    if (r.playable) why = `Steady at ${ms(w.ping_ms)} ms with ${pct(w.loss_pct, 1)} packet loss over the last 2 minutes. Go queue.`;
+    else {
+      why = `${cap(listText(r.why))} over the last 2 minutes.`;
+      if (r.best_other_ms != null && w.ping_ms != null && r.best_other_ms < w.ping_ms - 20)
+        why += ` Other routes reach ${r.name} in ${ms(r.best_other_ms)} ms, so it's the route to Riot's match server that's slow, not your connection.`;
+      else if (lv === "warn") why += " Playable, but you'll feel it in fights.";
     }
-    $("valo-verdict").className = `verdict lv-${LEVEL_CLS[lvl]}`;
-    $("valo-title").textContent = title;
-    $("valo-text").textContent = text;
-    $("valo-tiles").innerHTML = [
-      ["Ping (network RTT)", ms(w.ping_ms), "ms", "Round trip, as the game shows it"],
-      ["Network delay", w.ping_ms == null ? "—" : ms(w.ping_ms / 2), "ms", "One way, about half the ping"],
-      ["Jitter", w.jitter_ms == null ? "—" : `±${ms(w.jitter_ms)}`, "ms", "How much the ping jumps"],
-      ["Packet loss", w.loss_pct == null ? "—" : w.loss_pct.toFixed(1), "%", "Pings that never came back"],
-    ].map(([label, val, unit, sub]) =>
-      `<div class="tile"><div class="label">${label}</div><div class="value">${val}<small>${unit}</small></div><div class="sub">${sub}</div></div>`).join("");
-    $("valo-rows").innerHTML = (l ? l.edges : []).map((e) => `<tr>
-      <td>${e.match ? "<strong>Match route</strong>" : "Other route"} <span class="muted">${esc(e.edge)}</span></td>
-      <td class="num${e.ping_ms == null || e.ping_ms > v.max_ping_ms ? " is-bad" : ""}">${e.ping_ms == null ? "No reply" : `${ms(e.ping_ms)} ms`}</td>
-      <td class="num">${e.jitter_ms == null ? "—" : `±${ms(e.jitter_ms)} ms`}</td>
-      <td class="num${e.loss_pct >= 3 ? " is-bad" : ""}">${pct(e.loss_pct)}</td></tr>`).join("");
+    const prevNum = $("vb-num") && $("vb-num").dataset.key === r.key ? $("vb-num") : null;
+    const maxEdge = Math.max(limit * 1.5, ...r.edges.map((e) => e.ping_ms || 0));
+    $("valo-view").innerHTML = `
+      <div class="vb lv-${lv}${changed ? " flip" : ""}">
+        <div>
+          <div class="vb-server">${esc(r.name)}${r.key === v.main ? " (main server)" : ""}</div>
+          <p class="vb-verdict">${r.playable ? "Ready to queue" : lv === "warn" ? "Laggy" : "Hold off"}</p>
+        </div>
+        <div class="vb-ping" aria-label="${vMs(r.ping_ms)} milliseconds"><span id="vb-num" data-key="${r.key}"${prevNum ? ` data-v="${prevNum.dataset.v}"` : ""}>${vMs(r.ping_ms)}</span><small>ms</small></div>
+        <p class="vb-why">${esc(why)}</p>
+      </div>
+      <dl class="valo-stats">
+        <div><dt>Ping (network RTT)</dt><dd>${vMs(r.ping_ms)}<small>ms</small></dd></div>
+        <div><dt>Network delay</dt><dd>${r.ping_ms == null ? "—" : Math.round(r.ping_ms / 2)}<small>ms</small></dd><span class="sub">One way, about half the ping</span></div>
+        <div><dt>Jitter</dt><dd>±${ms(w.jitter_ms)}<small>ms</small></dd></div>
+        <div><dt>Packet loss</dt><dd>${w.loss_pct == null ? "—" : w.loss_pct.toFixed(1)}<small>%</small></dd></div>
+        <div><dt>Usually at this hour</dt><dd>${usual ? `${Math.round(usual.ready * 100)}<small>% ready</small>` : "—"}</dd><span class="sub">${usual ? `${vMs(usual.ping_ms)} ms on average, last 4 weeks` : "Builds up over the next week"}</span></div>
+      </dl>
+      <div class="valo-sec"><h3>Last hour</h3><span>Dashed line: your ${limit} ms limit</span></div>
+      <div class="valo-chart"><canvas id="valo-chart" aria-label="${esc(r.name)} ping over the last hour"></canvas></div>
+      ${r.edges.length > 1 ? `<div class="valo-sec"><h3>Routes to ${esc(r.name)}</h3><span>${r.match_route ? "Your matches use the match route" : "The fastest one counts"}</span></div>
+      <div class="valo-routes">${[...r.edges].sort((a, b) => (b.edge === r.match_route) - (a.edge === r.match_route) || (a.ping_ms ?? 1e9) - (b.ping_ms ?? 1e9)).map((e) => {
+        const elv = e.ping_ms == null || e.loss_pct >= 34 ? "bad" : e.ping_ms <= limit ? "good" : e.ping_ms <= limit * 1.5 ? "warn" : "bad";
+        return `<div class="vrt lv-${elv}"><span>${e.edge === r.match_route ? "<b>Match route</b>" : "Other route"}<span class="ip">${esc(e.edge)}</span></span>
+          <span class="vrt-bar"><i style="width:${e.ping_ms == null ? 100 : Math.min(100, (e.ping_ms / maxEdge) * 100).toFixed(1)}%"></i></span>
+          <span class="vrt-val">${e.ping_ms == null ? "—" : `${Math.round(e.ping_ms)}`}<small>ms</small></span></div>`;
+      }).join("")}</div>` : ""}`;
+    if (r.ping_ms != null) countUp($("vb-num"), r.ping_ms, (x) => (x == null ? "—" : Math.round(x)));
     renderValorantChart();
   }
 
   function renderValorantChart() {
-    const v = data.valo;
-    if (!v) return;
-    const now = Date.now(), lo = now - 86400e3;
-    const pts = (key) => v.history.map((r) => ({ x: r.ts * 1000, y: r[key] }));
-    const ds = (label, key, color) => ({ label, data: pts(key), borderColor: color, backgroundColor: color, borderWidth: 2,
-      pointRadius: 0, pointHoverRadius: 4, cubicInterpolationMode: "monotone", spanGaps: false });
+    const v = valo.data, c = $("valo-chart");
+    if (!v || !c || valo.view === "all") return;
+    const key = valo.view, limit = v.max_ping_ms, now = Date.now();
+    // Up to the last hour; zoomed in while there's less (e.g. just after a restart).
+    const lo = Math.max(now - 3600e3, Math.min(now - 300e3, v.live.length ? v.live[0].ts * 1000 : now));
     const opts = baseOptions();
+    const grid = vcss("--v-line"), dim = vcss("--v-dim");
     Object.assign(opts.scales.x, { min: lo, max: now });
-    opts.scales.x.ticks.callback = (x) => hFmt.format(x);
-    opts.scales.y.suggestedMax = v.max_ping_ms * 1.5;
+    opts.scales.x.ticks.callback = (x) => tFmt.format(x);
+    for (const ax of [opts.scales.x, opts.scales.y]) { ax.grid.color = grid; ax.ticks.color = dim; }
+    opts.scales.x.border = { color: grid };
+    opts.scales.y.suggestedMax = limit * 1.5;
+    opts.animation = false;
+    Object.assign(opts.plugins.tooltip, { backgroundColor: vcss("--v-panel-hi"), titleColor: vcss("--v-bone"), bodyColor: dim, borderColor: grid });
     opts.plugins.tooltip.callbacks.label = (item) => ` ${item.dataset.label}: ${ms(item.parsed.y)} ms`;
-    const limit = { label: "Your limit", data: [{ x: lo, y: v.max_ping_ms }, { x: now, y: v.max_ping_ms }], borderColor: css("--critical"),
-      borderWidth: 1, borderDash: [4, 4], pointRadius: 0, pointHoverRadius: 0 };
-    mount("valo", $("valo-chart"), { type: "line", options: opts, data: { datasets: [
-      ds("Match route", "match_ms", css("--series-1")), ds("Best other route", "best_ms", css("--series-lat")), limit] } });
-    legend($("valo-legend"), [["Match route", css("--series-1")], ["Best other route", css("--series-lat")], [`Limit ${v.max_ping_ms} ms`, "", "dash"]]);
+    const color = vcss("--v-red"), lineColor = vcss("--v-bone");
+    const ctx = c.getContext("2d"), grad = ctx.createLinearGradient(0, 0, 0, c.clientHeight || 170);
+    grad.addColorStop(0, "rgba(255,70,85,0.28)"); grad.addColorStop(1, "rgba(255,70,85,0)");
+    mount("valo", c, { type: "line", options: opts, data: { datasets: [
+      { label: "Ping", data: v.live.map((p) => ({ x: p.ts * 1000, y: p[key] })), borderColor: lineColor, backgroundColor: grad, fill: true,
+        borderWidth: 1.8, pointRadius: 0, pointHoverRadius: 4, tension: 0.25, spanGaps: false },
+      { label: "Your limit", data: [{ x: lo, y: limit }, { x: now, y: limit }], borderColor: color, borderWidth: 1.2,
+        borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 0 },
+    ] } });
   }
+
+  $("valo-tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-key]");
+    if (!b) return;
+    valo.view = b.dataset.key;
+    localStorage.setItem("valoView", valo.view);
+    renderValorant();
+  });
+  $("valo-tabs").addEventListener("keydown", (e) => {
+    if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    const tabs = [...$("valo-tabs").children], i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+    next.click();
+    $("valo-tabs").querySelector(`[data-key="${next.dataset.key}"]`).focus();
+  });
+  $("valo-view").addEventListener("click", (e) => {
+    const b = e.target.closest(".vr[data-key]");
+    if (!b) return;
+    valo.view = b.dataset.key;
+    localStorage.setItem("valoView", valo.view);
+    renderValorant();
+  });
+  $("valo-refresh").addEventListener("click", async () => {
+    const b = $("valo-refresh");
+    if (valo.busy) return;
+    valo.busy = true;
+    b.disabled = true;
+    b.setAttribute("aria-busy", "true");
+    b.querySelector("span").textContent = "Pinging";
+    try { await loadValorant(true); } catch (err) { console.error(err); }
+    valo.busy = false;
+    b.disabled = false;
+    b.removeAttribute("aria-busy");
+    b.querySelector("span").textContent = "Refresh";
+  });
 
   function renderCharts() {
     renderValorantChart();
@@ -1032,8 +1138,8 @@
       { key: "weekly_report_day", label: "Weekly report day", type: "select", options: WEEKDAY_OPTS },
       { key: "weekly_report_hour", label: "Weekly report time", type: "hour" },
     ] },
-    { id: "valorant", title: "Valorant", note: "Checked every minute through the route your matches use.", fields: [
-      { key: "valorant_region", label: "Server", type: "select", options: [["mumbai", "Mumbai"], ["singapore", "Singapore"],
+    { id: "valorant", title: "Valorant", note: "All six servers are checked every 10 seconds.", fields: [
+      { key: "valorant_region", label: "Main server", type: "select", help: "Phone alerts and the sensors follow this server, and it's marked on the dashboard.", options: [["mumbai", "Mumbai"], ["singapore", "Singapore"],
         ["hongkong", "Hong Kong"], ["manila", "Manila"], ["tokyo", "Tokyo"], ["sydney", "Sydney"]] },
       { key: "valorant_max_ping_ms", label: "Don't queue above", type: "number", unit: "ms ping" },
       { key: "valorant_alerts", label: "Phone alerts", type: "bool", help: "When it turns good or bad to play. Uses the notify service under Phone notifications." },
@@ -1278,8 +1384,13 @@
   $("lookup-at").value = toLocalInput(Date.now() / 1000 - 86400);
   selectChip(86400);
   loadAll().then(() => scheduleStatus(10000)).catch((e) => { console.error(e); scheduleStatus(10000); });
-  loadValorant().catch((e) => console.error(e));
-  setInterval(() => loadValorant().catch(() => {}), 60000);
-  setInterval(tickSince, 1000);
+  // Poll just after each 10 s round lands on the server.
+  const valoPoll = async () => {
+    if (!valo.busy && !document.hidden) await loadValorant().catch(() => {});
+    const v = valo.data, next = v && v.ts ? (v.ts + v.interval + 1.5) * 1000 - Date.now() : 10000;
+    setTimeout(valoPoll, Math.min(15000, Math.max(2000, next)));
+  };
+  valoPoll();
+  setInterval(() => { tickSince(); valoAge(); }, 1000);
   setInterval(() => { if (range.preset !== "custom") loadAll().catch(() => {}); }, 300000);
 })();

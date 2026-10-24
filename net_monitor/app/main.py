@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -135,11 +136,13 @@ class DB:
             CREATE INDEX IF NOT EXISTS idx_events_start ON events(start);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS ip_log (ts REAL NOT NULL, ip TEXT, isp TEXT);
-            CREATE TABLE IF NOT EXISTS valorant (
-                ts REAL NOT NULL, region TEXT NOT NULL, edge TEXT NOT NULL,
-                ping_ms REAL, jitter_ms REAL, loss_pct REAL
+            DROP TABLE IF EXISTS valorant;
+            CREATE TABLE IF NOT EXISTS valorant_min (
+                ts REAL NOT NULL, region TEXT NOT NULL,
+                ping_ms REAL, jitter_ms REAL, loss_pct REAL, playable INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_valorant_ts ON valorant(ts);
+            CREATE INDEX IF NOT EXISTS idx_valorant_min ON valorant_min(region, ts);
+            CREATE INDEX IF NOT EXISTS idx_valorant_min_ts ON valorant_min(ts);
             """
         )
         # v1.1: connection-quality columns on existing databases.
@@ -203,7 +206,6 @@ class State:
         self.down_reason = None     # why the last failed round failed
         self.dns_seen_ok = False    # the DNS check counts only once the server has answered
         self.publish_ok = True      # False = the last connectivity push to HA failed; retry
-        self.valorant = None        # the last Valorant round, see valorant_round()
 
 
 state = State()
@@ -1250,8 +1252,8 @@ def retention_loop():
         db.execute("DELETE FROM speedtests WHERE ts < ?", (cutoff,))
         db.execute("DELETE FROM events WHERE end IS NOT NULL AND end < ?", (cutoff,))
         db.execute("DELETE FROM ip_log WHERE ts < ?", (cutoff,))
-        # ponytail: fixed 30 days (~170k rows); tie it to retention_days if longer history is wanted.
-        db.execute("DELETE FROM valorant WHERE ts < ?", (time.time() - 30 * 86400,))
+        # ponytail: fixed 90 days (~780k rows); tie it to retention_days if longer history is wanted.
+        db.execute("DELETE FROM valorant_min WHERE ts < ?", (time.time() - 90 * 86400,))
         time.sleep(6 * 3600)
 
 
@@ -1651,34 +1653,40 @@ def status_payload():
 
 
 # ------------------------------------------------------------------ valorant
-# VALORANT pings each region with a 36-byte UDP packet to a Riot Direct edge on port
-# 8181, which relays it over Riot's backbone to that region's servers and back. The
-# first 8 bytes pick the region (taken from the game's own pings, Oct 2026). The reply
-# starts with bytes 4-8 of the request and echoes everything from byte 8 on.
-VALORANT_REGIONS = {
-    "mumbai": ("Mumbai", "7d2a1f22fe32f110"),
-    "singapore": ("Singapore", "ccfec3841f32f9b7"),
-    "hongkong": ("Hong Kong", "7cfea47eb432f191"),
-    "manila": ("Manila", "04881dd63032c6df"),
-    "tokyo": ("Tokyo", "e53a4109fd32f8df"),
-    "sydney": ("Sydney", "f04b9bc9ed32fbf1"),
+# VALORANT pings each server with a 36-byte UDP packet to a Riot Direct route on port
+# 8181, which relays it over Riot's backbone to that server and back. The first 8 bytes
+# pick the server (taken from the game's own pings, Oct 2026). The reply starts with
+# bytes 4-8 of the request and echoes everything from byte 8 on.
+VALORANT_REGIONS = {  # key: (name, server bytes, routes the game pings it through)
+    "mumbai": ("Mumbai", "7d2a1f22fe32f110", ["151.106.246.1", "151.106.248.1", "43.229.65.1", "162.249.75.1"]),
+    "singapore": ("Singapore", "ccfec3841f32f9b7", ["151.106.248.1", "43.229.65.1"]),
+    "hongkong": ("Hong Kong", "7cfea47eb432f191", ["151.106.248.1", "43.229.65.1"]),
+    "manila": ("Manila", "04881dd63032c6df", ["151.106.248.1", "43.229.65.1"]),
+    "tokyo": ("Tokyo", "e53a4109fd32f8df", ["151.106.248.1", "43.229.65.1"]),
+    "sydney": ("Sydney", "f04b9bc9ed32fbf1", ["151.106.248.1", "43.229.65.1"]),
 }
-# Edges the game pings through. Matches connect via the first (79 of 81 matches in the
-# game's logs), so that route decides how a game feels; the others show whether a
-# bad ping is that route's fault or the whole way to the region.
-VALORANT_EDGES = ["151.106.246.1", "151.106.248.1", "43.229.65.1", "162.249.75.1"]
-VALORANT_INTERVAL = 60
-VALORANT_SAMPLES = 10
-VALORANT_WINDOW = 3 * VALORANT_INTERVAL  # the verdict looks at the last 3 rounds (30 pings)
-valorant_pool = ThreadPoolExecutor(max_workers=len(VALORANT_EDGES))
+# Mumbai matches connect through this route (79 of 81 matches in the game's logs), so
+# its ping is the one you get in game. Elsewhere the best route stands in.
+VALORANT_MATCH_ROUTE = {"mumbai": "151.106.246.1"}
+VALORANT_INTERVAL = 10
+# 3 pings x 14 routes per round is ~4 packets/s of 36 bytes: nothing next to a game
+# (~70 KB/s) and far under busy_packets_per_second.
+VALORANT_SAMPLES = 3
+VALORANT_WINDOW = 12  # rounds (2 minutes) behind each verdict
+VALORANT_HOLD = 6     # rounds (1 minute) a new verdict must hold before it's alerted
+_valorant_jobs = [(k, e) for k, r in VALORANT_REGIONS.items() for e in r[2]]
+valorant_pool = ThreadPoolExecutor(max_workers=len(_valorant_jobs))
+valorant_lock = threading.Lock()
+valorant_live = deque(maxlen=360)  # the last hour of rounds, for the live view
+_valorant_usual = {}
 
 
 def valorant_probe(edge, header, n=VALORANT_SAMPLES):
-    """(median ms, jitter ms, loss %) of n pings to a region through one edge."""
+    """(median ms, jitter ms, loss %) of n pings to a server through one route."""
     rtts = []
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         for i in range(n):
-            # Same layout as the game's own ping: region, client tag, nonce, fixed trailer.
+            # Same layout as the game's own ping: server, client tag, nonce, fixed trailer.
             body = header + b"\xab\x59\x7f\x81" + os.urandom(12) + bytes.fromhex("0f000000aaaaaaaabbbbbbbb")
             t0 = time.perf_counter()
             try:
@@ -1701,12 +1709,12 @@ def valorant_probe(edge, header, n=VALORANT_SAMPLES):
 
 
 def valorant_verdict(ping, jitter, loss, max_ping):
-    """(playable, reasons not) for the match route over the verdict window."""
+    """(playable, reasons not) for a server over the verdict window."""
     if ping is None:
-        return False, ["the match server isn't answering"]
+        return False, ["the server isn't answering"]
     why = []
     if ping > max_ping:
-        why.append(f"ping {ping:.0f} ms (over {max_ping:g})")
+        why.append(f"ping around {ping:.0f} ms (limit {max_ping:g})")
     if loss is not None and loss >= 3:
         why.append(f"{loss:.0f}% packet loss")
     if jitter is not None and jitter >= 20:
@@ -1714,73 +1722,196 @@ def valorant_verdict(ping, jitter, loss, max_ping):
     return not why, why
 
 
-def valorant_round(t0, m):
-    region = OPTS["valorant_region"]
-    name, header = VALORANT_REGIONS[region][0], bytes.fromhex(VALORANT_REGIONS[region][1])
-    results = list(valorant_pool.map(lambda e: valorant_probe(e, header), VALORANT_EDGES))
-    for edge, (ping, jitter, loss) in zip(VALORANT_EDGES, results):
-        db.execute("INSERT INTO valorant(ts, region, edge, ping_ms, jitter_ms, loss_pct) VALUES(?, ?, ?, ?, ?, ?)",
-                   (t0, region, edge, ping, jitter, loss))
-    w = db.query("SELECT ping_ms, jitter_ms, loss_pct FROM valorant WHERE region=? AND edge=? AND ts > ?",
-                 (region, VALORANT_EDGES[0], t0 - VALORANT_WINDOW + 5))
-    pings = sorted(r["ping_ms"] for r in w if r["ping_ms"] is not None)
-    jits = [r["jitter_ms"] for r in w if r["jitter_ms"] is not None]
-    window = {"ping_ms": pings[len(pings) // 2] if pings else None,
-              "jitter_ms": sum(jits) / len(jits) if jits else None,
-              "loss_pct": sum(r["loss_pct"] for r in w) / len(w) if w else None}
-    max_ping = OPTS["valorant_max_ping_ms"]
-    playable, why = valorant_verdict(window["ping_ms"], window["jitter_ms"], window["loss_pct"], max_ping)
-    others = [r[0] for r in results[1:] if r[0] is not None]
-    best = min(others) if others else None
-    state.valorant = {"ts": t0, "region": region, "region_name": name, "max_ping_ms": max_ping,
-                      "playable": playable, "why": why, "window": window, "best_other_ms": best,
-                      "edges": [{"edge": e, "match": i == 0, "ping_ms": r[0], "jitter_ms": r[1], "loss_pct": r[2]}
-                                for i, (e, r) in enumerate(zip(VALORANT_EDGES, results))]}
-    p = window["ping_ms"]
+def _median(values):
+    v = sorted(x for x in values if x is not None)
+    return v[len(v) // 2] if v else None
+
+
+def _mean(values):
+    v = [x for x in values if x is not None]
+    return sum(v) / len(v) if v else None
+
+
+def valorant_round():
+    """Pings every server through every route once; the result joins the live view."""
+    t0 = time.time()
+    res = dict(zip(_valorant_jobs, valorant_pool.map(
+        lambda j: valorant_probe(j[1], bytes.fromhex(VALORANT_REGIONS[j[0]][1])), _valorant_jobs)))
+    rnd = {"ts": t0, "regions": {}}
+    for k, (_, _, routes) in VALORANT_REGIONS.items():
+        edges = [{"edge": e, "ping_ms": res[(k, e)][0], "jitter_ms": res[(k, e)][1], "loss_pct": res[(k, e)][2]}
+                 for e in routes]
+        match = VALORANT_MATCH_ROUTE.get(k)
+        main = next(x for x in edges if x["edge"] == match) if match else \
+            min(edges, key=lambda x: (x["ping_ms"] is None, x["ping_ms"] or 0))
+        rnd["regions"][k] = {**{f: main[f] for f in ("ping_ms", "jitter_ms", "loss_pct")}, "edges": edges}
+    valorant_live.append(rnd)
+    return rnd
+
+
+def valorant_summary(k, live):
+    """One server's state: latest ping, verdict over the last 2 minutes, routes."""
+    rounds = [r["regions"][k] for r in live[-VALORANT_WINDOW:]]
+    window = {"ping_ms": _median(r["ping_ms"] for r in rounds), "jitter_ms": _mean(r["jitter_ms"] for r in rounds),
+              "loss_pct": _mean(r["loss_pct"] for r in rounds)}
+    playable, why = valorant_verdict(window["ping_ms"], window["jitter_ms"], window["loss_pct"],
+                                     OPTS["valorant_max_ping_ms"])
+    latest, match = rounds[-1], VALORANT_MATCH_ROUTE.get(k)
+    others = [e["ping_ms"] for e in latest["edges"] if match and e["edge"] != match and e["ping_ms"] is not None]
+    return {"key": k, "name": VALORANT_REGIONS[k][0], "ping_ms": latest["ping_ms"], "window": window,
+            "playable": playable, "why": why, "edges": latest["edges"], "match_route": match,
+            "best_other_ms": min(others) if others else None}
+
+
+def valorant_rollup(live, minute):
+    """Stores one row per server for the minute that just ended (history keeps minutes)."""
+    rounds = [r for r in live if minute <= r["ts"] < minute + 60]
+    for k in VALORANT_REGIONS:
+        rs = [r["regions"][k] for r in rounds]
+        ping, jit, loss = _median(r["ping_ms"] for r in rs), _mean(r["jitter_ms"] for r in rs), _mean(r["loss_pct"] for r in rs)
+        playable = valorant_verdict(ping, jit, loss, OPTS["valorant_max_ping_ms"])[0]
+        db.execute("INSERT INTO valorant_min(ts, region, ping_ms, jitter_ms, loss_pct, playable) VALUES(?, ?, ?, ?, ?, ?)",
+                   (minute, k, ping, jit, loss, int(playable)))
+
+
+def valorant_publish(s):
+    w, p = s["window"], s["ping_ms"]
     ha_set_state("sensor.net_monitor_valorant_ping", round(p) if p is not None else "unavailable", {
-        "friendly_name": f"Valorant ping ({name})", "unit_of_measurement": "ms",
+        "friendly_name": f"Valorant ping ({s['name']})", "unit_of_measurement": "ms",
         "state_class": "measurement", "device_class": "duration", "icon": "mdi:crosshairs-gps",
         "network_delay_ms": round(p / 2) if p is not None else None,
-        "jitter_ms": round(window["jitter_ms"], 1) if window["jitter_ms"] is not None else None,
-        "packet_loss_pct": round(window["loss_pct"], 1) if window["loss_pct"] is not None else None,
-        "best_other_route_ms": round(best) if best is not None else None, "server": name})
-    ha_set_state("binary_sensor.net_monitor_valorant_playable", "on" if playable else "off", {
-        "friendly_name": f"Valorant good to play ({name})", "icon": "mdi:controller",
-        "reasons": ", ".join(why) or None, "max_ping_ms": max_ping})
-    # Alert once a new verdict has held for two rounds, so a flicker at the limit stays
+        "jitter_ms": round(w["jitter_ms"], 1) if w["jitter_ms"] is not None else None,
+        "packet_loss_pct": round(w["loss_pct"], 1) if w["loss_pct"] is not None else None,
+        "best_other_route_ms": round(s["best_other_ms"]) if s["best_other_ms"] is not None else None,
+        "server": s["name"]})
+    ha_set_state("binary_sensor.net_monitor_valorant_playable", "on" if s["playable"] else "off", {
+        "friendly_name": f"Valorant good to play ({s['name']})", "icon": "mdi:controller",
+        "reasons": ", ".join(s["why"]) or None, "max_ping_ms": OPTS["valorant_max_ping_ms"]})
+
+
+def valorant_after_round(m):
+    """Minute history, sensors and alerts for the main server."""
+    live = list(valorant_live)
+    minute = int(live[-1]["ts"] // 60 * 60)
+    if m["minute"] is not None and minute != m["minute"]:
+        valorant_rollup(live, m["minute"])
+    m["minute"] = minute
+    s = valorant_summary(OPTS["valorant_region"], live)
+    m["rounds"] += 1
+    if m["rounds"] % 6 == 1 or s["playable"] != m["last"]:
+        valorant_publish(s)
+    # Alert once a new verdict has held for a minute, so a flicker at the limit stays
     # quiet. The first verdict after startup isn't news; a dead line has its own alerts.
-    m["streak"] = m["streak"] + 1 if playable == m["last"] else 1
-    m["last"] = playable
-    if m["streak"] >= 2 and playable != m["told"] and state.online is not False:
-        first, m["told"] = m["told"] is None, playable
+    m["streak"] = m["streak"] + 1 if s["playable"] == m["last"] else 1
+    m["last"] = s["playable"]
+    if m["streak"] >= VALORANT_HOLD and s["playable"] != m["told"] and state.online is not False:
+        first, m["told"] = m["told"] is None, s["playable"]
         if not first and OPTS["valorant_alerts"]:
-            ha_notify(f"Valorant: {'good to play' if playable else 'hold off'}",
-                      f"{name} is back to {p:.0f} ms. Good time to queue." if playable else
-                      f"Don't queue {name} right now: {', '.join(why)}.")
+            ha_notify(f"Valorant: {'good to play' if s['playable'] else 'hold off'}",
+                      f"{s['name']} is back to {s['window']['ping_ms']:.0f} ms. Good time to queue." if s["playable"]
+                      else f"Don't queue {s['name']} right now: {', '.join(s['why'])}.")
 
 
 def valorant_loop():
-    m = {"last": None, "streak": 0, "told": None}
+    m = {"last": None, "streak": 0, "told": None, "minute": None, "rounds": 0}
     while True:
         t0 = time.time()
         try:
-            valorant_round(t0, m)
+            with valorant_lock:
+                valorant_round()
+            valorant_after_round(m)
         except Exception:
             log.exception("Valorant check failed")
         time.sleep(max(1.0, t0 + VALORANT_INTERVAL - time.time()))
 
 
+def valorant_usual():
+    """Per server, how often it was good to play at this hour of the week over the last
+    4 weeks. Cached for the hour: it's a scan of ~240k rows."""
+    lt = time.localtime()
+    key = (lt.tm_yday, lt.tm_hour)
+    if key not in _valorant_usual:
+        rows = db.query(
+            "SELECT region, AVG(playable) AS ready, COUNT(*) AS n, AVG(ping_ms) AS ping_ms FROM valorant_min "
+            "WHERE ts > ? AND strftime('%w %H', ts, 'unixepoch', 'localtime') = ? GROUP BY region",
+            (time.time() - 28 * 86400, f"{(lt.tm_wday + 1) % 7} {lt.tm_hour:02d}"))
+        _valorant_usual.clear()
+        _valorant_usual[key] = {r["region"]: r for r in rows if r["n"] >= 30}
+    return _valorant_usual[key]
+
+
 def valorant_payload():
-    region, match = OPTS["valorant_region"], VALORANT_EDGES[0]
-    history = db.query(
-        "SELECT ts, MAX(CASE WHEN edge=? THEN ping_ms END) AS match_ms, "
-        "MAX(CASE WHEN edge=? THEN loss_pct END) AS match_loss, "
-        "MIN(CASE WHEN edge<>? THEN ping_ms END) AS best_ms "
-        "FROM valorant WHERE region=? AND ts > ? GROUP BY ts ORDER BY ts",
-        (match, match, match, region, time.time() - 86400))
-    return {"latest": state.valorant if state.valorant and state.valorant["region"] == region else None,
-            "history": history, "region_name": VALORANT_REGIONS[region][0],
-            "max_ping_ms": OPTS["valorant_max_ping_ms"]}
+    live = list(valorant_live)
+    return {"ts": live[-1]["ts"] if live else None, "interval": VALORANT_INTERVAL,
+            "max_ping_ms": OPTS["valorant_max_ping_ms"], "main": OPTS["valorant_region"],
+            "regions": [valorant_summary(k, live) for k in VALORANT_REGIONS] if live else [],
+            "usual": valorant_usual(),
+            "live": [{"ts": r["ts"], **{k: v["ping_ms"] for k, v in r["regions"].items()}} for r in live]}
+
+
+def valorant_refresh():
+    with valorant_lock:
+        valorant_round()
+    return valorant_payload()
+
+
+def _best_window(hours, width=3, worst=False):
+    """The `width`-hour stretch of the day (wrapping midnight) that was most (or least)
+    often good to play. hours: {hour: (ready, n)}."""
+    best = None
+    for h in range(24):
+        span = [hours.get((h + i) % 24) for i in range(width)]
+        if any(s is None or s[1] < 30 for s in span):
+            continue
+        ready = sum(s[0] for s in span) / sum(s[1] for s in span)
+        if best is None or (ready < best[1] if worst else ready > best[1]):
+            best = (h, ready)
+    return {"start_hour": best[0], "end_hour": (best[0] + width) % 24, "ready_pct": 100 * best[1]} if best else None
+
+
+def valorant_history(region, days):
+    now = time.time()
+    rows = db.query("SELECT ts, ping_ms, loss_pct, playable FROM valorant_min WHERE region=? AND ts > ? ORDER BY ts",
+                    (region, now - days * 86400))
+    heat, hours, buckets = {}, {}, {}
+    bucket_s = 3600 if days <= 30 else 3 * 3600
+    for r in rows:
+        lt = time.localtime(r["ts"])
+        for d, key in ((heat, (lt.tm_wday, lt.tm_hour)), (hours, lt.tm_hour), (buckets, int(r["ts"] // bucket_s * bucket_s))):
+            c = d.setdefault(key, [0, 0, []])
+            c[0] += r["playable"]
+            c[1] += 1
+            c[2].append(r["ping_ms"])
+    # Bad stretches: runs of not-playable minutes (gaps up to 3 minutes bridged), 10+ minutes long.
+    stretches, cur = [], None
+    for r in rows:
+        if not r["playable"]:
+            if cur and r["ts"] - cur["end"] <= 180:
+                cur["end"], cur["pings"] = r["ts"] + 60, cur["pings"] + [r["ping_ms"]]
+            else:
+                cur = {"start": r["ts"], "end": r["ts"] + 60, "pings": [r["ping_ms"]]}
+                stretches.append(cur)
+    stretches = [{"start": s["start"], "end": s["end"], "peak_ms": max((p for p in s["pings"] if p is not None), default=None),
+                  "median_ms": _median(s["pings"])} for s in stretches if s["end"] - s["start"] >= 600]
+    hour_counts = {h: (c[0], c[1]) for h, c in hours.items()}
+    compare = db.query("SELECT region, COUNT(*) AS n, AVG(playable) AS ready, AVG(ping_ms) AS avg_ms "
+                       "FROM valorant_min WHERE ts > ? GROUP BY region", (now - days * 86400,))
+    return {
+        "region": region, "region_name": VALORANT_REGIONS[region][0], "days": days,
+        "max_ping_ms": OPTS["valorant_max_ping_ms"], "minutes": len(rows),
+        "since": rows[0]["ts"] if rows else None,
+        "ready_pct": 100 * sum(r["playable"] for r in rows) / len(rows) if rows else None,
+        "median_ms": _median(r["ping_ms"] for r in rows),
+        "best": _best_window(hour_counts), "worst": _best_window(hour_counts, worst=True),
+        "heat": [{"wday": w, "hour": h, "ready_pct": 100 * c[0] / c[1], "median_ms": _median(c[2]), "n": c[1]}
+                 for (w, h), c in sorted(heat.items())],
+        "hours": [{"hour": h, "ready_pct": 100 * c[0] / c[1], "median_ms": _median(c[2]), "n": c[1]}
+                  for h, c in sorted(hours.items())],
+        "series": [{"ts": t, "ready_pct": 100 * c[0] / c[1], "median_ms": _median(c[2])} for t, c in sorted(buckets.items())],
+        "stretches": stretches[::-1][:15],
+        "compare": [{**r, "name": VALORANT_REGIONS[r["region"]][0], "ready_pct": 100 * r["ready"]}
+                    for r in sorted(compare, key=lambda r: -r["ready"]) if r["region"] in VALORANT_REGIONS],
+    }
 
 
 # ----------------------------------------------------------------- settings
@@ -2039,8 +2170,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"text": monthly_report_text(y, m)})
             if path == "/api/alerts":
                 return self._send(200, alerts_payload())
+            if path == "/valorant":
+                return self._static("valorant.html")
             if path == "/api/valorant":
                 return self._send(200, valorant_payload())
+            if path == "/api/valorant/history":
+                region = qs.get("region", [OPTS["valorant_region"]])[0]
+                if region not in VALORANT_REGIONS:
+                    raise ValueError("unknown region")
+                return self._send(200, valorant_history(region, max(1, min(90, int(qs.get("days", [7])[0])))))
             if path == "/api/iplog":
                 return self._send(200, db.query("SELECT * FROM ip_log ORDER BY ts DESC LIMIT 50"))
             if path in ("/api/export/speedtests.csv", "/api/export/outages.csv"):
@@ -2092,6 +2230,8 @@ class Handler(BaseHTTPRequestHandler):
             y, m = (int(x) for x in str(body.get("month", "")).split("-"))
             ok = whatsapp_send(monthly_report_text(y, m), f"netmon-monthly-test-{int(time.time())}", give_up_after=0)
             return self._send(200 if ok else 502, {"ok": ok} if ok else {"error": "Not sent, see the add-on log"})
+        if path == "/api/valorant/refresh":
+            return self._send(200, valorant_refresh())
         if path == "/api/pause":
             minutes = float(body.get("minutes", 0))
             until = -1 if minutes < 0 else (time.time() + minutes * 60 if minutes > 0 else 0)

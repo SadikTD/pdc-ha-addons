@@ -72,7 +72,15 @@ print("ok")
 
 # Valorant: playable only with ping under the limit, little loss and a steady line.
 assert m.valorant_verdict(45.0, 3.0, 0.0, 80) == (True, [])
-assert m.valorant_verdict(177.0, 3.0, 0.0, 80) == (False, ["ping 177 ms (over 80)"])
+assert m.valorant_verdict(177.0, 3.0, 0.0, 80) == (False, ["ping around 177 ms (limit 80)"])
 assert m.valorant_verdict(45.0, 25.0, 5.0, 80)[1] == ["5% packet loss", "ping jumping ±25 ms"]
 assert m.valorant_verdict(None, None, 100.0, 80)[0] is False
 print("valorant ok")
+
+# Best time to play: the 3-hour stretch most often good, wrapping past midnight.
+hrs = {h: (10, 60) for h in range(24)}
+hrs.update({23: (60, 60), 0: (60, 60), 1: (60, 60)})
+assert m._best_window(hrs) == {"start_hour": 23, "end_hour": 2, "ready_pct": 100.0}
+assert m._best_window(hrs, worst=True)["ready_pct"] < 20
+assert m._best_window({0: (5, 5)}) is None  # too little data
+print("valorant history ok")
