@@ -1771,7 +1771,22 @@ def valorant_rollup(live, minute):
                    (minute, k, ping, jit, loss, int(playable)))
 
 
-def valorant_publish(s):
+def valorant_stale(live):
+    """True when no server has answered for a minute while the internet works. Every
+    server going down at once is far less likely than a game patch changing the ping
+    packet (VALORANT_REGIONS), which needs a fresh capture of the game's pings."""
+    recent = live[-VALORANT_HOLD:]
+    return (state.online is True and len(recent) == VALORANT_HOLD
+            and all(v["ping_ms"] is None for r in recent for v in r["regions"].values()))
+
+
+VALORANT_STALE_TEXT = ("None of the Valorant servers has answered for a minute while your internet works. "
+                       "Valorant has most likely changed how it pings its servers (usually after a game "
+                       "patch), so Net Monitor needs a fresh capture: open Valorant to the main menu and "
+                       "ask for a re-capture. It takes about 90 seconds.")
+
+
+def valorant_publish(s, stale=False):
     w, p = s["window"], s["ping_ms"]
     ha_set_state("sensor.net_monitor_valorant_ping", round(p) if p is not None else "unavailable", {
         "friendly_name": f"Valorant ping ({s['name']})", "unit_of_measurement": "ms",
@@ -1780,20 +1795,31 @@ def valorant_publish(s):
         "jitter_ms": round(w["jitter_ms"], 1) if w["jitter_ms"] is not None else None,
         "packet_loss_pct": round(w["loss_pct"], 1) if w["loss_pct"] is not None else None,
         "route": s["route"], "server": s["name"]})
-    ha_set_state("binary_sensor.net_monitor_valorant_playable", "on" if s["playable"] else "off", {
-        "friendly_name": f"Valorant good to play ({s['name']})", "icon": "mdi:controller",
-        "reasons": ", ".join(s["why"]) or None, "max_ping_ms": OPTS["valorant_max_ping_ms"]})
+    ha_set_state("binary_sensor.net_monitor_valorant_playable",
+                 "unavailable" if stale else "on" if s["playable"] else "off", {
+                     "friendly_name": f"Valorant good to play ({s['name']})", "icon": "mdi:controller",
+                     "reasons": "Net Monitor needs a re-capture of the game's pings" if stale else ", ".join(s["why"]) or None,
+                     "max_ping_ms": OPTS["valorant_max_ping_ms"]})
 
 
 def valorant_after_round(m):
     """Minute history, sensors and alerts for the main server."""
     live = list(valorant_live)
+    stale = valorant_stale(live)
     minute = int(live[-1]["ts"] // 60 * 60)
-    if m["minute"] is not None and minute != m["minute"]:
+    if m["minute"] is not None and minute != m["minute"] and not stale:  # no fake rough patches in history
         valorant_rollup(live, m["minute"])
     m["minute"] = minute
     s = valorant_summary(OPTS["valorant_region"], live)
     m["rounds"] += 1
+    if stale != m["stale"]:
+        log.warning("Valorant pings %s", "get no replies at all: needs a re-capture" if stale else "answer again")
+        if stale:  # one alert, whatever valorant_alerts says: it's about the add-on, not the game
+            ha_notify("Valorant: Net Monitor needs a re-capture", VALORANT_STALE_TEXT)
+        m["stale"], m["told"], m["last"] = stale, None, None  # verdict alerts start over afterwards
+        valorant_publish(s, stale)
+    if stale:
+        return
     if m["rounds"] % 6 == 1 or s["playable"] != m["last"]:
         valorant_publish(s)
     # Alert once a new verdict has held for a minute, so a flicker at the limit stays
@@ -1809,7 +1835,7 @@ def valorant_after_round(m):
 
 
 def valorant_loop():
-    m = {"last": None, "streak": 0, "told": None, "minute": None, "rounds": 0}
+    m = {"last": None, "streak": 0, "told": None, "minute": None, "rounds": 0, "stale": False}
     while True:
         t0 = time.time()
         try:
@@ -1841,7 +1867,7 @@ def valorant_payload():
     return {"ts": live[-1]["ts"] if live else None, "interval": VALORANT_INTERVAL,
             "max_ping_ms": OPTS["valorant_max_ping_ms"], "main": OPTS["valorant_region"],
             "regions": [valorant_summary(k, live) for k in VALORANT_REGIONS] if live else [],
-            "usual": valorant_usual(),
+            "usual": valorant_usual(), "stale": valorant_stale(live),
             "live": [{"ts": r["ts"], **{k: v["ping_ms"] for k, v in r["regions"].items()}} for r in live]}
 
 

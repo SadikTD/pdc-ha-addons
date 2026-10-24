@@ -127,6 +127,11 @@ that's when the in-game ping jumps while the dashboard stays fine.) It's ready t
 week-at-a-glance heatmap, ping over time, all servers compared, and every rough patch
 of 10 minutes or more. One reading per server per minute is kept for 90 days.
 
+If every server stops answering for a minute while the internet works, the card
+shows **Needs a re-capture** and your phone gets one alert: a game patch has most
+likely changed the ping packet. Open Valorant to the main menu and capture its pings
+again (about 90 seconds). Until then no "hold off" alerts are sent and history pauses.
+
 Sensors (main server): `sensor.net_monitor_valorant_ping` (with network delay, jitter,
 packet loss) and `binary_sensor.net_monitor_valorant_playable`.
 

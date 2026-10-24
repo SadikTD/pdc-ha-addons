@@ -83,4 +83,12 @@ hrs.update({23: (60, 60), 0: (60, 60), 1: (60, 60)})
 assert m._best_window(hrs) == {"start_hour": 23, "end_hour": 2, "ready_pct": 100.0}
 assert m._best_window(hrs, worst=True)["ready_pct"] < 20
 assert m._best_window({0: (5, 5)}) is None  # too little data
+# A silent minute on every server while online = the ping format changed, not an outage.
+silent = [{"regions": {k: {"ping_ms": None} for k in m.VALORANT_REGIONS}}] * m.VALORANT_HOLD
+m.state.online = True
+assert m.valorant_stale(silent) is True
+assert m.valorant_stale(silent[1:]) is False  # not a full minute yet
+assert m.valorant_stale(silent[:-1] + [{"regions": {**silent[0]["regions"], "singapore": {"ping_ms": 48.0}}}]) is False
+m.state.online = False
+assert m.valorant_stale(silent) is False  # the internet is down: that has its own alerts
 print("valorant history ok")

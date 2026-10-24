@@ -564,8 +564,17 @@
       const sel = r.key === valo.view, lv = r.key === "all" ? "" : `lv-${vLevel(r, limit)}`;
       return `<button class="valo-tab ${lv}" role="tab" aria-selected="${sel}" data-key="${r.key}">${r.key === v.main ? '<i class="main-mark" title="Main server"></i>' : ""}${esc(r.name)}${r.key === "all" ? "" : `<small>${vMs(r.ping_ms)}</small>`}</button>`;
     }).join("");
-    if (valo.view === "all") renderValoAll(v); else renderValoOne(v, v.regions.find((r) => r.key === valo.view));
+    if (v.stale) renderValoStale();
+    else if (valo.view === "all") renderValoAll(v); else renderValoOne(v, v.regions.find((r) => r.key === valo.view));
     valoAge();
+  }
+
+  // Every server silent while the internet works: the game changed its ping, not every server died.
+  function renderValoStale() {
+    $("valo-view").innerHTML = `<div class="vb lv-warn">
+      <div><div class="vb-server">All servers</div><p class="vb-verdict">Needs a re-capture</p></div>
+      <p class="vb-why">None of the Valorant servers has answered for a minute, while your internet is working. Valorant has most likely changed how it pings its servers, usually after a game patch. Open Valorant to the main menu and ask for a re-capture of its pings; it takes about 90 seconds. Until then the ping here can't be trusted, and no "hold off" alerts are sent.</p>
+    </div>`;
   }
 
   function sparkSvg(v, key) {
