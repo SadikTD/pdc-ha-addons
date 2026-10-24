@@ -117,10 +117,10 @@ leave running while you play. **Refresh** pings them all again on the spot.
 
 The card opens on your main server (`valorant_region`). **All servers** lists them
 sorted by ping like the game does. Pick one to see its verdict, ping, network delay,
-jitter, packet loss and the last hour. For Mumbai the **match route**
-(`151.106.246.1`) is the one your matches connect through, so its ping is what you'll
-see in game; the other routes show whether a bad ping is that route's fault or the
-whole way there. It's ready to queue when, over the last 2 minutes, ping is under
+jitter, packet loss and the last hour. A match connects through whichever Riot route
+is fastest when it starts, so a server's ping is its fastest route's, like the game's
+server list. (A route that slows down mid-match keeps you on it until the match ends:
+that's when the in-game ping jumps while the dashboard stays fine.) It's ready to queue when, over the last 2 minutes, ping is under
 `valorant_max_ping_ms`, packet loss under 3% and jitter under 20 ms.
 
 **History** shows, per server, the best and worst times of day to play, a
@@ -169,7 +169,7 @@ add-on automatically. The WhatsApp token is never shown; leave it blank to keep 
 | `monthly_report_enabled` / `_hour` | on / 10 | Monthly ISP report on the 1st |
 | `plan_price` / `plan_currency` | 0 / ৳ | Monthly bill for the value-for-money line (`0` = off) |
 | `valorant_region` | `mumbai` | Main VALORANT server: alerts and sensors follow it |
-| `valorant_max_ping_ms` | 80 | Above this on the match route = don't queue |
+| `valorant_max_ping_ms` | 80 | Above this ping = don't queue |
 | `valorant_alerts` | on | Phone notification (via `notify_service`) when it turns good or bad to play |
 
 Data use: roughly 100 MB per speedtest at 40 Mbit/s (~2.4 GB/day hourly).

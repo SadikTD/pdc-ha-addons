@@ -591,7 +591,7 @@
         <span class="vr-ping">${vMs(r.ping_ms)}<small>ms</small></span>
         <span class="vr-state">${V_STATE[lv]}</span></button>`;
     }).join("")}</div>
-      <p class="valo-note">Sorted by ping, like the game's server list. Ready means under your ${limit} ms limit with steady, lossless pings for the last 2 minutes. Mumbai is measured through the route your matches use.</p>`;
+      <p class="valo-note">Sorted by ping, like the game's server list. Ready means under your ${limit} ms limit with steady, lossless pings for the last 2 minutes. Each server's ping is its fastest route, the one a new match connects through.</p>`;
   }
 
   function renderValoOne(v, r) {
@@ -602,9 +602,7 @@
     if (r.playable) why = `Steady at ${ms(w.ping_ms)} ms with ${pct(w.loss_pct, 1)} packet loss over the last 2 minutes. Go queue.`;
     else {
       why = `${cap(listText(r.why))} over the last 2 minutes.`;
-      if (r.best_other_ms != null && w.ping_ms != null && r.best_other_ms < w.ping_ms - 20)
-        why += ` Other routes reach ${r.name} in ${ms(r.best_other_ms)} ms, so it's the route to Riot's match server that's slow, not your connection.`;
-      else if (lv === "warn") why += " Playable, but you'll feel it in fights.";
+      if (lv === "warn") why += " Playable, but you'll feel it in fights.";
     }
     const prevNum = $("vb-num") && $("vb-num").dataset.key === r.key ? $("vb-num") : null;
     const maxEdge = Math.max(limit * 1.5, ...r.edges.map((e) => e.ping_ms || 0));
@@ -626,10 +624,10 @@
       </dl>
       <div class="valo-sec"><h3>Last hour</h3><span>Dashed line: your ${limit} ms limit</span></div>
       <div class="valo-chart"><canvas id="valo-chart" aria-label="${esc(r.name)} ping over the last hour"></canvas></div>
-      ${r.edges.length > 1 ? `<div class="valo-sec"><h3>Routes to ${esc(r.name)}</h3><span>${r.match_route ? "Your matches use the match route" : "The fastest one counts"}</span></div>
-      <div class="valo-routes">${[...r.edges].sort((a, b) => (b.edge === r.match_route) - (a.edge === r.match_route) || (a.ping_ms ?? 1e9) - (b.ping_ms ?? 1e9)).map((e) => {
+      ${r.edges.length > 1 ? `<div class="valo-sec"><h3>Routes to ${esc(r.name)}</h3><span>New matches connect through the fastest</span></div>
+      <div class="valo-routes">${[...r.edges].sort((a, b) => (a.ping_ms ?? 1e9) - (b.ping_ms ?? 1e9)).map((e) => {
         const elv = e.ping_ms == null || e.loss_pct >= 34 ? "bad" : e.ping_ms <= limit ? "good" : e.ping_ms <= limit * 1.5 ? "warn" : "bad";
-        return `<div class="vrt lv-${elv}"><span>${e.edge === r.match_route ? "<b>Match route</b>" : "Other route"}<span class="ip">${esc(e.edge)}</span></span>
+        return `<div class="vrt lv-${elv}"><span>${e.edge === r.route ? "<b>Fastest route</b>" : "Route"}<span class="ip">${esc(e.edge)}</span></span>
           <span class="vrt-bar"><i style="width:${e.ping_ms == null ? 100 : Math.min(100, (e.ping_ms / maxEdge) * 100).toFixed(1)}%"></i></span>
           <span class="vrt-val">${e.ping_ms == null ? "—" : `${Math.round(e.ping_ms)}`}<small>ms</small></span></div>`;
       }).join("")}</div>` : ""}`;

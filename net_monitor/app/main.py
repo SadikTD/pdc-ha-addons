@@ -1665,9 +1665,9 @@ VALORANT_REGIONS = {  # key: (name, server bytes, routes the game pings it throu
     "tokyo": ("Tokyo", "e53a4109fd32f8df", ["151.106.248.1", "43.229.65.1"]),
     "sydney": ("Sydney", "f04b9bc9ed32fbf1", ["151.106.248.1", "43.229.65.1"]),
 }
-# Mumbai matches connect through this route (79 of 81 matches in the game's logs), so
-# its ping is the one you get in game. Elsewhere the best route stands in.
-VALORANT_MATCH_ROUTE = {"mumbai": "151.106.246.1"}
+# A match connects through whichever route is fastest when it starts (the game's logs
+# show Mumbai matches moving from 151.106.246.1 to 151.106.248.1 once the first slowed
+# down), so a server's ping is its fastest route's, as in the game's server list.
 VALORANT_INTERVAL = 10
 # 3 pings x 14 routes per round is ~4 packets/s of 36 bytes: nothing next to a game
 # (~70 KB/s) and far under busy_packets_per_second.
@@ -1741,10 +1741,9 @@ def valorant_round():
     for k, (_, _, routes) in VALORANT_REGIONS.items():
         edges = [{"edge": e, "ping_ms": res[(k, e)][0], "jitter_ms": res[(k, e)][1], "loss_pct": res[(k, e)][2]}
                  for e in routes]
-        match = VALORANT_MATCH_ROUTE.get(k)
-        main = next(x for x in edges if x["edge"] == match) if match else \
-            min(edges, key=lambda x: (x["ping_ms"] is None, x["ping_ms"] or 0))
-        rnd["regions"][k] = {**{f: main[f] for f in ("ping_ms", "jitter_ms", "loss_pct")}, "edges": edges}
+        main = min(edges, key=lambda x: (x["ping_ms"] is None, x["ping_ms"] or 0))
+        rnd["regions"][k] = {**{f: main[f] for f in ("ping_ms", "jitter_ms", "loss_pct")}, "edges": edges,
+                             "route": main["edge"]}
     valorant_live.append(rnd)
     return rnd
 
@@ -1756,11 +1755,9 @@ def valorant_summary(k, live):
               "loss_pct": _mean(r["loss_pct"] for r in rounds)}
     playable, why = valorant_verdict(window["ping_ms"], window["jitter_ms"], window["loss_pct"],
                                      OPTS["valorant_max_ping_ms"])
-    latest, match = rounds[-1], VALORANT_MATCH_ROUTE.get(k)
-    others = [e["ping_ms"] for e in latest["edges"] if match and e["edge"] != match and e["ping_ms"] is not None]
+    latest = rounds[-1]
     return {"key": k, "name": VALORANT_REGIONS[k][0], "ping_ms": latest["ping_ms"], "window": window,
-            "playable": playable, "why": why, "edges": latest["edges"], "match_route": match,
-            "best_other_ms": min(others) if others else None}
+            "playable": playable, "why": why, "edges": latest["edges"], "route": latest["route"]}
 
 
 def valorant_rollup(live, minute):
@@ -1782,8 +1779,7 @@ def valorant_publish(s):
         "network_delay_ms": round(p / 2) if p is not None else None,
         "jitter_ms": round(w["jitter_ms"], 1) if w["jitter_ms"] is not None else None,
         "packet_loss_pct": round(w["loss_pct"], 1) if w["loss_pct"] is not None else None,
-        "best_other_route_ms": round(s["best_other_ms"]) if s["best_other_ms"] is not None else None,
-        "server": s["name"]})
+        "route": s["route"], "server": s["name"]})
     ha_set_state("binary_sensor.net_monitor_valorant_playable", "on" if s["playable"] else "off", {
         "friendly_name": f"Valorant good to play ({s['name']})", "icon": "mdi:controller",
         "reasons": ", ".join(s["why"]) or None, "max_ping_ms": OPTS["valorant_max_ping_ms"]})
