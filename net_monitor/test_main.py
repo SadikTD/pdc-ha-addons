@@ -86,9 +86,14 @@ assert m._best_window({0: (5, 5)}) is None  # too little data
 # A silent minute on every server while online = the ping format changed, not an outage.
 silent = [{"regions": {k: {"ping_ms": None} for k in m.VALORANT_REGIONS}}] * m.VALORANT_HOLD
 m.state.online = True
-assert m.valorant_stale(silent) is True
-assert m.valorant_stale(silent[1:]) is False  # not a full minute yet
-assert m.valorant_stale(silent[:-1] + [{"regions": {**silent[0]["regions"], "singapore": {"ping_ms": 48.0}}}]) is False
+assert m.valorant_stale(silent) == list(m.VALORANT_REGIONS)
+assert m.valorant_stale(silent[1:]) == []  # not a full minute yet
+# Only Tokyo answering (27 Oct): the other five still need a re-capture.
+tokyo_ok = [{"regions": {**silent[0]["regions"], "tokyo": {"ping_ms": 115.0}}}] * m.VALORANT_HOLD
+assert "tokyo" not in m.valorant_stale(tokyo_ok) and "mumbai" in m.valorant_stale(tokyo_ok)
+assert m.valorant_stale(silent[:-1] + tokyo_ok[-1:]) == [k for k in m.VALORANT_REGIONS if k != "tokyo"]
 m.state.online = False
-assert m.valorant_stale(silent) is False  # the internet is down: that has its own alerts
+assert m.valorant_stale(silent) == []  # the internet is down: that has its own alerts
+m.OPTS["valorant_ids"] = ["mumbai:00112233445566ff"]
+assert m.valorant_ids()["mumbai"] == bytes.fromhex("00112233445566ff") and len(m.valorant_ids()) == 6
 print("valorant history ok")

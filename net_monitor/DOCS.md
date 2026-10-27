@@ -127,10 +127,12 @@ that's when the in-game ping jumps while the dashboard stays fine.) It's ready t
 week-at-a-glance heatmap, ping over time, all servers compared, and every rough patch
 of 10 minutes or more. One reading per server per minute is kept for 90 days.
 
-If every server stops answering for a minute while the internet works, the card
-shows **Needs a re-capture** and your phone gets one alert: a game patch has most
-likely changed the ping packet. Open Valorant to the main menu and capture its pings
-again (about 90 seconds). Until then no "hold off" alerts are sent and history pauses.
+Each server's ping starts with an ID Riot hands the game, and Riot refreshes those IDs
+every few days. They live in `valorant_ids` (Settings, Valorant, Server IDs). When a
+server stops answering on every route for a minute while the internet works, the card
+shows **Needs a re-capture** for it and your phone gets one alert. Capture the game's
+pings again while it starts up (port 8181) and put the new IDs in `valorant_ids`. Until
+then that server sends no "hold off" alerts and its history pauses.
 
 Sensors (main server): `sensor.net_monitor_valorant_ping` (with network delay, jitter,
 packet loss) and `binary_sensor.net_monitor_valorant_playable`.
@@ -175,6 +177,7 @@ add-on automatically. The WhatsApp token is never shown; leave it blank to keep 
 | `plan_price` / `plan_currency` | 0 / ৳ | Monthly bill for the value-for-money line (`0` = off) |
 | `valorant_region` | `mumbai` | Main VALORANT server: alerts and sensors follow it |
 | `valorant_max_ping_ms` | 80 | Above this ping = don't queue |
+| `valorant_ids` | captured 27 Oct 2026 | `server:ID` per server, from a capture of the game's pings |
 | `valorant_alerts` | on | Phone notification (via `notify_service`) when it turns good or bad to play |
 
 Data use: roughly 100 MB per speedtest at 40 Mbit/s (~2.4 GB/day hourly).

@@ -79,6 +79,8 @@ DEFAULT_OPTIONS = {
     "valorant_region": "mumbai",
     "valorant_max_ping_ms": 80,
     "valorant_alerts": True,
+    # Captured from the game's own pings on 27 Oct 2026; Riot refreshes them every few days.
+    "valorant_ids": ['mumbai:1bffcba4a432f110', 'singapore:ea619b142f32f9b7', 'hongkong:f5d412053332f192', 'manila:2df29ff0f932c6dd', 'tokyo:69e3a2ee8d32f8de', 'sydney:99ab0f655f32fbf4'],
 }
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -1655,16 +1657,29 @@ def status_payload():
 # ------------------------------------------------------------------ valorant
 # VALORANT pings each server with a 36-byte UDP packet to a Riot Direct route on port
 # 8181, which relays it over Riot's backbone to that server and back. The first 8 bytes
-# pick the server (taken from the game's own pings, Oct 2026). The reply starts with
-# bytes 4-8 of the request and echoes everything from byte 8 on.
-VALORANT_REGIONS = {  # key: (name, server bytes, routes the game pings it through)
-    "mumbai": ("Mumbai", "7d2a1f22fe32f110", ["151.106.246.1", "151.106.248.1", "43.229.65.1", "162.249.75.1"]),
-    "singapore": ("Singapore", "ccfec3841f32f9b7", ["151.106.248.1", "43.229.65.1"]),
-    "hongkong": ("Hong Kong", "7cfea47eb432f191", ["151.106.248.1", "43.229.65.1"]),
-    "manila": ("Manila", "04881dd63032c6df", ["151.106.248.1", "43.229.65.1"]),
-    "tokyo": ("Tokyo", "e53a4109fd32f8df", ["151.106.248.1", "43.229.65.1"]),
-    "sydney": ("Sydney", "f04b9bc9ed32fbf1", ["151.106.248.1", "43.229.65.1"]),
+# pick the server: an ID Riot hands the game, which expires after a few days, so they
+# live in the valorant_ids option and are refreshed from a capture of the game's own
+# pings. The reply starts with bytes 4-8 of the request and echoes everything from 8 on.
+VALORANT_REGIONS = {  # key: (name, routes the game pings it through)
+    "mumbai": ("Mumbai", ["151.106.246.1", "151.106.248.1", "43.229.65.1", "162.249.75.1"]),
+    "singapore": ("Singapore", ["151.106.248.1", "43.229.65.1"]),
+    "hongkong": ("Hong Kong", ["151.106.248.1", "43.229.65.1"]),
+    "manila": ("Manila", ["151.106.248.1", "43.229.65.1"]),
+    "tokyo": ("Tokyo", ["151.106.248.1", "43.229.65.1"]),
+    "sydney": ("Sydney", ["151.106.248.1", "43.229.65.1"]),
 }
+
+
+def listing(names):
+    """"Mumbai", "Mumbai and Tokyo", "Mumbai, Tokyo and Sydney"."""
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def valorant_ids():
+    """{server: 8-byte ID} from the valorant_ids option ("mumbai:1bffcba4a432f110")."""
+    ids = dict(x.split(":", 1) for x in DEFAULT_OPTIONS["valorant_ids"])
+    ids.update(x.split(":", 1) for x in OPTS.get("valorant_ids") or [] if ":" in x)
+    return {k: bytes.fromhex(v) for k, v in ids.items() if k in VALORANT_REGIONS}
 # A match connects through whichever route is fastest when it starts (the game's logs
 # show Mumbai matches moving from 151.106.246.1 to 151.106.248.1 once the first slowed
 # down), so a server's ping is its fastest route's, as in the game's server list.
@@ -1674,7 +1689,7 @@ VALORANT_INTERVAL = 10
 VALORANT_SAMPLES = 3
 VALORANT_WINDOW = 12  # rounds (2 minutes) behind each verdict
 VALORANT_HOLD = 6     # rounds (1 minute) a new verdict must hold before it's alerted
-_valorant_jobs = [(k, e) for k, r in VALORANT_REGIONS.items() for e in r[2]]
+_valorant_jobs = [(k, e) for k, r in VALORANT_REGIONS.items() for e in r[1]]
 valorant_pool = ThreadPoolExecutor(max_workers=len(_valorant_jobs))
 valorant_lock = threading.Lock()
 valorant_live = deque(maxlen=360)  # the last hour of rounds, for the live view
@@ -1736,14 +1751,14 @@ def valorant_round():
     """Pings every server through every route once; the result joins the live view."""
     t0 = time.time()
     res = dict(zip(_valorant_jobs, valorant_pool.map(
-        lambda j: valorant_probe(j[1], bytes.fromhex(VALORANT_REGIONS[j[0]][1])), _valorant_jobs)))
+        lambda j, ids=valorant_ids(): valorant_probe(j[1], ids[j[0]]), _valorant_jobs)))
     rnd = {"ts": t0, "regions": {}}
-    for k, (_, _, routes) in VALORANT_REGIONS.items():
+    for k, (_, routes) in VALORANT_REGIONS.items():
         edges = [{"edge": e, "ping_ms": res[(k, e)][0], "jitter_ms": res[(k, e)][1], "loss_pct": res[(k, e)][2]}
                  for e in routes]
         main = min(edges, key=lambda x: (x["ping_ms"] is None, x["ping_ms"] or 0))
         rnd["regions"][k] = {**{f: main[f] for f in ("ping_ms", "jitter_ms", "loss_pct")}, "edges": edges,
-                             "route": main["edge"]}
+                             "route": main["edge"] if main["ping_ms"] is not None else None}
     valorant_live.append(rnd)
     return rnd
 
@@ -1760,10 +1775,13 @@ def valorant_summary(k, live):
             "playable": playable, "why": why, "edges": latest["edges"], "route": latest["route"]}
 
 
-def valorant_rollup(live, minute):
-    """Stores one row per server for the minute that just ended (history keeps minutes)."""
+def valorant_rollup(live, minute, skip=()):
+    """Stores one row per server for the minute that just ended (history keeps minutes).
+    Servers in skip are silent because their ID expired: no fake rough patches."""
     rounds = [r for r in live if minute <= r["ts"] < minute + 60]
     for k in VALORANT_REGIONS:
+        if k in skip:
+            continue
         rs = [r["regions"][k] for r in rounds]
         ping, jit, loss = _median(r["ping_ms"] for r in rs), _mean(r["jitter_ms"] for r in rs), _mean(r["loss_pct"] for r in rs)
         playable = valorant_verdict(ping, jit, loss, OPTS["valorant_max_ping_ms"])[0]
@@ -1772,18 +1790,13 @@ def valorant_rollup(live, minute):
 
 
 def valorant_stale(live):
-    """True when no server has answered for a minute while the internet works. Every
-    server going down at once is far less likely than a game patch changing the ping
-    packet (VALORANT_REGIONS), which needs a fresh capture of the game's pings."""
+    """Servers that haven't answered on any route for a minute while the internet works.
+    A whole server going silent on every route is far more likely its ID expiring
+    (valorant_ids) than the server being down, and needs a fresh capture of the game's pings."""
     recent = live[-VALORANT_HOLD:]
-    return (state.online is True and len(recent) == VALORANT_HOLD
-            and all(v["ping_ms"] is None for r in recent for v in r["regions"].values()))
-
-
-VALORANT_STALE_TEXT = ("None of the Valorant servers has answered for a minute while your internet works. "
-                       "Valorant has most likely changed how it pings its servers (usually after a game "
-                       "patch), so Net Monitor needs a fresh capture: open Valorant to the main menu and "
-                       "ask for a re-capture. It takes about 90 seconds.")
+    if state.online is not True or len(recent) < VALORANT_HOLD:
+        return []
+    return [k for k in VALORANT_REGIONS if all(r["regions"][k]["ping_ms"] is None for r in recent)]
 
 
 def valorant_publish(s, stale=False):
@@ -1805,20 +1818,28 @@ def valorant_publish(s, stale=False):
 def valorant_after_round(m):
     """Minute history, sensors and alerts for the main server."""
     live = list(valorant_live)
-    stale = valorant_stale(live)
+    silent = valorant_stale(live)
     minute = int(live[-1]["ts"] // 60 * 60)
-    if m["minute"] is not None and minute != m["minute"] and not stale:  # no fake rough patches in history
-        valorant_rollup(live, m["minute"])
+    if m["minute"] is not None and minute != m["minute"]:
+        valorant_rollup(live, m["minute"], skip=silent)
     m["minute"] = minute
     s = valorant_summary(OPTS["valorant_region"], live)
     m["rounds"] += 1
-    if stale != m["stale"]:
-        log.warning("Valorant pings %s", "get no replies at all: needs a re-capture" if stale else "answer again")
-        if stale:  # one alert, whatever valorant_alerts says: it's about the add-on, not the game
-            ha_notify("Valorant: Net Monitor needs a re-capture", VALORANT_STALE_TEXT)
-        m["stale"], m["told"], m["last"] = stale, None, None  # verdict alerts start over afterwards
-        valorant_publish(s, stale)
-    if stale:
+    if set(silent) != m["silent"]:
+        new = [k for k in silent if k not in m["silent"]]
+        log.warning("Valorant servers not answering on any route: %s", ", ".join(silent) or "none")
+        if new:  # one alert per newly silent server, whatever valorant_alerts says: it's about the add-on
+            names = listing([VALORANT_REGIONS[k][0] for k in new])
+            ha_notify("Valorant: Net Monitor needs a re-capture",
+                      f"{names} stopped answering for a minute while your internet works. Riot has most likely "
+                      "refreshed its server IDs, so Net Monitor needs a fresh capture: open Valorant and ask "
+                      "for a re-capture. It takes about 2 minutes.")
+        main_change = (OPTS["valorant_region"] in silent) != (OPTS["valorant_region"] in m["silent"])
+        m["silent"] = set(silent)
+        if main_change:
+            m["told"], m["last"] = None, None  # verdict alerts start over afterwards
+            valorant_publish(s, OPTS["valorant_region"] in silent)
+    if OPTS["valorant_region"] in silent:
         return
     if m["rounds"] % 6 == 1 or s["playable"] != m["last"]:
         valorant_publish(s)
@@ -1835,7 +1856,7 @@ def valorant_after_round(m):
 
 
 def valorant_loop():
-    m = {"last": None, "streak": 0, "told": None, "minute": None, "rounds": 0, "stale": False}
+    m = {"last": None, "streak": 0, "told": None, "minute": None, "rounds": 0, "silent": set()}
     while True:
         t0 = time.time()
         try:
@@ -1980,6 +2001,7 @@ SETTINGS = {
     "valorant_region": ("choice", list(VALORANT_REGIONS)),
     "valorant_max_ping_ms": ("int", 20, 500),
     "valorant_alerts": ("bool",),
+    "valorant_ids": ("texts", r"^(mumbai|singapore|hongkong|manila|tokyo|sydney):[0-9a-f]{16}$", "mumbai:1bffcba4a432f110", 1),
 }
 RESTART_KEYS = {"speedtest_interval_minutes", "check_interval_seconds"}  # read once at startup
 SECRET_KEYS = {"whatsapp_api_token"}

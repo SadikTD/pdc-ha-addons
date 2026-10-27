@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.7.1"
+version: "1.7.2"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
@@ -92,6 +92,16 @@ options:
   valorant_max_ping_ms: 80
   # Phone notification (notify_service) when it turns good or bad to play.
   valorant_alerts: true
+  # The ID each server's ping starts with, captured from the game's own pings. Riot
+  # refreshes them every few days; a server that stops answering on every route needs
+  # a fresh capture.
+  valorant_ids:
+    - mumbai:1bffcba4a432f110
+    - singapore:ea619b142f32f9b7
+    - hongkong:f5d412053332f192
+    - manila:2df29ff0f932c6dd
+    - tokyo:69e3a2ee8d32f8de
+    - sydney:99ab0f655f32fbf4
 schema:
   speedtest_interval_minutes: int(15,1440)
   server_ids:
@@ -136,3 +146,5 @@ schema:
   valorant_region: list(mumbai|singapore|hongkong|manila|tokyo|sydney)
   valorant_max_ping_ms: int(20,500)
   valorant_alerts: bool
+  valorant_ids:
+    - match(^(mumbai|singapore|hongkong|manila|tokyo|sydney):[0-9a-f]{16}$)

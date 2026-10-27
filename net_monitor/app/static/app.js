@@ -564,16 +564,18 @@
       const sel = r.key === valo.view, lv = r.key === "all" ? "" : `lv-${vLevel(r, limit)}`;
       return `<button class="valo-tab ${lv}" role="tab" aria-selected="${sel}" data-key="${r.key}">${r.key === v.main ? '<i class="main-mark" title="Main server"></i>' : ""}${esc(r.name)}${r.key === "all" ? "" : `<small>${vMs(r.ping_ms)}</small>`}</button>`;
     }).join("");
-    if (v.stale) renderValoStale();
+    const silent = v.stale || [];
+    if (valo.view === "all" ? silent.length === v.regions.length : silent.includes(valo.view))
+      renderValoStale(v.regions.filter((r) => silent.includes(r.key)).map((r) => r.name));
     else if (valo.view === "all") renderValoAll(v); else renderValoOne(v, v.regions.find((r) => r.key === valo.view));
     valoAge();
   }
 
-  // Every server silent while the internet works: the game changed its ping, not every server died.
-  function renderValoStale() {
+  // A server silent on every route while the internet works: its ID expired, the server isn't down.
+  function renderValoStale(names) {
     $("valo-view").innerHTML = `<div class="vb lv-warn">
-      <div><div class="vb-server">All servers</div><p class="vb-verdict">Needs a re-capture</p></div>
-      <p class="vb-why">None of the Valorant servers has answered for a minute, while your internet is working. Valorant has most likely changed how it pings its servers, usually after a game patch. Open Valorant to the main menu and ask for a re-capture of its pings; it takes about 90 seconds. Until then the ping here can't be trusted, and no "hold off" alerts are sent.</p>
+      <div><div class="vb-server">${esc(listText(names))}</div><p class="vb-verdict">Needs a re-capture</p></div>
+      <p class="vb-why">No answer on any route for a minute, while your internet is working. Riot has most likely refreshed the server ID Net Monitor pings with. Open Valorant and ask for a re-capture of its pings; it takes about 2 minutes. Until then this ping can't be trusted, and no "hold off" alerts are sent.</p>
     </div>`;
   }
 
@@ -592,6 +594,9 @@
     const rows = [...v.regions].sort((a, b) => (a.ping_ms ?? 1e9) - (b.ping_ms ?? 1e9));
     $("valo-view").innerHTML = `<div class="valo-list">${rows.map((r) => {
       const lv = vLevel(r, limit), bars = vBars(r.ping_ms, limit), w = r.window;
+      if ((v.stale || []).includes(r.key)) return `<button class="vr lv-warn" data-key="${r.key}" aria-label="${esc(r.name)}: needs a re-capture. Show details">
+        <span class="vr-name"><b>${esc(r.name)}</b><span>No answer on any route</span></span><span></span><span></span><span></span>
+        <span class="vr-state">Re-capture</span></button>`;
       return `<button class="vr lv-${lv}" data-key="${r.key}" aria-label="${esc(r.name)}: ${vMs(r.ping_ms)} ms, ${V_STATE[lv]}. Show details">
         <span class="vr-name"><b>${r.key === v.main ? '<i class="main-mark" title="Main server"></i>' : ""}${esc(r.name)}</b>
           <span>${pct(w.loss_pct)} loss, ±${ms(w.jitter_ms)} ms jitter</span></span>
@@ -1150,6 +1155,7 @@
         ["hongkong", "Hong Kong"], ["manila", "Manila"], ["tokyo", "Tokyo"], ["sydney", "Sydney"]] },
       { key: "valorant_max_ping_ms", label: "Don't queue above", type: "number", unit: "ms ping" },
       { key: "valorant_alerts", label: "Phone alerts", type: "bool", help: "When it turns good or bad to play. Uses the notify service under Phone notifications." },
+      { key: "valorant_ids", label: "Server IDs", type: "lines", help: "One server:ID per line, captured from the game's own pings. Riot refreshes them every few days; you only change these after a re-capture." },
     ] },
     { id: "speedtest", title: "Speedtests", fields: [
       { key: "speedtest_interval_minutes", label: "Run every", type: "number", unit: "min", help: "Aligned to midnight: 60 = on the hour. Restarts the add-on." },
