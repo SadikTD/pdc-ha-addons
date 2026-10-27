@@ -574,8 +574,8 @@
   // A server silent on every route while the internet works: its ID expired, the server isn't down.
   function renderValoStale(names) {
     $("valo-view").innerHTML = `<div class="vb lv-warn">
-      <div><div class="vb-server">${esc(listText(names))}</div><p class="vb-verdict">Needs a re-capture</p></div>
-      <p class="vb-why">No answer on any route for a minute, while your internet is working. Riot has most likely refreshed the server ID Net Monitor pings with. Open Valorant and ask for a re-capture of its pings; it takes about 2 minutes. Until then this ping can't be trusted, and no "hold off" alerts are sent.</p>
+      <div><div class="vb-server">${esc(listText(names))}</div><p class="vb-verdict">Refreshing IDs</p></div>
+      <p class="vb-why">No answer on any route for a minute, while your internet is working, so Riot has most likely reissued the server ID Net Monitor pings with. New IDs come from the Valorant Store Tracker add-on within the hour. If this stays, check that Store Tracker is still signed in to Riot. Until then this ping can't be trusted, and no "hold off" alerts are sent.</p>
     </div>`;
   }
 
@@ -596,7 +596,7 @@
       const lv = vLevel(r, limit), bars = vBars(r.ping_ms, limit), w = r.window;
       if ((v.stale || []).includes(r.key)) return `<button class="vr lv-warn" data-key="${r.key}" aria-label="${esc(r.name)}: needs a re-capture. Show details">
         <span class="vr-name"><b>${esc(r.name)}</b><span>No answer on any route</span></span><span></span><span></span><span></span>
-        <span class="vr-state">Re-capture</span></button>`;
+        <span class="vr-state">Refreshing</span></button>`;
       return `<button class="vr lv-${lv}" data-key="${r.key}" aria-label="${esc(r.name)}: ${vMs(r.ping_ms)} ms, ${V_STATE[lv]}. Show details">
         <span class="vr-name"><b>${r.key === v.main ? '<i class="main-mark" title="Main server"></i>' : ""}${esc(r.name)}</b>
           <span>${pct(w.loss_pct)} loss, ±${ms(w.jitter_ms)} ms jitter</span></span>
@@ -1155,7 +1155,7 @@
         ["hongkong", "Hong Kong"], ["manila", "Manila"], ["tokyo", "Tokyo"], ["sydney", "Sydney"]] },
       { key: "valorant_max_ping_ms", label: "Don't queue above", type: "number", unit: "ms ping" },
       { key: "valorant_alerts", label: "Phone alerts", type: "bool", help: "When it turns good or bad to play. Uses the notify service under Phone notifications." },
-      { key: "valorant_ids", label: "Server IDs", type: "lines", help: "One server:ID per line, captured from the game's own pings. Riot refreshes them every few days; you only change these after a re-capture." },
+      { key: "valorant_ids", label: "Server IDs", type: "lines", help: "Only used if the Valorant Store Tracker add-on can't supply fresh ones. One server:ID per line." },
     ] },
     { id: "speedtest", title: "Speedtests", fields: [
       { key: "speedtest_interval_minutes", label: "Run every", type: "number", unit: "min", help: "Aligned to midnight: 60 = on the hour. Restarts the add-on." },

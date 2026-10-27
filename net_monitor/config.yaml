@@ -1,5 +1,5 @@
 name: Net Monitor
-version: "1.7.2"
+version: "1.8.0"
 slug: net_monitor
 description: Hourly international speedtest and internet outage tracker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/net_monitor
@@ -92,9 +92,8 @@ options:
   valorant_max_ping_ms: 80
   # Phone notification (notify_service) when it turns good or bad to play.
   valorant_alerts: true
-  # The ID each server's ping starts with, captured from the game's own pings. Riot
-  # refreshes them every few days; a server that stops answering on every route needs
-  # a fresh capture.
+  # Fallback IDs for each server's ping. Fresh ones come from the Valorant Store Tracker
+  # add-on (sensor.valorant_ping_servers), which reads them from Riot every hour.
   valorant_ids:
     - mumbai:1bffcba4a432f110
     - singapore:ea619b142f32f9b7

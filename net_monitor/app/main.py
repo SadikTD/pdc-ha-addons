@@ -1657,10 +1657,12 @@ def status_payload():
 # ------------------------------------------------------------------ valorant
 # VALORANT pings each server with a 36-byte UDP packet to a Riot Direct route on port
 # 8181, which relays it over Riot's backbone to that server and back. The first 8 bytes
-# pick the server: an ID Riot hands the game, which expires after a few days, so they
-# live in the valorant_ids option and are refreshed from a capture of the game's own
-# pings. The reply starts with bytes 4-8 of the request and echoes everything from 8 on.
-VALORANT_REGIONS = {  # key: (name, routes the game pings it through)
+# pick the server: its SecurityHash and ObfuscatedIP from Riot's party service, which
+# Riot reissues every few days. The Valorant Store Tracker add-on holds the Riot login
+# and republishes them hourly (VALORANT_PING_ENTITY); valorant_ids is the fallback.
+# The reply starts with bytes 4-8 of the request and echoes everything from 8 on.
+VALORANT_PING_ENTITY = "sensor.valorant_ping_servers"
+VALORANT_REGIONS = {  # key: (name, routes the game pings it through when Riot's list isn't known)
     "mumbai": ("Mumbai", ["151.106.246.1", "151.106.248.1", "43.229.65.1", "162.249.75.1"]),
     "singapore": ("Singapore", ["151.106.248.1", "43.229.65.1"]),
     "hongkong": ("Hong Kong", ["151.106.248.1", "43.229.65.1"]),
@@ -1673,6 +1675,30 @@ VALORANT_REGIONS = {  # key: (name, routes the game pings it through)
 def listing(names):
     """"Mumbai", "Mumbai and Tokyo", "Mumbai, Tokyo and Sydney"."""
     return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+_valorant_cfg = {"at": 0, "servers": None}
+
+
+def valorant_servers():
+    """{server: (8-byte ID, [routes])}: Riot's latest list as published by the Valorant Store
+    Tracker add-on (checked every 5 minutes, last copy kept in the database so an HA
+    restart doesn't lose it), else the valorant_ids option and the built-in routes."""
+    if time.time() - _valorant_cfg["at"] > 300:
+        _valorant_cfg["at"] = time.time()
+        published = (((ha_get_state(VALORANT_PING_ENTITY) or {}).get("attributes") or {}).get("servers")
+                     if os.environ.get("SUPERVISOR_TOKEN") else None)
+        if published and published != db.get_setting("valorant_servers"):
+            db.set_setting("valorant_servers", published)
+            log.info("Valorant ping IDs refreshed from %s", VALORANT_PING_ENTITY)
+        _valorant_cfg["servers"] = published or db.get_setting("valorant_servers") or {}
+    ids, out = valorant_ids(), {}
+    for k, (_, routes) in VALORANT_REGIONS.items():
+        p = _valorant_cfg["servers"].get(k) or {}
+        hid = p.get("id") if isinstance(p.get("id"), str) and re.fullmatch(r"[0-9a-f]{16}", p["id"]) else None
+        rts = [r for r in p.get("routes") or [] if isinstance(r, str) and re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", r)]
+        out[k] = (bytes.fromhex(hid) if hid else ids[k], rts or routes)
+    return out
 
 
 def valorant_ids():
@@ -1689,8 +1715,7 @@ VALORANT_INTERVAL = 10
 VALORANT_SAMPLES = 3
 VALORANT_WINDOW = 12  # rounds (2 minutes) behind each verdict
 VALORANT_HOLD = 6     # rounds (1 minute) a new verdict must hold before it's alerted
-_valorant_jobs = [(k, e) for k, r in VALORANT_REGIONS.items() for e in r[1]]
-valorant_pool = ThreadPoolExecutor(max_workers=len(_valorant_jobs))
+valorant_pool = ThreadPoolExecutor(max_workers=16)
 valorant_lock = threading.Lock()
 valorant_live = deque(maxlen=360)  # the last hour of rounds, for the live view
 _valorant_usual = {}
@@ -1750,10 +1775,11 @@ def _mean(values):
 def valorant_round():
     """Pings every server through every route once; the result joins the live view."""
     t0 = time.time()
-    res = dict(zip(_valorant_jobs, valorant_pool.map(
-        lambda j, ids=valorant_ids(): valorant_probe(j[1], ids[j[0]]), _valorant_jobs)))
+    servers = valorant_servers()
+    jobs = [(k, e) for k, (_, routes) in servers.items() for e in routes]
+    res = dict(zip(jobs, valorant_pool.map(lambda j: valorant_probe(j[1], servers[j[0]][0]), jobs)))
     rnd = {"ts": t0, "regions": {}}
-    for k, (_, routes) in VALORANT_REGIONS.items():
+    for k, (_, routes) in servers.items():
         edges = [{"edge": e, "ping_ms": res[(k, e)][0], "jitter_ms": res[(k, e)][1], "loss_pct": res[(k, e)][2]}
                  for e in routes]
         main = min(edges, key=lambda x: (x["ping_ms"] is None, x["ping_ms"] or 0))
@@ -1830,10 +1856,11 @@ def valorant_after_round(m):
         log.warning("Valorant servers not answering on any route: %s", ", ".join(silent) or "none")
         if new:  # one alert per newly silent server, whatever valorant_alerts says: it's about the add-on
             names = listing([VALORANT_REGIONS[k][0] for k in new])
-            ha_notify("Valorant: Net Monitor needs a re-capture",
-                      f"{names} stopped answering for a minute while your internet works. Riot has most likely "
-                      "refreshed its server IDs, so Net Monitor needs a fresh capture: open Valorant and ask "
-                      "for a re-capture. It takes about 2 minutes.")
+            ha_notify("Valorant: server IDs out of date",
+                      f"{names} stopped answering for a minute while your internet works, so Riot has most "
+                      "likely reissued the server IDs. Net Monitor picks up new ones from the Valorant Store "
+                      "Tracker add-on within the hour; if this doesn't clear, check that Store Tracker is "
+                      "still signed in to Riot.")
         main_change = (OPTS["valorant_region"] in silent) != (OPTS["valorant_region"] in m["silent"])
         m["silent"] = set(silent)
         if main_change:

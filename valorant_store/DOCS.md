@@ -47,6 +47,13 @@ bundles. **Check now** in the header checks at once. Failed checks retry after 5
 
 Each wishlist skin is alerted once per store (and once per Night Market).
 
+## Valorant ping servers for Net Monitor
+
+Every hour it also reads the Valorant game servers' ping IDs and routes from Riot (the
+same list the game uses) and publishes them as `sensor.valorant_ping_servers`. Net
+Monitor's Valorant section reads that sensor, so its pings keep working when Riot
+reissues the IDs. It needs nothing extra: it uses the same Riot login as the store.
+
 ## Options
 
 | Option | Default | |

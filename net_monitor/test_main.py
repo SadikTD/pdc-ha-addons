@@ -94,6 +94,12 @@ assert "tokyo" not in m.valorant_stale(tokyo_ok) and "mumbai" in m.valorant_stal
 assert m.valorant_stale(silent[:-1] + tokyo_ok[-1:]) == [k for k in m.VALORANT_REGIONS if k != "tokyo"]
 m.state.online = False
 assert m.valorant_stale(silent) == []  # the internet is down: that has its own alerts
+# Riot's list from Valorant Store Tracker wins over the fallback; junk in it is ignored.
+m._valorant_cfg.update(at=m.time.time(), servers={"mumbai": {"id": "b20829dde632f111", "routes": ["151.106.246.1"]},
+                                                   "tokyo": {"id": "not-hex", "routes": ["evil.example"]}})
+sv = m.valorant_servers()
+assert sv["mumbai"] == (bytes.fromhex("b20829dde632f111"), ["151.106.246.1"])
+assert sv["tokyo"] == (m.valorant_ids()["tokyo"], m.VALORANT_REGIONS["tokyo"][1])
 m.OPTS["valorant_ids"] = ["mumbai:00112233445566ff"]
 assert m.valorant_ids()["mumbai"] == bytes.fromhex("00112233445566ff") and len(m.valorant_ids()) == 6
 print("valorant history ok")

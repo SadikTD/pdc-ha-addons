@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sqlite3
+import struct
 import threading
 import time
 import urllib.error
@@ -745,6 +746,50 @@ def checker_loop():
         wake.clear()
 
 
+# ------------------------------------------------------------------ ping servers for Net Monitor
+# Net Monitor pings the Valorant servers the way the game does. Each ping starts with the
+# server's SecurityHash and ObfuscatedIP from Riot's party service, which Riot reissues every
+# few days, so this add-on (which holds the Riot login) republishes them every hour as a
+# Home Assistant sensor for Net Monitor to read.
+PING_ENTITY = "sensor.valorant_ping_servers"
+PING_REFRESH_S = 3600
+
+
+def ping_servers(session):
+    """{server: {"id": 16 hex chars, "routes": [ip, ...]}} for every game server in the region."""
+    region = AUTH.get("region") or "ap"
+    url = f"https://glz-{region}-1.{session['shard']}.a.pvp.net/parties/v1/parties/customgameconfigs"
+    info = (_check(*http("GET", url, session["headers"]), "Ping servers") or {}).get("GamePodPingServiceInfo") or {}
+    out = {}
+    for pod, v in info.items():
+        m = re.search(r"-gp-([a-z]+)-\d+$", pod)  # aresriot.aws-aps1-prod.ap-gp-mumbai-1 -> mumbai
+        if not m or not isinstance(v.get("SecurityHash"), int) or not isinstance(v.get("ObfuscatedIP"), int):
+            continue
+        routes = v.get("PingProxyAddresses") or [v.get("PingProxyAddress")]
+        out[m.group(1)] = {"id": struct.pack(">II", v["SecurityHash"] & 0xFFFFFFFF, v["ObfuscatedIP"] & 0xFFFFFFFF).hex(),
+                           "routes": [a.rsplit(":", 1)[0] for a in routes if a]}
+    return out
+
+
+def ping_loop():
+    while True:
+        wait = PING_REFRESH_S
+        try:
+            servers = ping_servers(sign_in())
+            if servers:
+                _supervisor("POST", f"/core/api/states/{PING_ENTITY}", {"state": len(servers), "attributes": {
+                    "friendly_name": "Valorant ping servers", "icon": "mdi:server-network", "servers": servers,
+                    "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}})
+                log.info("Published %d Valorant ping servers for Net Monitor", len(servers))
+        except RiotError as e:
+            log.warning("Couldn't refresh Valorant ping servers: %s", e)
+            wait = PING_REFRESH_S if e.kind == "expired" else 600
+        except Exception:
+            log.exception("Couldn't refresh Valorant ping servers")
+            wait = 600
+        time.sleep(wait)
+
+
 # ------------------------------------------------------------------ dashboard data
 
 def wishlist_payload(snaps):
@@ -1000,6 +1045,7 @@ def main():
     log.info("Valorant Store Tracker starting; wishlist: %d skin(s); WhatsApp %s",
              len(SETTINGS["wishlist"]), "on" if whatsapp_ready() else "not configured")
     threading.Thread(target=checker_loop, daemon=True, name="checker").start()
+    threading.Thread(target=ping_loop, daemon=True, name="ping").start()
     server = ThreadingHTTPServer((os.environ.get("VALSTORE_BIND", "0.0.0.0"), HTTP_PORT), Handler)
     log.info("Dashboard listening on port %s (Ingress)", HTTP_PORT)
     server.serve_forever()

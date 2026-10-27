@@ -172,6 +172,32 @@ def test_owned_skins_are_not_alerted():
     assert main.owned_skins() == set()
 
 
+def test_ping_servers():
+    # Riot's party service -> the 8-byte ID each Valorant ping starts with (verified 27 Oct 2026:
+    # SecurityHash 2986879453 + ObfuscatedIP 3862098193 got replies from Mumbai).
+    seen = []
+
+    def fake_http(method, url, headers=None, body=None, timeout=30):
+        seen.append(url)
+        return 200, {}, {"GamePodPingServiceInfo": {
+            "aresriot.aws-aps1-prod.ap-gp-mumbai-1": {"SecurityHash": 2986879453, "ObfuscatedIP": 3862098193,
+                                                      "PingProxyAddress": "151.106.248.1:8181",
+                                                      "PingProxyAddresses": ["151.106.246.1:8181", "43.229.65.1:8181"]},
+            "aresriot.aws-apse1-prod.ap-gp-singapore-1": {"SecurityHash": -1, "ObfuscatedIP": 1,
+                                                          "PingProxyAddress": "43.229.65.1:8181"},
+            "aresriot.aws-weird": {"SecurityHash": 1, "ObfuscatedIP": 2}}}
+    real, main.http = main.http, fake_http
+    main.AUTH["region"] = "ap"
+    try:
+        out = main.ping_servers({"shard": "ap", "headers": {}})
+    finally:
+        main.http = real
+    assert seen == ["https://glz-ap-1.ap.a.pvp.net/parties/v1/parties/customgameconfigs"]
+    assert out["mumbai"] == {"id": "b20829dde632f111", "routes": ["151.106.246.1", "43.229.65.1"]}
+    assert out["singapore"] == {"id": "ffffffff00000001", "routes": ["43.229.65.1"]}
+    assert set(out) == {"mumbai", "singapore"}
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
