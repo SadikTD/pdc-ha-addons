@@ -419,6 +419,7 @@ class HAWebSocket:
         reply = self.recv(30)
         if reply.get("type") != "auth_ok":
             raise ConnectionError(f"auth failed: {reply}")
+        self.sock.settimeout(90)  # select() paces idle waits; this only bounds a frame that stalls halfway
 
     def _fill(self):
         chunk = self.sock.recv(65536)
@@ -546,6 +547,7 @@ class Tracker:
         self.persons = {}
         self.ha_connected = False
         self.caught_up = False
+        self.link_lost = None
         self.recent = deque(maxlen=400)
 
     def save(self):
@@ -1113,12 +1115,13 @@ def ha_loop():
                 with tracker.lock:
                     tracker.handle(ts, to["entity_id"], to["state"], to.get("attributes"), to.get("context"), live=True)
         except Exception as e:
-            log.warning("Home Assistant link down: %s", e)
+            log.warning("Home Assistant link down: %s", e, exc_info=not isinstance(e, ConnectionError))
         finally:
             if ws:
                 ws.close()
             with tracker.lock:
                 tracker.ha_connected = tracker.caught_up = False
+                tracker.link_lost = time.time()
                 tracker.save()
         time.sleep(delay)
         delay = min(60, delay * 2)
@@ -1367,7 +1370,7 @@ STATE_LABEL = {"on": "Power on", "outage": "Power cut", "off": "Breaker off", "t
 
 def live_state():
     t = tracker
-    if not t.ha_connected:
+    if not t.ha_connected and not (t.link_lost and time.time() - t.link_lost < 60):
         return "unknown", t.heartbeat, None
     if t.avail is False:
         return ("outage" if t.outage_id else "offline"), t.unavail_since, None
@@ -1897,7 +1900,8 @@ def status_payload():
     probe = ha_get_state(ENT["problem"]) if tracker.ha_connected else None
     return {
         "now": now, "state": state, "label": STATE_LABEL[state], "since": since, "off_event": off_ev,
-        "avail": avail, "relay": relay, "readings": cur, "ha_connected": tracker.ha_connected,
+        "avail": avail, "relay": relay, "readings": cur,
+        "ha_connected": tracker.ha_connected or bool(tracker.link_lost and now - tracker.link_lost < 60),
         "today": today, "compare": comparisons(), "bill": bill, "prepaid": p, "prediction": prediction(),
         "base_w": base_load(), "spark": spark(60), "currency": OPTS["currency"],
         "problem_state": (probe or {}).get("state"), "auto_restore": OPTS["auto_restore"],

@@ -1,5 +1,5 @@
 name: Electricity Monitor
-version: "1.1.0"
+version: "1.1.1"
 slug: electricity_monitor
 description: Power cuts, breaker trips with their reason, usage, bill and prepaid balance from your smart breaker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/electricity_monitor
