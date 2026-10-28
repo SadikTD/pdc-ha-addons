@@ -88,7 +88,7 @@ DEFAULT_OPTIONS = {
     "tariff_slabs": ["75:5.26", "200:8.50", "300:9.10", "400:9.62", "600:15.01", "0:17.35"],
     "lifeline_units": 50,
     "lifeline_rate": 4.63,
-    "sanctioned_load_kw": 2.0,
+    "sanctioned_load_kw": 4.0,
     "demand_charge_per_kw": 42.0,
     "meter_rent": 40.0,
     "vat_percent": 5.0,
@@ -184,6 +184,8 @@ class DB:
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             """
         )
+        if "details" not in {r[1] for r in self.conn.execute("PRAGMA table_info(prepaid)")}:
+            self.conn.execute("ALTER TABLE prepaid ADD COLUMN details TEXT")  # 1.1: the recharge SMS split
         self.conn.commit()
 
     def execute(self, sql, params=()):
@@ -1443,7 +1445,8 @@ def timeline(lo, hi, buckets):
 
 def monitored_days(days):
     lo = day_start(time.time()) - (days - 1) * 86400
-    rows = db.query("SELECT DISTINCT CAST(ts / 3600 AS INTEGER) * 3600 AS h FROM samples WHERE ts >= ?", (lo,))
+    rows = db.query("SELECT DISTINCT CAST(ts / 3600 AS INTEGER) * 3600 AS h FROM samples WHERE ts >= ? "
+                    "AND relay IS NOT NULL", (lo,))
     return sorted({day_start(r["h"]) for r in rows})
 
 
@@ -1502,38 +1505,106 @@ def calendar_days(days):
     return list(out.values())
 
 
-def avg_rate(units):
-    """Average price per unit incl. VAT at a month's usage level."""
-    if units <= 0:
-        return logic.parse_slabs(OPTS["tariff_slabs"])[0][1] * (1 + OPTS["vat_percent"] / 100)
-    cost = logic.energy_cost(units, logic.parse_slabs(OPTS["tariff_slabs"]), OPTS["lifeline_units"], OPTS["lifeline_rate"])[0]
-    return cost / units * (1 + OPTS["vat_percent"] / 100)
+def ecost(units):
+    """Plain slab energy charge for a month's running total (what the meter deducts)."""
+    return logic.energy_cost(units, logic.parse_slabs(OPTS["tariff_slabs"]), OPTS["lifeline_units"], OPTS["lifeline_rate"])[0]
 
 
-def usage(period, lo, hi):
-    rows = db.query("SELECT hour, kwh FROM energy_hourly WHERE hour >= ? AND hour < ? ORDER BY hour", (lo, hi))
-    fmt = {"hour": "%Y-%m-%d %H", "day": "%Y-%m-%d", "month": "%Y-%m"}[period]
-    groups = {}
+def cash():
+    """Taka paid per taka of energy (VAT in, rebate back)."""
+    return logic.cash_factor(bill_cfg())
+
+
+def unit_price(units=None):
+    """What the next unit costs in cash right now (slab rate with VAT, less rebate)."""
+    units = month_units() if units is None else units
+    rate = logic.slab_position(units, logic.parse_slabs(OPTS["tariff_slabs"]), OPTS["lifeline_units"], OPTS["lifeline_rate"])[0]
+    return rate * cash()
+
+
+def first_data():
+    return db.scalar("SELECT MIN(hour) FROM energy_hourly")
+
+
+def hour_costs(lo, hi):
+    """[(hour, kWh, energy taka)] for the hours starting in [lo, hi). Each hour is priced at
+    the slab the month's running total was in at the time, exactly as the meter charges."""
+    rows = db.query("SELECT hour, kwh FROM energy_hourly WHERE hour >= ? AND hour < ? ORDER BY hour",
+                    (month_start(lo), hi))
+    out, cum, cur_m, c = [], 0.0, None, cal()
     for r in rows:
-        lt = time.localtime(r["hour"])
-        k = time.strftime(fmt, lt)
-        if period == "hour":
-            start = r["hour"]
-        elif period == "day":
-            start = day_start(r["hour"])
-        else:
-            start = month_start(r["hour"])
-        g = groups.setdefault(k, {"ts": start, "kwh": 0.0, "month": time.strftime("%Y-%m", lt)})
-        g["kwh"] += r["kwh"] * cal()
-    rate_cache = {}
-    for g in groups.values():
-        if g["month"] not in rate_cache:
-            y, m = (int(x) for x in g["month"].split("-"))
-            a, b = month_bounds(y, m)
-            rate_cache[g["month"]] = avg_rate(kwh_between(a, b))
-        g["cost"] = g["kwh"] * rate_cache[g["month"]]
-    out = sorted(groups.values(), key=lambda g: g["ts"])
-    return {"buckets": out, "total": sum(g["kwh"] for g in out), "cost": sum(g["cost"] for g in out)}
+        ms = month_start(r["hour"])
+        if ms != cur_m:
+            cur_m, cum = ms, 0.0
+        k = r["kwh"] * c
+        spent = ecost(cum + k) - ecost(cum)
+        cum += k
+        if r["hour"] >= lo:
+            out.append((r["hour"], k, spent))
+    return out
+
+
+PERIODS = ("hour", "day", "week", "month")
+
+
+def bucket_start(ts, period):
+    if period == "hour":
+        return int(ts // 3600 * 3600)
+    if period == "day":
+        return int(day_start(ts))
+    if period == "week":
+        d = day_start(ts)
+        return int(day_start(d - time.localtime(d).tm_wday * 86400 + 3600))
+    return int(month_start(ts))
+
+
+def next_bucket(ts, period):
+    if period == "hour":
+        return ts + 3600
+    if period == "day":
+        return int(day_start(ts + 90000))
+    if period == "week":
+        return int(day_start(ts + 7 * 86400 + 3600))
+    lt = time.localtime(ts)
+    return int(month_bounds(lt.tm_year, lt.tm_mon)[1])
+
+
+def auto_period(lo, hi):
+    span = hi - lo
+    return "hour" if span <= 2 * 86400 + 3600 else "day" if span <= 62 * 86400 else "week" if span <= 190 * 86400 else "month"
+
+
+def usage(lo, hi, period="auto"):
+    """Energy and cash cost in [lo, hi) per bucket, with how much of each bucket has data."""
+    if period not in PERIODS:
+        period = auto_period(lo, hi)
+    now = time.time()
+    hi_eff = min(hi, now)
+    buckets, index, t = [], {}, bucket_start(lo, period)
+    while t < hi and len(buckets) < 2000:
+        n = next_bucket(t, period)
+        exp = max(0.0, (min(n, hi_eff) - max(t, lo)) / 3600)
+        b = {"ts": t, "end": n, "kwh": 0.0, "cost": 0.0, "hours": 0, "expected": exp, "future": t >= now}
+        index[t] = b
+        buckets.append(b)
+        t = n
+    cf = cash()
+    for hour, k, c in hour_costs(lo, hi):
+        b = index.get(bucket_start(hour, period))
+        if b:
+            b["kwh"] += k
+            b["cost"] += c * cf
+            b["hours"] += 1
+    have = sum(b["hours"] for b in buckets)
+    expected = sum(b["expected"] for b in buckets)
+    for b in buckets:
+        b["coverage"] = min(1.0, b["hours"] / b["expected"]) if b["expected"] >= 1 else None
+    total = sum(b["kwh"] for b in buckets)
+    cost = sum(b["cost"] for b in buckets)
+    days = max(1 / 24, have / 24)
+    return {"period": period, "from": lo, "to": hi, "buckets": buckets, "total": total, "cost": cost,
+            "coverage": min(1.0, have / expected) if expected >= 1 else None, "per_day": total / days,
+            "cost_per_day": cost / days, "data_hours": have, "first_data": first_data()}
 
 
 def base_load(days=7):
@@ -1552,9 +1623,13 @@ def comparisons():
     m0 = month_start(now)
     pm0 = month_start(m0 - 86400)
     elapsed_m = now - m0
+    costs = [(h, c) for h, _, c in hour_costs(d0 - 86400, now + 1)]
+    cf = cash()
+    day_cost = lambda a, b: sum(c for h, c in costs if a <= h < b) * cf
     return {
         "today": kwh_between(d0, now + 1), "yesterday_same": kwh_between(d0 - 86400, now - 86400 + 1),
         "yesterday": kwh_between(d0 - 86400, d0),
+        "today_cost": day_cost(d0, now + 1), "yesterday_cost": day_cost(d0 - 86400, d0),
         "week": kwh_between(w0, now + 1), "last_week_same": kwh_between(w0 - 7 * 86400, now - 7 * 86400 + 1),
         "month": kwh_between(m0, now + 1), "last_month_same": kwh_between(pm0, min(m0, pm0 + elapsed_m) + 1),
         "last_month": kwh_between(pm0, m0),
@@ -1562,73 +1637,152 @@ def comparisons():
     }
 
 
+def recharges(lo=0, hi=None):
+    """Recharges with their split: from the pasted SMS when there is one, else worked out
+    (the month's first recharge pays the fixed charges)."""
+    hi = hi or time.time() + 86400
+    out, months_paid = [], set()
+    for r in db.query("SELECT * FROM prepaid WHERE kind='recharge' ORDER BY ts"):
+        d = json.loads(r.get("details") or "{}")
+        mk = time.strftime("%Y-%m", time.localtime(r["ts"]))
+        if d.get("energy") is not None:
+            bd = {k: float(d.get(k) or 0.0) for k in ("vat", "meter_rent", "demand", "rebate", "energy")}
+            bd.update(amount=r["amount"], source="sms")
+        else:
+            bd = logic.recharge_breakdown(r["amount"], mk not in months_paid, bill_cfg())
+            bd["source"] = "estimated"
+        months_paid.add(mk)
+        if lo <= r["ts"] < hi:
+            out.append({**r, "details": d, "breakdown": bd})
+    return out
+
+
 def bill_payload(year, month):
     lo, hi = month_bounds(year, month)
     now = time.time()
-    units = kwh_between(lo, min(hi, now + 1))
-    b = logic.month_bill(units, bill_cfg())
+    end = min(hi, now)
+    cfg = bill_cfg()
+    hc = hour_costs(lo, end + 1) if end > lo else []
+    units = sum(k for _, k, _ in hc)
+    b = logic.month_bill(units, cfg)
     slabs = logic.parse_slabs(OPTS["tariff_slabs"])
     rate, limit, nxt = logic.slab_position(units, slabs, OPTS["lifeline_units"], OPTS["lifeline_rate"])
-    out = {"month": f"{year:04d}-{month:02d}", "units": units, "bill": b, "rate": rate, "next_limit": limit,
-           "next_rate": nxt, "current": lo <= now < hi,
-           "slabs": [{"upto": u, "rate": r} for u, r in slabs], "lifeline": [OPTS["lifeline_units"], OPTS["lifeline_rate"]]}
-    if lo <= now < hi:
-        days_total = (hi - lo) / 86400
-        recent = kwh_between(now - 7 * 86400, now + 1) / 7
+    expected = max(0.0, (end - lo) / 3600)
+    coverage = min(1.0, len(hc) / expected) if expected >= 1 else None
+    current = lo <= now < hi
+    rc = recharges(lo, hi)
+    plo, phi = month_bounds(year - (month == 1), 12 if month == 1 else month - 1)
+    prev_units = kwh_between(plo, min(phi, plo + (end - lo)) + 1) if current else kwh_between(plo, phi)
+    out = {"month": f"{year:04d}-{month:02d}", "from": lo, "to": hi, "units": units, "bill": b, "rate": rate,
+           "next_limit": limit, "next_rate": nxt, "current": current, "future": lo > now,
+           "coverage": coverage, "partial": coverage is not None and coverage < 0.95 and not current,
+           "first_data": hc[0][0] if hc else None, "days_in_month": round((hi - lo) / 86400),
+           "daily": usage(lo, hi, "day")["buckets"], "energy_spent": ecost(units), "cash_factor": cash(),
+           "previous": {"month": time.strftime("%Y-%m", time.localtime(plo)), "units": prev_units,
+                        "total": logic.month_bill(prev_units, cfg)["total"], "same_point": current},
+           "recharges": rc, "recharged": {k: sum(r["breakdown"].get(k, 0) for r in rc)
+                                          for k in ("amount", "energy", "vat", "meter_rent", "demand", "rebate")},
+           "slabs": [{"upto": u, "rate": r} for u, r in slabs], "lifeline": [OPTS["lifeline_units"], OPTS["lifeline_rate"]],
+           "sanctioned_kw": OPTS["sanctioned_load_kw"], "demand_rate": OPTS["demand_charge_per_kw"],
+           "vat_percent": OPTS["vat_percent"], "rebate_percent": OPTS["prepaid_rebate_percent"]}
+    if out["partial"] and coverage:
+        out["estimated_units"] = units / coverage
+        out["estimated"] = logic.month_bill(units / coverage, cfg)
+    if current:
+        recent = hour_costs(now - 7 * 86400, now + 1)
+        per_day = sum(k for _, k, _ in recent) / max(1.0, len(recent) / 24) if recent else 0
         days_left = (hi - now) / 86400
-        proj = units + recent * days_left
-        out["projected_units"] = proj
-        out["projected"] = logic.month_bill(proj, bill_cfg())
-        out["per_day"] = recent
-        out["days_total"] = days_total
-        if limit and recent > 0:
-            out["limit_in_days"] = (limit - units) / recent
+        proj = units + per_day * days_left
+        out.update(projected_units=proj, projected=logic.month_bill(proj, cfg), per_day=per_day,
+                   days_left=days_left, days_elapsed=(now - lo) / 86400)
+        if limit and per_day > 0:
+            out["limit_in_days"] = (limit - units) / per_day
             out["limit_at"] = now + out["limit_in_days"] * 86400 if out["limit_in_days"] <= days_left else None
     return out
 
 
+def months_list():
+    first = first_data()
+    if not first:
+        return []
+    now = time.time()
+    out, t = [], month_start(first)
+    while t <= now:
+        lt = time.localtime(t)
+        lo, hi = month_bounds(lt.tm_year, lt.tm_mon)
+        end = min(hi, now)
+        hc = hour_costs(lo, end + 1)
+        units = sum(k for _, k, _ in hc)
+        cov = min(1.0, len(hc) / max(1.0, (end - lo) / 3600))
+        current = lo <= now < hi
+        s = summary(lo, end)
+        out.append({"month": time.strftime("%Y-%m", lt), "kwh": units, "bill": logic.month_bill(units, bill_cfg())["total"],
+                    "coverage": cov, "partial": cov < 0.95 and not current, "current": current,
+                    "estimated_bill": logic.month_bill(units / cov, bill_cfg())["total"] if 0 < cov < 0.95 and not current else None,
+                    "per_day": units / max(1 / 24, len(hc) / 24), "outages": s["outages"], "outage_s": s["outage_s"],
+                    "trips": s["trips"], "recharged": sum(r["amount"] for r in recharges(lo, hi))})
+        t = hi
+    return out[::-1]
+
+
 def prepaid_status():
     sync = db.one("SELECT * FROM prepaid WHERE kind='sync' ORDER BY ts DESC LIMIT 1")
-    history = db.query("SELECT * FROM prepaid ORDER BY ts DESC LIMIT 60")
-    fixed = logic.monthly_fixed(bill_cfg())
-    m0 = month_start(time.time())
-    paid_this_month = db.one("SELECT 1 FROM prepaid WHERE kind='recharge' AND ts >= ?", (m0,)) is not None
-    base = {"configured": bool(sync), "history": history, "monthly_fixed": fixed,
-            "fixed_pending": not paid_this_month, "balance": None, "low_alert": OPTS["low_balance_alert"],
-            "low_days": OPTS["low_balance_days"]}
+    cfg = bill_cfg()
+    now = time.time()
+    m0 = month_start(now)
+    rc_all = recharges()
+    fixed_pending = not any(r["ts"] >= m0 for r in rc_all)
+    week = hour_costs(now - 7 * 86400, now + 1)
+    per_day = (sum(c for _, _, c in week) / max(1.0, len(week) / 24)) if week else None
+    history = db.query("SELECT * FROM prepaid ORDER BY ts DESC LIMIT 200")
+    by_id = {r["id"]: r for r in rc_all}
+    for h in history:
+        h["details"] = json.loads(h.get("details") or "{}")
+        if h["id"] in by_id:
+            h["breakdown"] = by_id[h["id"]]["breakdown"]
+    base = {"configured": bool(sync), "history": history, "fixed_pending": fixed_pending,
+            "demand": OPTS["sanctioned_load_kw"] * OPTS["demand_charge_per_kw"], "meter_rent": OPTS["meter_rent"],
+            "balance": None, "per_day": per_day, "per_day_cash": per_day * cash() if per_day else None,
+            "low_alert": OPTS["low_balance_alert"], "low_days": OPTS["low_balance_days"], "unit_price": unit_price(),
+            "cash_factor": cash(), "last_recharge": rc_all[-1] if rc_all else None, "month_units": month_units(now)}
     if not sync:
         return base
-    now = time.time()
-    credit = 0.0
-    for r in db.query("SELECT * FROM prepaid WHERE kind='recharge' AND ts > ? ORDER BY ts", (sync["ts"],)):
-        first = not db.one("SELECT 1 FROM prepaid WHERE kind='recharge' AND ts >= ? AND ts < ?",
-                           (month_start(r["ts"]), r["ts"]))
-        credit += logic.recharge_credit(r["amount"], first, bill_cfg())
-    cost, t = 0.0, sync["ts"]
-    while t < now:
-        m_lo = month_start(t)
-        m_hi = month_bounds(time.localtime(t).tm_year, time.localtime(t).tm_mon)[1]
-        seg_end = min(now, m_hi)
-        before = kwh_between(m_lo, t)
-        after = kwh_between(m_lo, seg_end + 1)
-        cost += logic.usage_cost(before, after, bill_cfg())
-        t = m_hi
-    balance = sync["amount"] + credit - cost
-    week = kwh_between(now - 7 * 86400, now + 1)
-    m_units = month_units(now)
-    per_day = (logic.usage_cost(m_units, m_units + week, bill_cfg()) / 7) if week > 0 else None
+    credit = sum(r["breakdown"]["energy"] for r in rc_all if r["ts"] > sync["ts"])
+    spent = sum(c for _, _, c in hour_costs(sync["ts"], now + 1))
+    balance = sync["amount"] + credit - spent
     days_left = max(0.0, balance / per_day) if per_day else None
-    base.update({"balance": balance, "synced_at": sync["ts"], "synced_balance": sync["amount"], "spent": cost,
-                 "credit": credit, "per_day": per_day, "days_left": days_left,
-                 "runs_out": now + days_left * 86400 if days_left is not None and days_left > 0 else None})
+    lt = time.localtime(now)
+    m_end = month_bounds(lt.tm_year, lt.tm_mon)[1]
+    need_energy = max(0.0, (per_day or 0) * (m_end - now) / 86400 - balance)
+    base.update({"balance": balance, "synced_at": sync["ts"], "synced_balance": sync["amount"], "spent": spent,
+                 "credit": credit, "days_left": days_left,
+                 "runs_out": now + days_left * 86400 if days_left is not None and days_left > 0 else None,
+                 "to_month_end": logic.recharge_for(need_energy, fixed_pending, cfg) if need_energy > 0 else 0})
     return base
+
+
+def recharge_calc(amount):
+    """What a recharge would give right now, and how long it would last."""
+    p = prepaid_status()
+    bd = logic.recharge_breakdown(amount, p["fixed_pending"], bill_cfg())
+    m = p["month_units"]
+    lo_u, hi_u = 0.0, 5000.0
+    for _ in range(50):  # units the credit buys from here, slab steps included
+        mid = (lo_u + hi_u) / 2
+        if ecost(m + mid) - ecost(m) > bd["energy"]:
+            hi_u = mid
+        else:
+            lo_u = mid
+    return {**bd, "first_of_month": p["fixed_pending"], "units": lo_u,
+            "days": bd["energy"] / p["per_day"] if p.get("per_day") else None}
 
 
 def quality(lo, hi):
     span = hi - lo
     group = 60 if span <= 2 * 86400 else 3600 if span <= 31 * 86400 else 86400
+    off = time.localtime().tm_gmtoff  # whole local days
     rows = db.query(
-        f"""SELECT CAST(ts / {group} AS INTEGER) * {group} AS t, MIN(v_min) AS v_min, SUM(v_avg * secs) / SUM(secs) AS v_avg,
+        f"""SELECT CAST((ts + {off}) / {group} AS INTEGER) * {group} - {off} AS t, MIN(v_min) AS v_min, SUM(v_avg * secs) / SUM(secs) AS v_avg,
             MAX(v_max) AS v_max, SUM(w_avg * secs) / SUM(secs) AS w_avg, MAX(w_max) AS w_max,
             SUM(pf_avg * secs) / SUM(secs) AS pf, MIN(hz_min) AS hz_min, MAX(hz_max) AS hz_max, MAX(t_max) AS t_max,
             MAX(a_max) AS a_max
@@ -1698,7 +1852,7 @@ def appliances_payload(days=30):
     apps = db.query("SELECT a.id, a.name, a.watts, COUNT(r.id) AS runs, SUM(r.kwh) AS kwh, SUM(r.end - r.start) AS secs, "
                     "MAX(r.end) AS last FROM appliances a LEFT JOIN appliance_runs r ON r.appliance_id = a.id "
                     "AND r.start >= ? GROUP BY a.id ORDER BY kwh DESC", (lo,))
-    rate = avg_rate(month_units())
+    rate = unit_price()
     for a in apps:
         a["kwh"] = (a["kwh"] or 0) * cal()
         a["cost"] = a["kwh"] * rate
@@ -1750,7 +1904,8 @@ def status_payload():
         "open_outage": get_event(tracker.outage_id), "unavail_since": tracker.unavail_since,
         "recent": events_in(now - 3 * 86400, now, ["outage", "off", "fault", "wifi", "gap"])[:12],
         "last_outage": next(iter(events_in(0, now, ["outage"])), None),
-        "min_outage_s": OPTS["min_outage_seconds"],
+        "min_outage_s": OPTS["min_outage_seconds"], "last24": summary(now - 86400, now),
+        "unit_price": unit_price(),
     }
 
 
@@ -1777,7 +1932,7 @@ def outage_report(eid):
 
 def period_report(title, lo, hi, prev_lo=None):
     s = summary(lo, hi)
-    u = usage("day", lo, hi)
+    u = usage(lo, hi, "day")
     q = quality(lo, hi)
     lines = [f"*{title}*", f"Used: {s['kwh']:.1f} kWh (≈ {money(u['cost'])})"]
     if prev_lo is not None:
@@ -1803,9 +1958,14 @@ def monthly_report(year, month):
     lo, hi = month_bounds(year, month)
     plo = month_bounds(year - (month == 1), 12 if month == 1 else month - 1)[0]
     text = period_report(f"Electricity in {time.strftime('%B %Y', time.localtime(lo))}", lo, hi, plo)
-    b = bill_payload(year, month)["bill"]
-    text += (f"\n\nEstimated bill: {money(b['total'])}\n  energy {money(b['energy'])}, demand {money(b['demand'])}, "
-             f"meter rent {money(b['meter_rent'])}, VAT {money(b['vat'])}")
+    bp = bill_payload(year, month)
+    b = bp["bill"]
+    text += (f"\n\nCost of the month: {money(b['total'])}\n  energy {money(b['energy'])}, demand {money(b['demand'])}, "
+             f"meter rent {money(b['meter_rent'])}, VAT {money(b['vat'])}, rebate -{money(b['rebate'])}")
+    if bp["recharged"]["amount"]:
+        text += f"\nRecharged: {money(bp['recharged']['amount'])} in {len(bp['recharges'])} recharge(s)"
+    if bp["partial"]:
+        text += f"\n(Data covers {bp['coverage'] * 100:.0f}% of the month)"
     h = heatmap(31)
     worst = max(range(24), key=lambda i: h["odds"][i]) if h["outages"] else None
     if worst is not None and h["odds"][worst] > 0:
@@ -2092,25 +2252,65 @@ def control(body):
     return (200, {"ok": True}) if status in (200, 201) else (502, {"error": f"Home Assistant answered {status}"})
 
 
+def parse_sms(text):
+    p = logic.parse_token_sms(str(text or ""))
+    if not p:
+        return None
+    if p.get("when"):
+        y, mo, d, h, mi = p["when"]
+        p["ts"] = time.mktime((y, mo, d, h, mi, 0, 0, 0, -1))
+    if p.get("energy") is None:  # only the payment SMS: work the split out
+        first = not any(r["ts"] < (p.get("ts") or time.time()) and r["ts"] >= month_start(p.get("ts") or time.time())
+                        for r in recharges())
+        p.update({k: v for k, v in logic.recharge_breakdown(p["amount"], first, bill_cfg()).items() if k != "amount"})
+        p["estimated"] = True
+    return p
+
+
+DETAIL_KEYS = ("energy", "vat", "meter_rent", "demand", "rebate", "arrear", "sequence", "token", "meter", "trx")
+
+
 def prepaid_post(path, body):
     if path == "/api/prepaid/delete":
         db.execute("DELETE FROM prepaid WHERE id=?", (int(body["id"]),))
+        threading.Thread(target=publish_all, daemon=True).start()
         return 200, {"ok": True}
+    if path == "/api/prepaid/parse":
+        p = parse_sms(body.get("text"))
+        if not p:
+            return 400, {"error": "That doesn't look like a recharge SMS. Paste the BREB token message."}
+        return 200, p
+    details = {}
+    if body.get("sms"):
+        p = parse_sms(body["sms"])
+        if not p:
+            return 400, {"error": "That doesn't look like a recharge SMS. Paste the BREB token message."}
+        body = {**body, "amount": p["amount"], "ts": body.get("ts") or p.get("ts")}
+        if not p.get("estimated"):
+            details = {k: p[k] for k in DETAIL_KEYS if k in p}
+        else:
+            details = {k: p[k] for k in ("token", "trx", "meter", "sequence") if k in p}
     amount = float(body.get("amount"))
     ts = float(body.get("ts") or time.time())
     if not (0 <= amount <= 1e6) or ts > time.time() + 300:
-        return 400, {"error": "check the amount and time"}
+        return 400, {"error": "Check the amount and the time."}
     kind = "sync" if path.endswith("sync") else "recharge"
     if kind == "recharge" and amount < 1:
-        return 400, {"error": "enter the recharge amount"}
+        return 400, {"error": "Enter the recharge amount."}
+    if details.get("token"):
+        for r in db.query("SELECT details FROM prepaid WHERE kind='recharge' AND details IS NOT NULL"):
+            if json.loads(r["details"] or "{}").get("token") == details["token"]:
+                return 409, {"error": "This recharge (same token) is already saved."}
     note = None
     if kind == "sync":
         before = prepaid_status()
         if before.get("balance") is not None:
-            note = f"Estimate was {money(before['balance'])} ({'+' if amount - before['balance'] >= 0 else ''}{amount - before['balance']:.0f})"
-    db.execute("INSERT INTO prepaid(ts, kind, amount, note) VALUES(?,?,?,?)", (ts, kind, amount, note))
+            diff = amount - before["balance"]
+            note = f"Estimate was {money(before['balance'])} ({'+' if diff >= 0 else '-'}{OPTS['currency']}{abs(diff):,.0f})"
+    db.execute("INSERT INTO prepaid(ts, kind, amount, note, details) VALUES(?,?,?,?,?)",
+               (ts, kind, amount, note, json.dumps(details) if details else None))
     threading.Thread(target=publish_all, daemon=True).start()
-    return 200, {"ok": True, "status": prepaid_status()}
+    return 200, {"ok": True}
 
 
 # --------------------------------------------------------------------- http
@@ -2179,28 +2379,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, calendar_days(max(7, min(366, int(qs.get("days", [365])[0])))))
             if path == "/api/usage":
                 lo, hi = self._range(qs, 86400)
-                period = qs.get("period", ["hour"])[0]
-                if period not in ("hour", "day", "month"):
-                    raise ValueError("period")
-                span = hi - lo
-                prev = usage(period, lo - span, lo)
-                return self._send(200, {**usage(period, lo, hi), "previous": prev["total"], "previous_cost": prev["cost"]})
+                if hi <= lo or hi - lo > 5 * 366 * 86400:
+                    raise ValueError("pick a range of up to five years")
+                u = usage(lo, hi, qs.get("period", ["auto"])[0])
+                plo, phi = (float(qs["prev_from"][0]), float(qs["prev_to"][0])) if "prev_from" in qs else (lo - (hi - lo), lo)
+                prev = usage(plo, phi, u["period"])
+                s = summary(lo, min(hi, time.time()))
+                return self._send(200, {**u, "previous": {k: prev[k] for k in ("from", "to", "total", "cost", "coverage")},
+                                        "previous_buckets": [{"kwh": b["kwh"], "cost": b["cost"], "ts": b["ts"]} for b in prev["buckets"]],
+                                        "outages": s["outages"], "outage_s": s["outage_s"], "trips": s["trips"],
+                                        "base_w": base_load(), "unit_price": unit_price()})
             if path == "/api/bill":
                 y, m = (int(x) for x in qs.get("month", [time.strftime("%Y-%m")])[0].split("-"))
                 return self._send(200, bill_payload(y, m))
             if path == "/api/months":
-                rows = db.query("SELECT DISTINCT CAST(hour AS INTEGER) AS h FROM energy_hourly ORDER BY h")
-                months = sorted({time.strftime("%Y-%m", time.localtime(r["h"])) for r in rows}, reverse=True)
-                out = []
-                for mth in months[:36]:
-                    y, m = (int(x) for x in mth.split("-"))
-                    lo, hi = month_bounds(y, m)
-                    s = summary(lo, min(hi, time.time()))
-                    out.append({"month": mth, "kwh": s["kwh"], "bill": logic.month_bill(s["kwh"], bill_cfg())["total"],
-                                "outages": s["outages"], "outage_s": s["outage_s"], "trips": s["trips"]})
-                return self._send(200, out)
+                return self._send(200, months_list())
             if path == "/api/prepaid":
                 return self._send(200, prepaid_status())
+            if path == "/api/prepaid/calc":
+                amount = float(qs["amount"][0])
+                if not 0 < amount <= 1e6:
+                    raise ValueError("amount")
+                return self._send(200, recharge_calc(amount))
             if path == "/api/quality":
                 lo, hi = self._range(qs)
                 return self._send(200, quality(lo, hi))
@@ -2235,7 +2435,7 @@ class Handler(BaseHTTPRequestHandler):
                 lo = day_start(now) - (6 * 86400 if kind == "weekly" else 0)
                 return self._send(200, {"text": period_report("Electricity this week" if kind == "weekly"
                                                               else "Electricity today", lo, now, lo - (now - lo))})
-            if path in ("/api/export/events.csv", "/api/export/usage.csv"):
+            if path in ("/api/export/events.csv", "/api/export/usage.csv", "/api/export/bills.csv"):
                 lo, hi = self._range(qs, 365 * 86400)
                 return self._csv(path, lo, hi)
             self.send_error(404)
@@ -2315,13 +2515,23 @@ class Handler(BaseHTTPRequestHandler):
                 w.writerow([r["kind"], local(r["start"]), local(r["end"]) or "ongoing", round(r["duration_s"] / 60, 1),
                             r["cause_text"] or r["cause"] or "", r["confidence"] or "", r["detail"] or ""])
             name = "electricity-events.csv"
+        elif path.endswith("usage.csv"):
+            u = usage(lo, hi, (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("period") or ["auto"])[0])
+            fmt = {"hour": "%Y-%m-%d %H:00", "day": "%Y-%m-%d", "week": "week of %Y-%m-%d", "month": "%Y-%m"}[u["period"]]
+            w.writerow([u["period"], "kwh", f"cost_{OPTS['currency']}", "data_coverage_pct"])
+            for b in u["buckets"]:
+                if not b["future"]:
+                    w.writerow([time.strftime(fmt, time.localtime(b["ts"])), round(b["kwh"], 3), round(b["cost"], 2),
+                                "" if b["coverage"] is None else round(b["coverage"] * 100)])
+            name = f"electricity-usage-{u['period']}.csv"
         else:
-            w.writerow(["day", "kwh", "cost", "power_cuts", "power_cut_min", "trips"])
-            for d in calendar_days(max(7, min(366, int((hi - lo) / 86400) + 1))):
-                w.writerow([time.strftime("%Y-%m-%d", time.localtime(d["day"])), round(d["kwh"], 3),
-                            round(d["kwh"] * avg_rate(month_units(d["day"] + 86399)), 2), d["outages"],
-                            round(d["outage_min"]), d["trips"]])
-            name = "electricity-daily.csv"
+            w.writerow(["month", "kwh", "bill", "estimated_full_month_bill", "data_coverage_pct", "kwh_per_day",
+                        "recharged", "power_cuts", "power_cut_min", "trips"])
+            for m in months_list():
+                w.writerow([m["month"], round(m["kwh"], 1), round(m["bill"], 2), round(m["estimated_bill"], 2) if m["estimated_bill"] else "",
+                            round(m["coverage"] * 100), round(m["per_day"], 2), m["recharged"], m["outages"],
+                            round(m["outage_s"] / 60), m["trips"]])
+            name = "electricity-bills.csv"
         self._send(200, buf.getvalue(), "text/csv; charset=utf-8",
                    {"Content-Disposition": f'attachment; filename="{name}"'})
 

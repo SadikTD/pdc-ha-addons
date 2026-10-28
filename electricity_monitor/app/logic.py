@@ -3,6 +3,7 @@ Wi-Fi drops, guessing why the breaker switched off, appliance steps, outage odds
 tiny WebSocket frame codec. No I/O here, so test_logic.py can check all of it."""
 
 import os
+import re
 import struct
 
 # ------------------------------------------------------------------- tariff
@@ -56,35 +57,83 @@ def slab_position(units, slabs, lifeline_units=0, lifeline_rate=0):
     return slabs[-1][1], None, None
 
 
+# How a BREB prepaid recharge splits (checked against real token SMS): VAT is 5 % *inside*
+# the amount paid; meter rent and the demand charge come off the month's first recharge;
+# the 0.5 % rebate is worked out on (amount - VAT - rent); what's left is energy credit,
+# which the meter then spends at the plain slab rates (no VAT on top).
+#   3000 Tk, first of the month: VAT 142.86, rent 40, demand 168, rebate 14.02 -> 2663.16
+#   3000 Tk, later that month:   VAT 142.86,                     rebate 14.21 -> 2871.35
+
+def _fixed(cfg):
+    return cfg["sanctioned_load_kw"] * cfg["demand_charge_per_kw"], cfg["meter_rent"]
+
+
+def recharge_breakdown(amount, first_of_month, cfg):
+    """What a recharge of `amount` puts on the meter, line by line, like the token SMS."""
+    vat = amount * cfg["vat_percent"] / (100 + cfg["vat_percent"])
+    demand, rent = _fixed(cfg) if first_of_month else (0.0, 0.0)
+    r = cfg["prepaid_rebate_percent"]
+    rebate = (amount - vat - rent) * r / (100 + r)
+    return {"amount": amount, "vat": vat, "meter_rent": rent, "demand": demand, "rebate": rebate,
+            "energy": amount - vat - rent - demand + rebate}
+
+
+def recharge_for(energy, first_of_month, cfg):
+    """The recharge amount that buys `energy` taka of credit (inverse of recharge_breakdown)."""
+    demand, rent = _fixed(cfg) if first_of_month else (0.0, 0.0)
+    r = cfg["prepaid_rebate_percent"] / (100 + cfg["prepaid_rebate_percent"])
+    k = 100 / (100 + cfg["vat_percent"])
+    return ((energy + demand) / (1 + r) + rent) / k
+
+
+def cash_factor(cfg):
+    """Taka you pay per taka of energy the meter spends (VAT in, rebate back): ~1.045."""
+    return recharge_for(1.0, False, cfg)
+
+
 def month_bill(units, cfg):
-    """A month's bill: energy (stepped) + demand charge + meter rent, VAT on energy and
-    demand, prepaid rebate on energy. cfg keys as in the add-on options."""
+    """A month's real cost: the recharge needed for its energy plus the month's fixed
+    charges, split into the SMS lines. cfg keys as in the add-on options."""
     slabs = parse_slabs(cfg["tariff_slabs"])
     energy, rows = energy_cost(units, slabs, cfg["lifeline_units"], cfg["lifeline_rate"])
-    demand = cfg["sanctioned_load_kw"] * cfg["demand_charge_per_kw"]
-    vat = (energy + demand) * cfg["vat_percent"] / 100
-    rebate = energy * cfg["prepaid_rebate_percent"] / 100
-    rent = cfg["meter_rent"]
-    return {"units": units, "energy": energy, "rows": rows, "demand": demand, "meter_rent": rent,
-            "vat": vat, "rebate": rebate, "total": energy + demand + rent + vat - rebate}
+    total = recharge_for(energy, True, cfg)
+    b = recharge_breakdown(total, True, cfg)
+    return {"units": units, "energy": energy, "rows": rows, "demand": b["demand"], "meter_rent": b["meter_rent"],
+            "vat": b["vat"], "rebate": b["rebate"], "total": total}
 
 
 def usage_cost(units_before, units_after, cfg):
-    """What the meter takes from the prepaid balance for the units used between two points
-    of the same month (VAT on, rebate off)."""
+    """What the meter takes off the prepaid balance for the units used between two points of
+    the same month: plain slab rates, VAT and rebate were settled at the recharge."""
     slabs = parse_slabs(cfg["tariff_slabs"])
     a = energy_cost(units_before, slabs, cfg["lifeline_units"], cfg["lifeline_rate"])[0]
     b = energy_cost(units_after, slabs, cfg["lifeline_units"], cfg["lifeline_rate"])[0]
-    return (b - a) * (1 + cfg["vat_percent"] / 100) * (1 - cfg["prepaid_rebate_percent"] / 100)
+    return b - a
 
 
-def monthly_fixed(cfg):
-    """Demand charge (+VAT) and meter rent, taken from the month's first recharge."""
-    return cfg["sanctioned_load_kw"] * cfg["demand_charge_per_kw"] * (1 + cfg["vat_percent"] / 100) + cfg["meter_rent"]
+def parse_token_sms(text):
+    """Fields from BREB / Palli Bidyut recharge SMS (one or both messages pasted).
+    Returns {} if it doesn't look like one."""
+    def money(label):
+        m = re.search(label + r"\s*:?\s*(?:Tk\.?\s*)?(-?[\d,]+(?:\.\d+)?)", text, re.I)
+        return abs(float(m.group(1).replace(",", ""))) if m else None
 
-
-def recharge_credit(amount, first_of_month, cfg):
-    return amount - (monthly_fixed(cfg) if first_of_month else 0)
+    out = {"amount": money(r"Vending Amount") or money(r"Bill payment of Tk\.?"),
+           "energy": money(r"Energy Cost"), "meter_rent": money(r"Meter Rent"), "demand": money(r"Demand Charge"),
+           "vat": money(r"VAT"), "rebate": money(r"Rebate"), "arrear": money(r"Arrear Amount")}
+    m = re.search(r"Sequence\s*:?\s*(\d+)", text, re.I)
+    out["sequence"] = int(m.group(1)) if m else None
+    m = re.search(r"Token(?:\(s\))?\s*:?\s*((?:\d{4}-){4}\d{4})", text, re.I)
+    out["token"] = m.group(1) if m else None
+    m = re.search(r"Meter (?:No|Number)\s*:?\s*(\d{6,})", text, re.I)
+    out["meter"] = m.group(1) if m else None
+    m = re.search(r"Trx\s*ID\s*:?\s*([A-Z0-9]+)", text, re.I)
+    out["trx"] = m.group(1) if m else None
+    m = re.search(r"at\s+(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2}):(\d{2})", text)
+    out["when"] = [int(m.group(i)) for i in (3, 2, 1, 4, 5)] if m else None  # y, m, d, H, M (local)
+    if out["amount"] is None or (out["energy"] is None and out["token"] is None):
+        return {}
+    return {k: v for k, v in out.items() if v is not None}
 
 
 # ---------------------------------------------------------- power cut or Wi-Fi

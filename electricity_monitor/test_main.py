@@ -25,11 +25,39 @@ assert near(logic.energy_cost(700, slabs)[0], 75 * 5.26 + 125 * 8.5 + 100 * 9.1 
 assert logic.slab_position(396, slabs) == (9.62, 400, 15.01)
 assert logic.slab_position(650, slabs) == (17.35, None, None)
 cfg = m.bill_cfg()
+assert cfg["sanctioned_load_kw"] == 4
+# The real BREB token SMS: 3000 Tk on 5 Oct (first of the month), 3000 on 21 Oct, 2000 on 13 Aug.
+r = logic.recharge_breakdown(3000, True, cfg)
+assert near(r["vat"], 142.86) and r["demand"] == 168 and r["meter_rent"] == 40 and near(r["rebate"], 14.02) and near(r["energy"], 2663.16)
+r = logic.recharge_breakdown(3000, False, cfg)
+assert near(r["vat"], 142.86) and r["demand"] == 0 and near(r["rebate"], 14.21) and near(r["energy"], 2871.35, 0.011)
+assert near(logic.recharge_breakdown(2000, True, cfg)["energy"], 1706.04)
+assert near(logic.recharge_for(2663.16, True, cfg), 3000) and near(logic.recharge_for(2871.355, False, cfg), 3000)
 b = logic.month_bill(396, cfg)
-assert near(b["total"], cost + 84 + 40 + (cost + 84) * 0.05 - cost * 0.005)
-assert near(logic.monthly_fixed(cfg), 84 * 1.05 + 40)
-assert near(logic.recharge_credit(1000, True, cfg), 1000 - 128.2)
-assert near(logic.usage_cost(396, 404, cfg), (4 * 9.62 + 4 * 15.01) * 1.05 * 0.995)
+assert near(b["total"], logic.recharge_for(cost, True, cfg)) and near(b["energy"] + b["demand"] + b["meter_rent"] + b["vat"] - b["rebate"], b["total"])
+assert near(logic.usage_cost(396, 404, cfg), 4 * 9.62 + 4 * 15.01)   # the meter spends plain slab rates
+sms = """BREB Token Purchase Successful.
+Meter No: 40610705060
+Sequence: 19
+Energy Cost: 2871.35 Tk
+Meter Rent: 0 Tk
+Demand Charge: 0 Tk
+VAT: 142.86 Tk
+Rebate: -14.21 Tk
+Arrear Amount: 0 Tk
+Vending Amount: 3000.0 Tk
+Token(s):
+4677-8591-1208-6465-3212
+Trx ID: 01M5ED8J3M
+Bill payment of Tk.3000.00 to Palli Bidyut Prepaid is successful, Meter Number: 40610705060. Token 4677-8591-1208-6465-3212. Charge-0.00. Balance Tk.2000.00. TrxID 01M5ED8J3M at 21/10/2026 10:59"""
+p = logic.parse_token_sms(sms)
+assert p["amount"] == 3000 and p["energy"] == 2871.35 and p["rebate"] == 14.21 and p["demand"] == 0
+assert p["token"] == "4677-8591-1208-6465-3212" and p["sequence"] == 19 and p["when"] == [2026, 10, 21, 10, 59]
+p = logic.parse_token_sms(sms.split("Bill payment")[0])          # the token SMS alone
+assert p["energy"] == 2871.35 and "when" not in p
+p = logic.parse_token_sms("Bill payment" + sms.split("Bill payment")[1])  # the payment SMS alone
+assert p["amount"] == 3000 and "energy" not in p and p["token"]
+assert logic.parse_token_sms("hello") == {}
 
 # ------------------------------------------------------ cut or Wi-Fi
 assert logic.classify_gap(1800, 0.0, 800, 90) == "outage"
@@ -186,11 +214,28 @@ tr.save()
 tr2 = m.Tracker()
 assert tr2.outage_id == tr.outage_id and tr2.avail is False and tr2.unavail_since == now + 8000
 
-# Bill and prepaid from the recorded hours.
+# Prepaid: balance = last check + energy credited since - what the meter spent since.
 real_now = time.time()
-m.db.execute("INSERT INTO prepaid(ts, kind, amount) VALUES(?, 'sync', 500)", (real_now - 3 * 3600,))
+m.db.execute("DELETE FROM energy_hourly")
 m.db.execute("INSERT INTO energy_hourly(hour, kwh, source) VALUES(?, 2.0, 'test')", (int(real_now // 3600 * 3600 - 3600),))
+m.db.execute("INSERT INTO prepaid(ts, kind, amount) VALUES(?, 'sync', 500)", (real_now - 3 * 3600,))
+assert m.prepaid_post("/api/prepaid/recharge", {"sms": sms, "ts": real_now - 2 * 3600})[0] == 200
+assert m.prepaid_post("/api/prepaid/recharge", {"sms": sms})[0] == 409            # same token twice
 p = m.prepaid_status()
-assert p["configured"] and p["balance"] < 500
+spent = m.ecost(2.0)
+assert p["configured"] and near(p["balance"], 500 + 2871.35 - spent), (p["balance"], spent)
+rc = m.recharges()
+assert rc[0]["breakdown"]["source"] == "sms" and rc[0]["breakdown"]["energy"] == 2871.35
+c = m.recharge_calc(1000)
+assert c["energy"] < 1000 and c["units"] > 0
+
+# Usage buckets and statements.
+u = m.usage(real_now - 86400, real_now, "auto")
+assert u["period"] == "hour" and near(u["total"], 2.0) and len(u["buckets"]) >= 24
+assert near(u["cost"], spent * m.cash())
+lt = time.localtime(real_now)
+bp = m.bill_payload(lt.tm_year, lt.tm_mon)
+assert near(bp["units"], 2.0) and bp["current"] and bp["recharges"] and bp["coverage"] is not None
+assert m.months_list()[0]["month"] == time.strftime("%Y-%m", lt)
 
 print("all electricity monitor checks passed")

@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Electricity Monitor</title>
-  <link rel="stylesheet" href="static/style.css">
-  <link rel="stylesheet" href="static/electricity.css">
+  <link rel="stylesheet" href="static/style.css?v=1.1.0">
+  <link rel="stylesheet" href="static/electricity.css?v=1.1.0">
 </head>
 <body>
 <main class="viz-root" id="root">
@@ -32,6 +32,8 @@
     <button role="tab" data-tab="appliances">Appliances</button>
     <button role="tab" data-tab="alerts">Alerts</button>
   </nav>
+
+  <div class="banner" id="banner" role="alert" hidden></div>
 
   <!-- ============================================================ LIVE -->
   <section class="page" id="page-live" role="tabpanel">
@@ -108,13 +110,7 @@
   <!-- ============================================================ OUTAGES -->
   <section class="page" id="page-outages" role="tabpanel" hidden>
     <div class="toolbar">
-      <div class="chips" role="radiogroup" aria-label="Range" id="out-range">
-        <button class="chip" role="radio" data-days="1">Today</button>
-        <button class="chip" role="radio" data-days="7" aria-checked="true">7 days</button>
-        <button class="chip" role="radio" data-days="30">30 days</button>
-        <button class="chip" role="radio" data-days="90">90 days</button>
-        <button class="chip" role="radio" data-days="365">Year</button>
-      </div>
+      <div class="period" id="out-period"></div>
       <a class="link range-label" id="out-csv" href="#" download>Export CSV</a>
     </div>
     <div class="tiles reveal" id="out-tiles"></div>
@@ -139,7 +135,11 @@
     <article class="card reveal">
       <div class="card-head">
         <h2>Every power cut</h2>
-        <label class="small check-inline"><input type="checkbox" id="show-wifi"> Show Wi-Fi drops and monitor gaps</label>
+        <div class="chips small-chips" role="radiogroup" aria-label="Show" id="out-kinds">
+          <button class="chip" role="radio" data-k="outage" aria-checked="true">Power cuts</button>
+          <button class="chip" role="radio" data-k="outage,wifi,gap">Everything</button>
+          <button class="chip" role="radio" data-k="wifi,gap">Wi-Fi drops and gaps</button>
+        </div>
       </div>
       <div class="table-wrap"><table>
         <thead><tr><th>When</th><th>Until</th><th class="num">Length</th><th>What happened</th><th>Internet</th></tr></thead>
@@ -190,42 +190,85 @@
 
   <!-- ============================================================ USAGE -->
   <section class="page" id="page-usage" role="tabpanel" hidden>
-    <div class="toolbar">
-      <div class="chips" role="radiogroup" aria-label="Period" id="use-range">
-        <button class="chip" role="radio" data-r="day" aria-checked="true">Today</button>
-        <button class="chip" role="radio" data-r="week">7 days</button>
-        <button class="chip" role="radio" data-r="month">30 days</button>
-        <button class="chip" role="radio" data-r="year">12 months</button>
+    <div class="toolbar toolbar-wide">
+      <div class="period" id="use-period"></div>
+      <div class="tool-group">
+        <div class="seg" role="radiogroup" aria-label="Group by" id="use-gran">
+          <button role="radio" data-g="auto" aria-checked="true">Auto</button>
+          <button role="radio" data-g="hour">Hour</button>
+          <button role="radio" data-g="day">Day</button>
+          <button role="radio" data-g="week">Week</button>
+          <button role="radio" data-g="month">Month</button>
+        </div>
+        <div class="seg" role="radiogroup" aria-label="Show" id="use-measure">
+          <button role="radio" data-m="kwh" aria-checked="true">kWh</button>
+          <button role="radio" data-m="cost">Taka</button>
+        </div>
+        <label class="check-inline small"><input type="checkbox" id="use-compare" checked> Compare</label>
       </div>
-      <a class="link range-label" id="use-csv" href="api/export/usage.csv" download>Export daily CSV</a>
     </div>
-    <div class="tiles reveal" id="use-tiles"></div>
+    <div class="notice" id="use-notice" hidden></div>
+    <div class="tiles tiles-6 reveal" id="use-tiles"></div>
     <article class="card reveal">
-      <div class="card-head"><h2 id="use-title">Usage</h2><span class="head-value" id="use-total"></span></div>
+      <div class="card-head">
+        <div><h2 id="use-title">Usage</h2><p class="small muted head-note" id="use-sub"></p></div>
+        <div class="head-actions">
+          <button class="btn ghost small-btn" id="use-table-toggle" aria-expanded="false"><span>Show table</span></button>
+          <a class="btn ghost small-btn" id="use-csv" href="#" download><span>CSV</span></a>
+        </div>
+      </div>
       <div class="chart-wrap"><canvas id="use-chart" aria-label="Electricity used"></canvas></div>
+      <div class="legend mt-s" id="use-legend"></div>
+      <div class="table-wrap use-table" id="use-table" hidden></div>
     </article>
+
+    <div class="section-head reveal">
+      <h2 class="group-title">Bills</h2>
+      <div class="month-nav" id="bill-nav">
+        <button class="btn ghost icon-btn" id="bill-prev" aria-label="Previous month"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <select id="bill-month" aria-label="Month"></select>
+        <button class="btn ghost icon-btn" id="bill-next" aria-label="Next month"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+      </div>
+    </div>
+    <div class="bill-grid">
+      <article class="card statement reveal" id="statement"></article>
+      <div class="bill-side">
+        <article class="card reveal">
+          <div class="card-head"><h2>Day by day</h2><span class="small muted" id="bill-days-note"></span></div>
+          <div class="chart-wrap small"><canvas id="bill-days" aria-label="Electricity used each day of the month"></canvas></div>
+        </article>
+        <article class="card reveal">
+          <div class="card-head"><h2>Recharges this month</h2><button class="linkbtn" data-goto="prepaid">Add a recharge</button></div>
+          <div id="bill-recharges"></div>
+        </article>
+      </div>
+    </div>
     <div class="grid-2">
       <article class="card reveal">
-        <div class="card-head"><h2 id="bill-title">This month's bill</h2><span class="head-value" id="bill-total"></span></div>
-        <div id="bill-body"></div>
-      </article>
-      <article class="card reveal">
-        <div class="card-head"><h2>Price slabs</h2><span class="small muted">Each unit pays its own slab's rate</span></div>
+        <div class="card-head"><h2>Price slabs</h2><span class="small muted" id="ladder-head"></span></div>
         <div class="ladder" id="ladder"></div>
         <p class="small muted" id="ladder-note"></p>
       </article>
+      <article class="card reveal">
+        <div class="card-head"><h2>How the cost works</h2></div>
+        <div class="explain-steps" id="cost-explain"></div>
+      </article>
     </div>
+    <article class="card reveal">
+      <div class="card-head"><h2>All months</h2><a class="link" href="api/export/bills.csv" download>Export CSV</a></div>
+      <div class="table-wrap"><table class="months-table">
+        <thead><tr><th>Month</th><th class="num">Units</th><th class="bar-col"></th><th class="num">Per day</th><th class="num">Bill</th><th class="num">Recharged</th><th class="num">Power cuts</th><th class="num">Trips</th></tr></thead>
+        <tbody id="month-rows"></tbody>
+      </table></div>
+    </article>
     <div class="grid-2">
       <article class="card reveal">
-        <div class="card-head"><h2>When you use the most</h2><span class="small muted">Average kWh per hour, last 30 days</span></div>
+        <div class="card-head"><h2>When you use the most</h2><span class="small muted">Average kWh in each hour, last 30 days</span></div>
         <div class="heatmap" id="use-heat"></div>
       </article>
       <article class="card reveal">
-        <div class="card-head"><h2>Month by month</h2></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Month</th><th class="num">Units</th><th class="num">Bill (est.)</th><th class="num">Power cuts</th><th class="num">Trips</th></tr></thead>
-          <tbody id="month-rows"></tbody>
-        </table></div>
+        <div class="card-head"><h2>Your week</h2><span class="small muted">Average per day, last 8 weeks</span></div>
+        <div class="chart-wrap small"><canvas id="use-weekday" aria-label="Average use per weekday"></canvas></div>
       </article>
     </div>
   </section>
@@ -241,25 +284,42 @@
         <dl class="speed-foot" id="pp-foot"></dl>
       </article>
       <article class="card reveal">
-        <div class="card-head"><h2>Keep it accurate</h2></div>
-        <form class="ppform" id="pp-sync-form">
-          <label for="pp-sync">What the meter shows now</label>
-          <div class="with-unit"><input type="number" id="pp-sync" step="0.01" min="0" required placeholder="e.g. 640.50"><span class="unit cur"></span></div>
-          <button class="btn primary" type="submit">Set balance</button>
-        </form>
-        <form class="ppform" id="pp-recharge-form">
-          <label for="pp-amount">I recharged</label>
-          <div class="with-unit"><input type="number" id="pp-amount" step="1" min="1" required placeholder="e.g. 1000"><span class="unit cur"></span></div>
-          <input type="datetime-local" id="pp-when" aria-label="When">
-          <button class="btn" type="submit">Add recharge</button>
-        </form>
-        <p class="small muted" id="pp-help"></p>
+        <div class="chips" role="tablist" aria-label="Prepaid actions" id="pp-tabs">
+          <button class="chip" role="tab" data-p="sms" aria-selected="true">Add a recharge</button>
+          <button class="chip" role="tab" data-p="sync">Set the balance</button>
+          <button class="chip" role="tab" data-p="calc">Calculator</button>
+        </div>
+        <div class="pp-pane" data-pane="sms">
+          <label for="pp-sms" class="pp-label">Paste the recharge SMS</label>
+          <textarea id="pp-sms" rows="5" placeholder="BREB Token Purchase Successful. Meter No: ... Energy Cost: ... Vending Amount: ..."></textarea>
+          <div id="pp-parse" class="pp-preview" aria-live="polite"></div>
+          <details class="pp-manual">
+            <summary>No SMS? Enter it by hand</summary>
+            <div class="pp-row">
+              <div class="with-unit"><input type="number" id="pp-amount" step="1" min="1" placeholder="Amount, e.g. 3000" aria-label="Recharge amount"><span class="unit cur"></span></div>
+              <input type="datetime-local" id="pp-when" aria-label="When">
+            </div>
+          </details>
+          <button class="btn primary" id="pp-save" disabled><span>Save recharge</span></button>
+        </div>
+        <div class="pp-pane" data-pane="sync" hidden>
+          <label for="pp-sync" class="pp-label">What the meter shows now</label>
+          <div class="with-unit"><input type="number" id="pp-sync" step="0.01" min="0" placeholder="e.g. 640.50"><span class="unit cur"></span></div>
+          <p class="small muted">Press the meter's balance key (or check the display) and type the taka shown. From then on the
+            balance is counted down from your use, and recharges are added on top. Check it now and then to keep it exact.</p>
+          <button class="btn primary" id="pp-sync-save"><span>Set balance</span></button>
+        </div>
+        <div class="pp-pane" data-pane="calc" hidden>
+          <label for="pp-calc" class="pp-label">If I recharge</label>
+          <div class="with-unit"><input type="number" id="pp-calc" step="100" min="1" value="1000"><span class="unit cur"></span></div>
+          <div id="pp-calc-out" class="pp-preview"></div>
+        </div>
       </article>
     </div>
     <article class="card reveal">
-      <div class="card-head"><h2>Recharges and balance checks</h2></div>
+      <div class="card-head"><h2>Recharges and balance checks</h2><span class="small muted" id="pp-hist-note"></span></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>When</th><th>What</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead>
+        <thead><tr><th>When</th><th>What</th><th class="num">Paid</th><th class="num">Energy credit</th><th class="num">Rent</th><th class="num">Demand</th><th class="num">VAT</th><th class="num">Rebate</th><th>Token</th><th></th></tr></thead>
         <tbody id="pp-rows"></tbody>
       </table></div>
     </article>
@@ -268,12 +328,7 @@
   <!-- ============================================================ QUALITY -->
   <section class="page" id="page-quality" role="tabpanel" hidden>
     <div class="toolbar">
-      <div class="chips" role="radiogroup" aria-label="Range" id="q-range">
-        <button class="chip" role="radio" data-days="1" aria-checked="true">24 hours</button>
-        <button class="chip" role="radio" data-days="7">7 days</button>
-        <button class="chip" role="radio" data-days="30">30 days</button>
-        <button class="chip" role="radio" data-days="365">Year</button>
-      </div>
+      <div class="period" id="q-period"></div>
     </div>
     <article class="card reveal">
       <div class="report-grid">
@@ -290,7 +345,7 @@
       <div class="card-head"><h2>Voltage</h2><span class="small muted">Lowest, average and highest, with the breaker's cut-offs</span></div>
       <div class="chart-wrap"><canvas id="q-volt" aria-label="Voltage"></canvas></div>
     </article>
-    <div class="grid-2">
+    <div class="grid-2x2">
       <article class="card reveal"><div class="card-head"><h2>Power</h2></div><div class="chart-wrap small"><canvas id="q-power" aria-label="Power"></canvas></div></article>
       <article class="card reveal"><div class="card-head"><h2>Frequency</h2></div><div class="chart-wrap small"><canvas id="q-hz" aria-label="Frequency"></canvas></div></article>
       <article class="card reveal"><div class="card-head"><h2>Power factor</h2></div><div class="chart-wrap small"><canvas id="q-pf" aria-label="Power factor"></canvas></div></article>
@@ -384,7 +439,8 @@
   </dialog>
 </main>
 <div class="tip" id="tip" role="tooltip" hidden></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="static/chart.umd.min.js"></script>
-<script src="static/app.js"></script>
+<script src="static/app.js?v=1.1.0"></script>
 </body>
 </html>

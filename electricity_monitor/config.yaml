@@ -1,5 +1,5 @@
 name: Electricity Monitor
-version: "1.0.0"
+version: "1.1.0"
 slug: electricity_monitor
 description: Power cuts, breaker trips with their reason, usage, bill and prepaid balance from your smart breaker
 url: https://github.com/SadikTD/pdc-ha-addons/tree/main/electricity_monitor
@@ -65,7 +65,8 @@ options:
   tariff_slabs: ["75:5.26", "200:8.50", "300:9.10", "400:9.62", "600:15.01", "0:17.35"]
   lifeline_units: 50
   lifeline_rate: 4.63
-  sanctioned_load_kw: 2
+  # Your meter's demand charge / 42, e.g. 168 Tk on the token SMS = 4 kW.
+  sanctioned_load_kw: 4
   demand_charge_per_kw: 42
   meter_rent: 40
   vat_percent: 5
