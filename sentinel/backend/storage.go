@@ -155,6 +155,9 @@ func (d *RecDisk) block() {
 }
 
 func (d *RecDisk) blockLocked() {
+	// The mount point may not exist yet (disk missing since the container was created):
+	// without it the block fails and recordings land on the container's disk, the SSD.
+	_ = os.MkdirAll(d.mnt, 0o755)
 	if err := syscall.Mount("sentinel-no-disk", d.mnt, "tmpfs", syscall.MS_RDONLY, "size=64k"); err != nil {
 		logf("recordings disk: can't block %s: %v", d.mnt, err)
 	}
