@@ -1,0 +1,130 @@
+name: Electricity Monitor
+version: "1.0.0"
+slug: electricity_monitor
+description: Power cuts, breaker trips with their reason, usage, bill and prepaid balance from your smart breaker
+url: https://github.com/SadikTD/pdc-ha-addons/tree/main/electricity_monitor
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+ingress: true
+ingress_port: 38767
+panel_icon: mdi:transmission-tower
+panel_title: Electricity
+# Reads the breaker over HA's WebSocket and history, publishes sensors, switches the
+# breaker and its protection limits, sends notifications and Alexa announcements.
+homeassistant_api: true
+# Finds the PDC WhatsApp Bridge (its IP, recipient and api_token; reading another add-on's
+# options needs the manager role) and saves this add-on's options from the dashboard.
+hassio_api: true
+hassio_role: manager
+options:
+  # The breaker's entities are switch.<prefix>, sensor.<prefix>_voltage, ... (Tuya Local).
+  breaker_prefix: energy_meter
+  # The breaker has to be silent this long to count as a power cut. The router's daily
+  # reboot (04:01) makes it drop for ~30 s; a breaker that keeps metering is a Wi-Fi drop.
+  min_outage_seconds: 90
+  # After a power cut or a voltage trip, switch the breaker back on once the voltage has
+  # been steady for auto_restore_delay_seconds. Never after current, power or heat trips.
+  auto_restore: false
+  auto_restore_delay_seconds: 60
+  # While the breaker stays off after a trip, remind on Alexa/phone this often.
+  repeat_minutes: 10
+  repeat_max: 6
+  voltage_warn_margin: 8
+  temperature_warn_margin: 5
+  nominal_voltage: 230
+  voltage_offset: 0
+  energy_calibration_percent: 0
+  alexa_entities: []
+  alexa_volume: 60
+  alexa_quiet_hours: []
+  critical_ignores_quiet_hours: true
+  notify_service: ""
+  # If no Echo answers (e.g. unpowered in a power cut), this phone reads the alert aloud.
+  offline_tts_service: ""
+  # Leave empty to use the PDC WhatsApp Bridge's own recipient_number and api_token.
+  whatsapp_to: ""
+  whatsapp_api_token: ""
+  whatsapp_bridge_url: ""
+  alerts_alexa: [power_cut, power_back, trip, stayed_off, breaker_on, voltage, balance]
+  alerts_phone: [power_cut, power_back, trip, stayed_off, breaker_on, voltage, temperature, balance, slab]
+  alerts_whatsapp: [power_back, trip, stayed_off, balance, slab]
+  daily_report_enabled: false
+  daily_report_hour: 22
+  weekly_report_enabled: true
+  weekly_report_day: sun
+  weekly_report_hour: 21
+  monthly_report_enabled: true
+  monthly_report_hour: 10
+  currency: "৳"
+  # BERC residential (LT-A) rates from June 2026, the same for every distributor incl.
+  # Palli Bidyut. "units:rate"; 0 = everything above the last limit.
+  tariff_slabs: ["75:5.26", "200:8.50", "300:9.10", "400:9.62", "600:15.01", "0:17.35"]
+  lifeline_units: 50
+  lifeline_rate: 4.63
+  sanctioned_load_kw: 2
+  demand_charge_per_kw: 42
+  meter_rent: 40
+  vat_percent: 5
+  prepaid_rebate_percent: 0.5
+  low_balance_alert: 200
+  low_balance_days: 2
+  slab_alerts: true
+  slab_warn_units: 15
+  appliance_min_watts: 300
+  retention_days: 400
+schema:
+  breaker_prefix: match(^[a-z0-9_]+$)
+  min_outage_seconds: int(20,3600)
+  auto_restore: bool
+  auto_restore_delay_seconds: int(10,1800)
+  repeat_minutes: int(1,240)
+  repeat_max: int(0,50)
+  voltage_warn_margin: int(0,60)
+  temperature_warn_margin: int(0,40)
+  nominal_voltage: int(100,260)
+  voltage_offset: float(-30,30)
+  energy_calibration_percent: float(-50,50)
+  alexa_entities:
+    - match(^media_player\.[a-z0-9_]+$)
+  alexa_volume: int(0,100)
+  alexa_quiet_hours:
+    - match(^\d{1,2}:\d{2}-\d{1,2}:\d{2}$)
+  critical_ignores_quiet_hours: bool
+  notify_service: str?
+  offline_tts_service: str?
+  whatsapp_to: match(^(\+[1-9]\d{7,14})?$)?
+  whatsapp_api_token: password?
+  whatsapp_bridge_url: str?
+  alerts_alexa:
+    - list(power_cut|power_back|trip|stayed_off|breaker_on|voltage|temperature|balance|slab)
+  alerts_phone:
+    - list(power_cut|power_back|trip|stayed_off|breaker_on|voltage|temperature|balance|slab)
+  alerts_whatsapp:
+    - list(power_cut|power_back|trip|stayed_off|breaker_on|voltage|temperature|balance|slab)
+  daily_report_enabled: bool
+  daily_report_hour: int(0,23)
+  weekly_report_enabled: bool
+  weekly_report_day: list(mon|tue|wed|thu|fri|sat|sun)
+  weekly_report_hour: int(0,23)
+  monthly_report_enabled: bool
+  monthly_report_hour: int(0,23)
+  currency: str
+  tariff_slabs:
+    - match(^\d{1,5}:\d{1,3}(\.\d{1,3})?$)
+  lifeline_units: int(0,500)
+  lifeline_rate: float(0,100)
+  sanctioned_load_kw: float(0,100)
+  demand_charge_per_kw: float(0,1000)
+  meter_rent: float(0,10000)
+  vat_percent: float(0,50)
+  prepaid_rebate_percent: float(0,20)
+  low_balance_alert: float(0,100000)
+  low_balance_days: int(0,60)
+  slab_alerts: bool
+  slab_warn_units: int(0,200)
+  appliance_min_watts: int(50,10000)
+  retention_days: int(30,3650)

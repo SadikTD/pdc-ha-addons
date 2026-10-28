@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Electricity Monitor</title>
+  <link rel="stylesheet" href="static/style.css">
+  <link rel="stylesheet" href="static/electricity.css">
+</head>
+<body>
+<main class="viz-root" id="root">
+
+  <header class="brand reveal">
+    <div>
+      <h1><svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 1L4 13.5h6.2L8.5 23 20 9.8h-6.4z"/></svg>Electricity Monitor</h1>
+      <p class="sub">Your main breaker: power cuts, protection trips, usage and the prepaid meter</p>
+    </div>
+    <div class="actions">
+      <button class="btn ghost" id="btn-settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabs reveal" id="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" data-tab="live" aria-selected="true">Live</button>
+    <button role="tab" data-tab="outages">Power cuts</button>
+    <button role="tab" data-tab="protection">Protection</button>
+    <button role="tab" data-tab="usage">Usage &amp; bill</button>
+    <button role="tab" data-tab="prepaid">Prepaid</button>
+    <button role="tab" data-tab="quality">Power quality</button>
+    <button role="tab" data-tab="appliances">Appliances</button>
+    <button role="tab" data-tab="alerts">Alerts</button>
+  </nav>
+
+  <!-- ============================================================ LIVE -->
+  <section class="page" id="page-live" role="tabpanel">
+    <div class="hero-e">
+      <article class="card state-card reveal" id="state-card" aria-live="polite">
+        <div class="conn-top">
+          <span class="pulse" aria-hidden="true"></span>
+          <div>
+            <div class="state-word" id="state-word">Connecting</div>
+            <div class="conn-since" id="state-since">&nbsp;</div>
+          </div>
+        </div>
+        <div class="verdict" id="state-verdict">
+          <p class="verdict-title" id="state-title">&nbsp;</p>
+          <p class="verdict-text" id="state-text">&nbsp;</p>
+        </div>
+        <div class="state-actions" id="state-actions"></div>
+        <div class="spark-wrap">
+          <div class="spark-head"><span>Power, last hour</span><span id="spark-now"></span></div>
+          <div class="chart-wrap tiny"><canvas id="spark" aria-label="Power over the last hour"></canvas></div>
+        </div>
+      </article>
+
+      <article class="card meters reveal">
+        <div class="meter-main">
+          <div class="k">Power now</div>
+          <div class="big"><span id="m-power">-</span><small>W</small></div>
+          <div class="k" id="m-power-note">&nbsp;</div>
+        </div>
+        <div class="vbar-wrap">
+          <div class="vbar-head"><span class="k">Voltage</span><span class="v" id="m-voltage">-</span></div>
+          <div class="vbar" id="vbar" aria-hidden="true">
+            <i class="vb-zone low"></i><i class="vb-zone ok"></i><i class="vb-zone high"></i>
+            <b class="vb-cut lo" id="vb-lo"></b><b class="vb-cut hi" id="vb-hi"></b><b class="vb-mark" id="vb-mark"></b>
+          </div>
+          <div class="vbar-axis"><span id="vb-lo-l"></span><span>230 V</span><span id="vb-hi-l"></span></div>
+        </div>
+        <div class="mgrid">
+          <div class="mcell"><span class="k">Current</span><span class="v" id="m-current">-</span></div>
+          <div class="mcell"><span class="k">Power factor</span><span class="v" id="m-pf">-</span></div>
+          <div class="mcell"><span class="k">Frequency</span><span class="v" id="m-hz">-</span></div>
+          <div class="mcell"><span class="k">Breaker temp</span><span class="v" id="m-temp">-</span></div>
+          <div class="mcell"><span class="k">Meter reading</span><span class="v" id="m-energy">-</span></div>
+          <div class="mcell"><span class="k">Always-on load</span><span class="v" id="m-base">-</span></div>
+        </div>
+      </article>
+    </div>
+
+    <div class="tiles today-tiles reveal" id="today-tiles"></div>
+
+    <div class="grid-2">
+      <article class="card reveal">
+        <div class="card-head"><h2>Last 24 hours</h2><span class="small muted" id="strip-note"></span></div>
+        <div class="strip" id="strip24"></div>
+        <div class="strip-axis" id="strip24-axis"></div>
+        <div class="legend">
+          <span><i class="dotk good"></i>Power on</span><span><i class="dotk bad"></i>Power cut</span>
+          <span><i class="dotk off"></i>Breaker off</span><span><i class="dotk wifi"></i>Breaker offline</span>
+          <span><i class="dotk none"></i>No data</span>
+        </div>
+      </article>
+      <article class="card reveal">
+        <div class="card-head"><h2>Load shedding forecast</h2></div>
+        <div id="forecast"></div>
+      </article>
+    </div>
+
+    <article class="card reveal">
+      <div class="card-head"><h2>Recent events</h2><button class="linkbtn" data-goto="outages">All power cuts</button></div>
+      <ul class="evlist" id="recent"></ul>
+    </article>
+  </section>
+
+  <!-- ============================================================ OUTAGES -->
+  <section class="page" id="page-outages" role="tabpanel" hidden>
+    <div class="toolbar">
+      <div class="chips" role="radiogroup" aria-label="Range" id="out-range">
+        <button class="chip" role="radio" data-days="1">Today</button>
+        <button class="chip" role="radio" data-days="7" aria-checked="true">7 days</button>
+        <button class="chip" role="radio" data-days="30">30 days</button>
+        <button class="chip" role="radio" data-days="90">90 days</button>
+        <button class="chip" role="radio" data-days="365">Year</button>
+      </div>
+      <a class="link range-label" id="out-csv" href="#" download>Export CSV</a>
+    </div>
+    <div class="tiles reveal" id="out-tiles"></div>
+    <div class="grid-2">
+      <article class="card reveal">
+        <div class="card-head"><h2>When it usually goes</h2><span class="small muted" id="heat-note"></span></div>
+        <p class="heat-summary" id="heat-summary"></p>
+        <div class="heatmap" id="heatmap"></div>
+        <div class="heat-legend" id="heat-legend"></div>
+      </article>
+      <article class="card reveal">
+        <div class="card-head"><h2>Chance of a cut, by hour</h2></div>
+        <div class="chart-wrap small"><canvas id="odds-chart" aria-label="Chance of a power cut in each hour"></canvas></div>
+        <p class="small muted hint">Share of monitored days with a power cut in that hour, last 28 days.</p>
+      </article>
+    </div>
+    <article class="card reveal">
+      <div class="card-head"><h2>The year so far</h2><span class="small muted">Minutes without power, per day</span></div>
+      <div class="calendar" id="calendar"></div>
+      <div class="heat-legend" id="cal-legend"></div>
+    </article>
+    <article class="card reveal">
+      <div class="card-head">
+        <h2>Every power cut</h2>
+        <label class="small check-inline"><input type="checkbox" id="show-wifi"> Show Wi-Fi drops and monitor gaps</label>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>When</th><th>Until</th><th class="num">Length</th><th>What happened</th><th>Internet</th></tr></thead>
+        <tbody id="out-rows"></tbody>
+      </table></div>
+      <button class="btn ghost more" id="out-more" hidden>Show more</button>
+    </article>
+    <article class="card reveal">
+      <div class="card-head"><h2>What was the power like at…</h2></div>
+      <div class="lookup"><input type="datetime-local" id="lookup-at" aria-label="Date and time"><button class="btn" id="lookup-go">Look up</button></div>
+      <div class="lookup-result" id="lookup-result"></div>
+    </article>
+  </section>
+
+  <!-- ============================================================ PROTECTION -->
+  <section class="page" id="page-protection" role="tabpanel" hidden>
+    <div class="grid-2">
+      <article class="card reveal">
+        <div class="card-head"><h2>Breaker</h2><span id="prot-state"></span></div>
+        <div class="state-actions" id="prot-actions"></div>
+        <p class="small muted" id="prot-problem"></p>
+      </article>
+      <article class="card reveal">
+        <div class="card-head"><h2>How a switch-off is explained</h2></div>
+        <p class="small muted explain">The breaker doesn't report why it switched off, so each switch-off is matched
+          against the readings in the minute around it and against Home Assistant's activity log. If voltage, current,
+          power or temperature was at a protection limit, that's the reason. If someone switched it in Home Assistant,
+          you'll see who. Anything else was done in the Smart Life app or at the breaker. If the breaker ever
+          reports a fault code, that replaces the guess.</p>
+      </article>
+    </div>
+    <article class="card reveal">
+      <div class="card-head"><h2>Protection limits</h2><span class="small muted">Changes go straight to the breaker</span></div>
+      <div class="limits" id="limits"></div>
+    </article>
+    <article class="card reveal">
+      <div class="card-head"><h2>Advice</h2></div>
+      <ul class="advice" id="advice"></ul>
+    </article>
+    <article class="card reveal">
+      <div class="card-head"><h2>Every switch-off</h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>When</th><th>Why</th><th>Readings</th><th class="num">Off for</th><th>Turned on by</th></tr></thead>
+        <tbody id="trip-rows"></tbody>
+      </table></div>
+    </article>
+  </section>
+
+  <!-- ============================================================ USAGE -->
+  <section class="page" id="page-usage" role="tabpanel" hidden>
+    <div class="toolbar">
+      <div class="chips" role="radiogroup" aria-label="Period" id="use-range">
+        <button class="chip" role="radio" data-r="day" aria-checked="true">Today</button>
+        <button class="chip" role="radio" data-r="week">7 days</button>
+        <button class="chip" role="radio" data-r="month">30 days</button>
+        <button class="chip" role="radio" data-r="year">12 months</button>
+      </div>
+      <a class="link range-label" id="use-csv" href="api/export/usage.csv" download>Export daily CSV</a>
+    </div>
+    <div class="tiles reveal" id="use-tiles"></div>
+    <article class="card reveal">
+      <div class="card-head"><h2 id="use-title">Usage</h2><span class="head-value" id="use-total"></span></div>
+      <div class="chart-wrap"><canvas id="use-chart" aria-label="Electricity used"></canvas></div>
+    </article>
+    <div class="grid-2">
+      <article class="card reveal">
+        <div class="card-head"><h2 id="bill-title">This month's bill</h2><span class="head-value" id="bill-total"></span></div>
+        <div id="bill-body"></div>
+      </article>
+      <article class="card reveal">
+        <div class="card-head"><h2>Price slabs</h2><span class="small muted">Each unit pays its own slab's rate</span></div>
+        <div class="ladder" id="ladder"></div>
+        <p class="small muted" id="ladder-note"></p>
+      </article>
+    </div>
+    <div class="grid-2">
+      <article class="card reveal">
+        <div class="card-head"><h2>When you use the most</h2><span class="small muted">Average kWh per hour, last 30 days</span></div>
+        <div class="heatmap" id="use-heat"></div>
+      </article>
+      <article class="card reveal">
+        <div class="card-head"><h2>Month by month</h2></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Month</th><th class="num">Units</th><th class="num">Bill (est.)</th><th class="num">Power cuts</th><th class="num">Trips</th></tr></thead>
+          <tbody id="month-rows"></tbody>
+        </table></div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ============================================================ PREPAID -->
+  <section class="page" id="page-prepaid" role="tabpanel" hidden>
+    <div class="grid-2">
+      <article class="card balance-card reveal" id="balance-card">
+        <div class="k">Estimated balance on the meter</div>
+        <div class="big"><span id="pp-balance">-</span></div>
+        <div class="verdict" id="pp-verdict"><p class="verdict-title" id="pp-title">&nbsp;</p><p class="verdict-text" id="pp-text">&nbsp;</p></div>
+        <div class="plan-bar" aria-hidden="true"><span id="pp-bar"></span></div>
+        <dl class="speed-foot" id="pp-foot"></dl>
+      </article>
+      <article class="card reveal">
+        <div class="card-head"><h2>Keep it accurate</h2></div>
+        <form class="ppform" id="pp-sync-form">
+          <label for="pp-sync">What the meter shows now</label>
+          <div class="with-unit"><input type="number" id="pp-sync" step="0.01" min="0" required placeholder="e.g. 640.50"><span class="unit cur"></span></div>
+          <button class="btn primary" type="submit">Set balance</button>
+        </form>
+        <form class="ppform" id="pp-recharge-form">
+          <label for="pp-amount">I recharged</label>
+          <div class="with-unit"><input type="number" id="pp-amount" step="1" min="1" required placeholder="e.g. 1000"><span class="unit cur"></span></div>
+          <input type="datetime-local" id="pp-when" aria-label="When">
+          <button class="btn" type="submit">Add recharge</button>
+        </form>
+        <p class="small muted" id="pp-help"></p>
+      </article>
+    </div>
+    <article class="card reveal">
+      <div class="card-head"><h2>Recharges and balance checks</h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>When</th><th>What</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead>
+        <tbody id="pp-rows"></tbody>
+      </table></div>
+    </article>
+  </section>
+
+  <!-- ============================================================ QUALITY -->
+  <section class="page" id="page-quality" role="tabpanel" hidden>
+    <div class="toolbar">
+      <div class="chips" role="radiogroup" aria-label="Range" id="q-range">
+        <button class="chip" role="radio" data-days="1" aria-checked="true">24 hours</button>
+        <button class="chip" role="radio" data-days="7">7 days</button>
+        <button class="chip" role="radio" data-days="30">30 days</button>
+        <button class="chip" role="radio" data-days="365">Year</button>
+      </div>
+    </div>
+    <article class="card reveal">
+      <div class="report-grid">
+        <div class="grade" id="q-grade"><div class="grade-letter" id="q-letter">-</div><div class="grade-caption">Voltage grade</div>
+          <div class="grade-how">Time within ±6 % of 230 V</div></div>
+        <div>
+          <div class="bandbar" id="q-bands"></div>
+          <div class="legend mt-s"><span><i class="dotk good"></i>Good 216-244 V</span><span><i class="dotk warn"></i>Fair 207-253 V</span><span><i class="dotk bad"></i>Bad</span></div>
+          <div class="tiles mt-m" id="q-tiles"></div>
+        </div>
+      </div>
+    </article>
+    <article class="card reveal">
+      <div class="card-head"><h2>Voltage</h2><span class="small muted">Lowest, average and highest, with the breaker's cut-offs</span></div>
+      <div class="chart-wrap"><canvas id="q-volt" aria-label="Voltage"></canvas></div>
+    </article>
+    <div class="grid-2">
+      <article class="card reveal"><div class="card-head"><h2>Power</h2></div><div class="chart-wrap small"><canvas id="q-power" aria-label="Power"></canvas></div></article>
+      <article class="card reveal"><div class="card-head"><h2>Frequency</h2></div><div class="chart-wrap small"><canvas id="q-hz" aria-label="Frequency"></canvas></div></article>
+      <article class="card reveal"><div class="card-head"><h2>Power factor</h2></div><div class="chart-wrap small"><canvas id="q-pf" aria-label="Power factor"></canvas></div></article>
+      <article class="card reveal"><div class="card-head"><h2>Breaker temperature</h2></div><div class="chart-wrap small"><canvas id="q-temp" aria-label="Breaker temperature"></canvas></div></article>
+    </div>
+    <article class="card reveal">
+      <div class="card-head"><h2>High and low voltage episodes</h2><span class="small muted">Outside ±10 % for 30 seconds or more</span></div>
+      <ul class="evlist" id="q-events"></ul>
+    </article>
+  </section>
+
+  <!-- ============================================================ APPLIANCES -->
+  <section class="page" id="page-appliances" role="tabpanel" hidden>
+    <div class="tiles reveal" id="ap-tiles"></div>
+    <article class="card reveal">
+      <div class="card-head"><h2>Big appliances</h2><span class="small muted">Spotted from jumps in the total power, last 30 days</span></div>
+      <p class="small muted">Each row is a load that switches on and off as one step (an AC, water pump, iron, oven…).
+        Give them names; anything you don't recognise can be removed. Loads that change gradually, like inverter ACs, show an approximate size.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th class="num">Size</th><th class="num">Runs</th><th class="num">Running time</th><th class="num">Energy</th><th class="num">Cost</th><th>Usual hours</th><th></th></tr></thead>
+        <tbody id="ap-rows"></tbody>
+      </table></div>
+    </article>
+    <article class="card reveal">
+      <div class="card-head"><h2>Recent runs</h2></div>
+      <ul class="evlist" id="ap-runs"></ul>
+    </article>
+  </section>
+
+  <!-- ============================================================ ALERTS -->
+  <section class="page" id="page-alerts" role="tabpanel" hidden>
+    <div class="grid-2">
+      <article class="card reveal">
+        <div class="card-head"><h2>Where alerts go</h2><button class="linkbtn" data-open-settings="alerts">Change</button></div>
+        <div class="matrix" id="al-matrix"></div>
+        <div class="alert-actions mt-m">
+          <button class="btn ghost" data-test="alexa">Test Alexa</button>
+          <button class="btn ghost" data-test="phone">Test phone</button>
+          <button class="btn ghost" data-test="whatsapp">Test WhatsApp</button>
+        </div>
+        <p class="small muted" id="al-test-note"></p>
+      </article>
+      <article class="card reveal">
+        <div class="card-head">
+          <h2>Reports</h2>
+          <div class="chips" role="radiogroup" aria-label="Report" id="rep-kind">
+            <button class="chip" role="radio" data-k="daily">Today</button>
+            <button class="chip" role="radio" data-k="weekly" aria-checked="true">Week</button>
+            <button class="chip" role="radio" data-k="monthly">Month</button>
+          </div>
+        </div>
+        <div class="wa-chat"><div class="wa-bubble" id="rep-text">Loading…</div></div>
+        <div class="alert-actions mt-s"><button class="btn ghost" id="rep-send">Send on WhatsApp now</button></div>
+      </article>
+    </div>
+    <article class="card reveal">
+      <div class="card-head"><h2>Alert history</h2></div>
+      <ul class="evlist" id="al-rows"></ul>
+    </article>
+  </section>
+
+  <p class="foot" id="foot">&nbsp;</p>
+
+  <dialog class="settings" id="settings" aria-labelledby="settings-title">
+    <form method="dialog" id="settings-form" novalidate>
+      <header class="settings-head">
+        <h2 id="settings-title">Settings</h2>
+        <button class="btn ghost" type="button" id="settings-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+      <nav class="settings-nav" id="settings-nav"></nav>
+      <div class="settings-body" id="settings-body"><p class="muted">Loading…</p></div>
+      <footer class="settings-foot">
+        <span class="small" id="settings-status" aria-live="polite"></span>
+        <button class="btn ghost" type="button" id="settings-cancel">Cancel</button>
+        <button class="btn primary" type="submit" id="settings-save" disabled>Save</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog class="settings confirm" id="confirm" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <header class="settings-head"><h2 id="confirm-title">Are you sure?</h2></header>
+      <div class="settings-body"><p id="confirm-text"></p></div>
+      <footer class="settings-foot">
+        <button class="btn ghost" value="cancel">Cancel</button>
+        <button class="btn primary" value="ok" id="confirm-ok">Yes</button>
+      </footer>
+    </form>
+  </dialog>
+</main>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+<script src="static/chart.umd.min.js"></script>
+<script src="static/app.js"></script>
+</body>
+</html>

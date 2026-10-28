@@ -57,6 +57,17 @@ Tracks the **international** internet connection (not BDIX / in-country caches).
 
 See [net_monitor/DOCS.md](net_monitor/DOCS.md) for options.
 
+## Electricity Monitor
+
+Watches the smart breaker (Gaqqee KWS-302WF via Tuya Local) and keeps its own history of the electricity supply.
+
+- Tells power cuts (load shedding) from Wi-Fi drops by the breaker's energy counter, and records every time the breaker switches itself off with the likely reason (over/low voltage, current, power, temperature, from the readings around it), who switched it in Home Assistant, or that it was done in the Smart Life app.
+- Alexa, phone and WhatsApp alerts: power cut, power back, breaker tripped, power back but the breaker stayed off (repeated until it's on; optional automatic restore after supply faults), voltage near a cut-off, low prepaid balance, price slab warnings; weekly and monthly WhatsApp reports.
+- Sidebar app: live state and readings, power-cut statistics, heatmap, hourly odds and a year calendar, protection limits (editable) with advice, usage by hour/day/month, the bill on the BERC slab tariff with a month-end projection, the Palli Bidyut prepaid balance and days left, power quality, appliance detection.
+- Survives restarts of the add-on and Home Assistant by replaying HA's recorder; imports HA's statistics on first start. Publishes `sensor.electricity_*` sensors.
+
+See [electricity_monitor/DOCS.md](electricity_monitor/DOCS.md). Tests: `python electricity_monitor/test_main.py`; local preview with made-up data: `python electricity_monitor/dev_demo.py`.
+
 ## Valorant Store Tracker
 
 Checks the Valorant daily store right after it resets and WhatsApps you (through the PDC WhatsApp Bridge, no setup needed) when a wishlist skin shows up.
