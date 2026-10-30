@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadBoardPitches, withBoard, withBoardHistory, BOARD_PITCHED } from './board-feed.mjs';
+import { loadBoardPitches, withBoard, withBoardHistory, pushBoardFlags, BOARD_PITCHED } from './board-feed.mjs';
+import { openD1 } from './local-monitor.mjs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { TRELLO_SITE } from './monitor/trello-monitor.mjs';
 import { OS_SITE } from './monitor/pitch-sources.mjs';
 
@@ -70,4 +74,48 @@ test('switched off in Settings, the board is not read at all', async () => {
   assert.equal(withBoard(load, TRELLO_SITE, off, async () => { throw new Error('board read'); }), load);
   const base = async () => [];
   assert.equal(withBoardHistory(base, off), base);
+});
+
+test('board duplicates are flagged on the board once, retried on failure, and only when sending is on', async () => {
+  const db = openD1(join(mkdtempSync(join(tmpdir(), 'pdc-flags-')), 'm.db'));
+  const now = 1_800_000_000;
+  const finding = { verdict: 'duplicate', confidence: 90, reason: 'Same story',
+    candidate: { cardId: 'trello1', title: 'Earlier pitch', writer: 'Sam', editLink: 'https://trello.com/c/x' } };
+  const job = (card, result, checked = now - 60) => db.sqlite.prepare(`INSERT INTO trello_monitor_jobs (board_id, card_id, card_json, check_status, first_seen, checked_at, result_json)
+    VALUES ('os', ?, '{}', 'checked', ?, ?, ?)`).run(card, checked, checked, JSON.stringify(result));
+  job('kb7', [finding]);
+  job('kb8', [{ ...finding, confidence: 10 }]); // below the alert rules: never sent
+  job('trelloX', [finding]); // not a board pitch
+  job('kb9', [finding], now - 5 * 86400); // older than the window
+  const calls = [];
+  let status = 500;
+  const fetcher = async (url, init) => { calls.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization }); return new Response('{}', { status }); };
+  const run = (send = 'true') => pushBoardFlags({ db, options, sites: [OS_SITE], settings: { TRELLO_MONITOR_SEND: send },
+    qualifies: f => f.confidence >= 50, fetcher, clock: () => now * 1000 });
+
+  assert.equal(await run('false'), 0);
+  assert.equal(calls.length, 0);
+  assert.equal(await run(), 0); // board answers 500: kept for a retry
+  assert.deepEqual(calls[0], { url: 'https://board.example/api/feed/duplicates', auth: `Bearer ${options.boardToken}`, body: {
+    site: 'os-curveball', cardId: '7',
+    matches: [{ key: 'trello1', title: 'Earlier pitch', url: 'https://trello.com/c/x', platform: OS_SITE.platform, writer: 'Sam', verdict: 'duplicate', confidence: 90, reason: 'Same story' }],
+  } });
+  assert.equal(await run(), 0); // backing off: not yet
+  assert.equal(calls.length, 1);
+  db.sqlite.prepare('UPDATE board_flags SET next_try = 0').run();
+  status = 200;
+  assert.equal(await run(), 1);
+  assert.equal(await run(), 0); // sent once
+  assert.equal(calls.length, 2);
+
+  // a board without the endpoint yet (plain 404) is retried; a deleted card is not
+  job('kb10', [finding]);
+  status = 404;
+  await run();
+  assert.equal(db.sqlite.prepare("SELECT sent_at FROM board_flags WHERE card_id = 'kb10'").get().sent_at, null);
+  db.sqlite.prepare('UPDATE board_flags SET next_try = 0').run();
+  const gone = async (url, init) => { calls.push(url); return new Response(JSON.stringify({ error: 'Card not found' }), { status: 404 }); };
+  await pushBoardFlags({ db, options, sites: [OS_SITE], settings: { TRELLO_MONITOR_SEND: 'true' }, qualifies: () => true, fetcher: gone, clock: () => now * 1000 });
+  assert.equal(db.sqlite.prepare("SELECT sent_at FROM board_flags WHERE card_id = 'kb10'").get().sent_at, now);
+  db.sqlite.close();
 });

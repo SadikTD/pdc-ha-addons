@@ -23,7 +23,7 @@ import { AOTF_SITE, OS_SITE, TMS_SITE, loadAotfHistory } from './monitor/pitch-s
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
 import { monitorEngine } from './monitor/match-engine.mjs';
 import { DATA, log, remoteApi } from './bridge.mjs';
-import { withBoard, withBoardHistory } from './board-feed.mjs';
+import { withBoard, withBoardHistory, pushBoardFlags } from './board-feed.mjs';
 
 const SCHEMA = new URL('./monitor/monitor-schema.sql', import.meta.url);
 const INTERVAL = 60000;
@@ -370,6 +370,11 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
     problem(null);
     const settings = await withMonitorSettings(env());
     await Promise.all(sites.map(site => runSite(site, settings, started)));
+    // Then flag new duplicates on the board's cards (board-feed.mjs); a failure there never stops a scan.
+    try {
+      const n = await pushBoardFlags({ db, options, sites, settings, qualifies: alertFilter(settings), fetcher: limits.fetch || fetch, clock, log });
+      if (n) events.add('board_flag', `Flagged ${n} duplicate pitch${n === 1 ? '' : 'es'} on the Kanban board`);
+    } catch (e) { log(`Kanban board flags failed: ${String(e?.message || e).slice(0, 200)}`); }
   }
 
   const saveWatch = () => { try { writeFileSync(watchFile, JSON.stringify({ sites: alerted })); } catch { /* best effort */ } };
