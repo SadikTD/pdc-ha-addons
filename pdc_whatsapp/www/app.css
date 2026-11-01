@@ -430,6 +430,10 @@ svg.vi { width: 16px; height: 16px; stroke: none; fill: currentColor; }
 .code { font-size: 38px; font-weight: 750; letter-spacing: .14em; font-variant-numeric: tabular-nums; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
 .code span { display: inline-block; animation: pop .5s var(--ease) both; }
 @keyframes pop { from { opacity: 0; transform: translateY(10px) scale(.8); } }
+.qr { width: 240px; padding: 10px; border-radius: 12px; background: #fff; }
+.qr svg { display: block; width: 100%; height: auto; stroke: none; }
+.qr svg path { stroke-width: 1; stroke-linecap: butt; }
+.qr svg path:first-child { stroke: none; }
 .pairing ol { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 13px; }
 .conn { display: flex; align-items: center; gap: 14px; padding: 14px 22px 18px; flex-wrap: wrap; }
 .avatar { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, #1baf7a, #0e7a55); color: #fff; font-weight: 700; position: relative; }

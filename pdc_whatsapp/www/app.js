@@ -289,7 +289,7 @@ function renderChrome() {
   if (st) {
     const b = st.bridge;
     pills.push(b.connected && b.accountOk ? `<span class="pill"><span class="dot live"></span>WhatsApp connected</span>`
-      : b.pairingCode ? `<span class="pill"><span class="dot warn"></span>Waiting for pairing</span>`
+      : !b.paired ? `<span class="pill"><span class="dot warn"></span>WhatsApp not linked</span>`
       : b.connected ? `<span class="pill"><span class="dot bad"></span>Wrong WhatsApp account</span>`
       : `<span class="pill"><span class="dot bad"></span>WhatsApp offline</span>`);
   }
@@ -307,7 +307,7 @@ function renderChrome() {
   $('#pills').innerHTML = pills.join('');
 
   const banners = [];
-  if (st?.bridge.pairingCode) banners.push(`<div class="banner" style="--c:var(--warning)"><svg viewBox="0 0 16 16"><use href="#v-near_miss"/></svg><div><b>Link WhatsApp:</b> enter code <b class="num">${esc(st.bridge.pairingCode)}</b> on ${esc(st.bridge.sender)} under Linked devices › Link with phone number.</div><a class="btn" href="#settings">Details</a></div>`);
+  if (st && !st.bridge.paired) banners.push(`<div class="banner" style="--c:var(--warning)"><svg viewBox="0 0 16 16"><use href="#v-near_miss"/></svg><div><b>WhatsApp isn't linked.</b> Open Settings and scan the QR code with ${esc(st.bridge.sender)}.</div><a class="btn" href="#settings">Link now</a></div>`);
   if (S.monitorError) banners.push(`<div class="banner" style="--c:var(--critical)"><svg viewBox="0 0 16 16"><use href="#v-duplicate"/></svg><div>${esc(S.monitorError)}</div><a class="btn" href="#settings">Open settings</a></div>`);
   for (const x of sites()) {
     const why = scanTrouble(x);
@@ -463,7 +463,7 @@ function renderHealth() {
   if (st) {
     const b = st.bridge;
     if (b.connected && b.accountOk) row('live', 'WhatsApp link', `${esc(b.user?.number || b.sender)} · up ${dur(Date.now() - b.connectedSince)}`);
-    else if (b.pairingCode) row('warn', 'WhatsApp link', 'Waiting for pairing code');
+    else if (!b.paired) row('warn', 'WhatsApp link', b.linking ? 'Waiting for you to scan or enter the code' : 'Not linked. Link it in Settings');
     else row('bad', 'WhatsApp link', b.offlineSince ? `Offline ${dur(Date.now() - b.offlineSince)}` : 'Offline');
   }
   if (S.monitorError) row('bad', onPi() ? 'Pitch monitor' : 'Pitch-checker Worker', esc(S.monitorError.length > 40 ? (onPi() ? 'Error' : 'Unreachable') : S.monitorError));
@@ -978,18 +978,23 @@ function renderConnection() {
   if (!st) { el.innerHTML = '<div class="s-head"><div class="skel" style="height:60px;width:100%"></div></div>'; return; }
   const b = st.bridge, ok = b.connected && b.accountOk;
   const code = b.pairingCode ? [...b.pairingCode].map((c, i) => `<span style="animation-delay:${i * 60}ms">${esc(c)}</span>`).join('') : '';
-  const sig = `${ok}|${b.pairingCode}|${b.connected}|${b.user?.number}`;
+  const sig = `${ok}|${b.paired}|${b.linking}|${b.qr}|${b.pairingCode}|${b.connected}|${b.user?.number}`;
   if (el.dataset.sig === sig) { const up = $('#conn-up'); if (up) up.textContent = ok ? `Connected for ${dur(Date.now() - b.connectedSince)}` : b.offlineSince ? `Offline for ${dur(Date.now() - b.offlineSince)}` : 'Offline'; return; }
   el.dataset.sig = sig;
   el.innerHTML = `
     <div class="s-head"><span class="ico"><svg><use href="#i-link"/></svg></span><div><h2>WhatsApp connection</h2><p>The linked device that sends WhatsApp messages.</p></div></div>
     <div class="conn"><div class="avatar${ok ? '' : ' off'}">${esc((b.user?.name || 'WA').slice(0, 2).toUpperCase())}</div>
-      <div class="who"><b>${ok ? esc(b.user?.name || 'Linked') : b.pairingCode ? 'Waiting for pairing' : b.connected ? 'Wrong account linked' : 'Not connected'}</b>
+      <div class="who"><b>${ok ? esc(b.user?.name || 'Linked') : !b.paired ? 'Not linked' : b.connected ? 'Wrong account linked' : 'Not connected'}</b>
         <small>${esc(b.user?.number || b.sender)} · <span id="conn-up">${ok ? `Connected for ${dur(Date.now() - b.connectedSince)}` : b.offlineSince ? `Offline for ${dur(Date.now() - b.offlineSince)}` : 'Offline'}</span>${b.reconnects ? ` · ${b.reconnects} reconnect${b.reconnects === 1 ? '' : 's'}` : ''}</small></div>
       <button class="btn" id="btn-test" ${ok ? '' : 'disabled'}><svg><use href="#i-send"/></svg>Send test</button>
-      <button class="btn danger" id="btn-relink"><svg><use href="#i-refresh"/></svg>${b.paired ? 'Relink device' : 'New pairing code'}</button></div>
-    ${b.pairingCode ? `<div class="pairing"><div class="muted small">Pairing code for ${esc(b.sender)}</div><div class="code">${code}</div>
-      <ol><li>On that phone open WhatsApp › Settings › Linked devices › Link a device</li><li>Tap “Link with phone number instead”</li><li>Enter the code above. It refreshes automatically if it expires.</li></ol></div>` : ''}`;
+      ${b.paired ? '<button class="btn danger" id="btn-relink"><svg><use href="#i-refresh"/></svg>Relink device</button>' : ''}</div>
+    ${b.paired ? '' : b.linking === 'qr' && b.qr ? `<div class="pairing"><div class="qr">${b.qr}</div>
+      <ol><li>On ${esc(b.sender)} open WhatsApp › Settings › Linked devices › Link a device</li><li>Point the phone at this QR code</li><li>It changes every 20 seconds and stops after about 3 minutes. Click again if it runs out.</li></ol></div>`
+    : b.linking === 'code' && b.pairingCode ? `<div class="pairing"><div class="muted small">Pairing code for ${esc(b.sender)}</div><div class="code">${code}</div>
+      <ol><li>On that phone open WhatsApp › Settings › Linked devices › Link a device</li><li>Tap “Link with phone number instead”</li><li>Enter the code above within 2 minutes. A new one is only made when you click again.</li></ol></div>`
+    : b.linking ? '<div class="pairing"><div class="muted small">Getting a code from WhatsApp…</div></div>'
+    : `<div class="pairing"><div class="muted small">Scan a QR code with the sender phone to link it. If WhatsApp said to try again later, wait about an hour first.</div>
+      <div class="pair"><button class="btn primary" id="btn-link-qr"><svg><use href="#i-link"/></svg>Show QR code</button><button class="btn ghost" id="btn-link-code">Use a phone code instead</button></div></div>`}`;
 }
 
 function updateSavebar() {
@@ -1062,6 +1067,9 @@ async function loadStatus() {
   renderChrome();
   if (S.page === 'overview') { renderTiles(); renderHealth(); }
   if (S.page === 'settings') renderSettings();
+  // The QR code changes every 20 s, so check more often while linking.
+  clearTimeout(S.linkPoll);
+  if (S.status?.bridge.linking) S.linkPoll = setTimeout(() => !document.hidden && loadStatus(), 3000);
 }
 async function loadMonitor(fresh = false) {
   try {
@@ -1183,10 +1191,16 @@ document.addEventListener('click', async e => {
     const box = $('#f-tpl'); box.value = S.status.alertTemplate.default;
     box.dispatchEvent(new Event('input', { bubbles: true })); return;
   }
-  if (t.id === 'btn-relink') {
-    if (!confirm('Unlink this bridge from WhatsApp and get a new pairing code?\n\nAlerts pause until you enter the new code on the sender phone.')) return;
+  if (t.id === 'btn-link-qr' || t.id === 'btn-link-code') {
     t.classList.add('busy');
-    try { await api('api/relink', { method: 'POST' }); toast('Unlinked. A new pairing code appears in a few seconds', 'ok'); setTimeout(loadStatus, 3000); }
+    try { await api('api/link', { method: 'POST', body: { mode: t.id === 'btn-link-code' ? 'code' : 'qr' } }); setTimeout(loadStatus, 2500); }
+    catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
+    return;
+  }
+  if (t.id === 'btn-relink') {
+    if (!confirm('Unlink this bridge from WhatsApp and link it again?\n\nWhatsApp messages pause until you scan the new QR code with the sender phone.')) return;
+    t.classList.add('busy');
+    try { await api('api/relink', { method: 'POST' }); toast('Unlinked. The QR code appears in a few seconds', 'ok'); setTimeout(loadStatus, 3000); }
     catch (err) { toast(err.message, 'bad'); } finally { t.classList.remove('busy'); }
     return;
   }

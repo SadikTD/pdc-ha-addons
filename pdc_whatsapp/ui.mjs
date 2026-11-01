@@ -258,6 +258,10 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
       return [200, { ok: true }];
     }
     if (route === 'POST /api/relink') { await wa.relink(); return [200, { ok: true }]; }
+    if (route === 'POST /api/link') {
+      try { await wa.link((await readBody(req)).mode); } catch (e) { throw new HttpError(409, e.message); }
+      return [200, { ok: true }];
+    }
     if (route === 'GET /api/settings') return [200, safeOptions()];
     // Chats alerts can go to: the recipient number and the groups the sender is in.
     if (route === 'GET /api/chats') {

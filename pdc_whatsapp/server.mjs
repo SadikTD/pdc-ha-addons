@@ -4,6 +4,7 @@ import http from 'node:http';
 import { rm, mkdir, readFile } from 'node:fs/promises';
 import makeWASocket, { DisconnectReason, Browsers, fetchLatestBaileysVersion } from 'baileys';
 import pino from 'pino';
+import QRCode from 'qrcode';
 import { DATA, loadOptions, createLedger, createHandler, createEventLog, createUpstreamWatchdog, createOutboxPoller, createDelivery, remoteApi, alertTarget, log } from './bridge.mjs';
 import { useAtomicAuthState } from './auth-state.mjs';
 import { createUiHandler } from './ui.mjs';
@@ -39,7 +40,8 @@ async function haNotify(options, message, id = 'pdc_whatsapp_bridge') {
 }
 
 // ---------------------------------------------------------------------------
-// Baileys connection with pairing-code login and automatic reconnects.
+// Baileys connection: linked by QR code (or a phone code on request) from the
+// dashboard, with automatic reconnects once linked.
 // ---------------------------------------------------------------------------
 // Why a linked device drops, in plain words. Measured 2026-09-30..10-02: 5-8
 // drops a day, all back within 2-15 s. 408s line up with the Pi's internet
@@ -60,7 +62,7 @@ export function startWhatsApp(options, events) {
   const notify = message => haNotify(options, message);
   let sock = null, auth = null, connected = false, accountOk = false, paired = false;
   let retry = 0, reconnectTimer = null, offlineSince = Date.now(), notified = false, stopping = false;
-  let pairingCode = null, pairingAt = null, user = null, connectedSince = null, reconnects = 0, lastDisconnect = null;
+  let pairingCode = null, pairingAt = null, linkMode = null, qrSvg = null, user = null, connectedSince = null, reconnects = 0, lastDisconnect = null;
   let groupCache = null, drop = null;
 
   const schedule = delay => {
@@ -81,7 +83,7 @@ export function startWhatsApp(options, events) {
       notified = true;
       notify(paired
         ? `WhatsApp has been disconnected for over ${options.offlineMinutes} minutes. Pitch alerts are queued and will send once it reconnects. Check the add-on log.`
-        : 'WhatsApp is not linked. Open PDC Monitor in the sidebar (or the add-on log) and enter the pairing code on the sender phone under Linked devices.');
+        : 'WhatsApp is not linked. Open PDC Monitor in the sidebar, go to Settings and scan the QR code with the sender phone.');
     }
   }, 60000).unref();
 
@@ -90,7 +92,12 @@ export function startWhatsApp(options, events) {
     await mkdir(AUTH_DIR, { recursive: true });
     auth ||= await useAtomicAuthState(AUTH_DIR);
     const { state, saveCreds } = auth;
-    paired = Boolean(state.creds.registered);
+    // `account` is set once WhatsApp accepts the link (QR or code). Unlinked, the
+    // bridge only connects while someone is linking from the dashboard: on
+    // 2026-11-01 it requested a new code every time one expired (~20 an hour)
+    // and WhatsApp stopped accepting codes for the number.
+    paired = Boolean(state.creds.account);
+    if (!paired && !linkMode) { log('WhatsApp is not linked. Open PDC Monitor > Settings to link it.'); return; }
     const { version } = await fetchLatestBaileysVersion().catch(() => ({}));
     const current = sock = makeWASocket({
       auth: state, logger, browser: Browsers.macOS('Chrome'), // WhatsApp rejects phone-number pairing for unknown client names
@@ -102,7 +109,10 @@ export function startWhatsApp(options, events) {
 
     current.ev.on('connection.update', async ({ connection, lastDisconnect: last, qr }) => {
       if (current !== sock) return; // events from a replaced socket
-      if (qr && !state.creds.registered && !pairingRequested) {
+      if (qr && !state.creds.account && linkMode === 'qr') {
+        qrSvg = await QRCode.toString(qr, { type: 'svg', margin: 2 }).catch(() => null);
+      }
+      if (qr && !state.creds.account && linkMode === 'code' && !pairingRequested) {
         pairingRequested = true;
         try {
           const code = await current.requestPairingCode(options.sender);
@@ -116,7 +126,7 @@ export function startWhatsApp(options, events) {
         } catch (e) { log('Could not request pairing code:', e?.message || e); events.add('error', `Could not request pairing code: ${e?.message || e}`); }
       }
       if (connection === 'open') {
-        connected = true; paired = true; retry = 0; offlineSince = 0; pairingCode = null; connectedSince = Date.now();
+        connected = true; paired = true; retry = 0; offlineSince = 0; pairingCode = null; qrSvg = null; linkMode = null; connectedSince = Date.now();
         const number = current.user?.id?.split(':')[0]?.split('@')[0];
         user = { number: number ? `+${number}` : null, name: current.user?.name || current.user?.verifiedName || null };
         accountOk = number === options.sender;
@@ -136,17 +146,27 @@ export function startWhatsApp(options, events) {
         const code = last?.error?.output?.statusCode;
         lastDisconnect = { at: Date.now(), code: code ?? null };
         if (wasConnected) reconnects++;
+        if (!state.creds.account && code !== DisconnectReason.restartRequired) {
+          // Not linked yet and the QR/code ran out (or was refused): stop here
+          // instead of asking WhatsApp for another one.
+          const why = code === DisconnectReason.timedOut ? 'The QR code / pairing code expired' : `Linking stopped (code ${code ?? 'none'})`;
+          log(`${why}. Open PDC Monitor > Settings to try again.`);
+          events.add('pairing', `${why}; start again from Settings`);
+          current.ev.removeAllListeners('creds.update');
+          await rm(AUTH_DIR, { recursive: true, force: true });
+          auth = null; linkMode = null; qrSvg = null; pairingCode = null;
+          return;
+        }
         if (code === DisconnectReason.loggedOut) {
-          log('WhatsApp rejected the session (unlinked on the phone, or pairing failed). Starting over with a new pairing code.');
-          events.add('logged_out', 'WhatsApp ended the session (unlinked on the phone, or pairing failed)');
+          log('WhatsApp unlinked this device. Open PDC Monitor > Settings to link it again.');
+          events.add('logged_out', 'WhatsApp unlinked this device; link it again from Settings');
           current.ev.removeAllListeners('creds.update');
           await auth.flush().catch(() => {});
           await rm(AUTH_DIR, { recursive: true, force: true });
-          auth = null; paired = false; retry = 0; user = null;
-          if (state.creds.registered) {
-            notified = true;
-            notify('This bridge was unlinked from WhatsApp, so pitch alerts are paused. Open PDC Monitor in the sidebar and enter the new pairing code on the sender phone.');
-          }
+          auth = null; paired = false; retry = 0; user = null; accountOk = false;
+          notified = true;
+          notify('This bridge was unlinked from WhatsApp, so WhatsApp messages are paused. Open PDC Monitor in the sidebar, go to Settings and scan the QR code with the sender phone.');
+          return;
         } else if (code === DisconnectReason.forbidden) {
           notified = true;
           events.add('forbidden', 'WhatsApp refused the connection (403); the sender number may be restricted');
@@ -184,7 +204,7 @@ export function startWhatsApp(options, events) {
   schedule(0);
   return {
     status: () => ({
-      connected, paired, accountOk, pairingCode, pairingAt, user, connectedSince, reconnects, lastDisconnect,
+      connected, paired, accountOk, pairingCode, pairingAt, linking: linkMode, qr: qrSvg, user, connectedSince, reconnects, lastDisconnect,
       offlineSince: connected ? null : offlineSince || null, sender: `+${options.sender}`,
     }),
     async send(jid, text) {
@@ -220,10 +240,22 @@ export function startWhatsApp(options, events) {
       groupCache = { at: Date.now(), list };
       return list;
     },
-    // Dashboard "Relink": unlink this device and start over with a fresh pairing code.
+    // Dashboard "Link": a fresh QR code, or one phone pairing code ('code').
+    // Only ever started by a click, never automatically.
+    async link(mode = 'qr') {
+      if (paired) throw new Error('Already linked');
+      log(`Linking started from the dashboard (${mode === 'code' ? 'phone code' : 'QR code'})`);
+      clearTimeout(reconnectTimer);
+      const current = sock; sock = null;
+      current?.ev.removeAllListeners('creds.update'); current?.end(undefined);
+      await rm(AUTH_DIR, { recursive: true, force: true });
+      auth = null; linkMode = mode === 'code' ? 'code' : 'qr'; qrSvg = null; pairingCode = null; retry = 0;
+      schedule(0);
+    },
+    // Dashboard "Relink": unlink this device and show a fresh QR code.
     async relink() {
       log('Relink requested from the dashboard');
-      events.add('relink', 'Unlinked from the dashboard; a new pairing code follows');
+      events.add('relink', 'Unlinked from the dashboard; scan the new QR code in Settings');
       clearTimeout(reconnectTimer);
       const current = sock; sock = null; // ignore events from the old socket
       current?.ev.removeAllListeners('creds.update');
@@ -231,7 +263,7 @@ export function startWhatsApp(options, events) {
       await auth?.flush().catch(() => {});
       await rm(AUTH_DIR, { recursive: true, force: true });
       auth = null; paired = false; connected = false; accountOk = false; user = null; pairingCode = null; groupCache = null;
-      connectedSince = null; offlineSince = Date.now(); retry = 0; notified = false;
+      connectedSince = null; offlineSince = Date.now(); retry = 0; notified = false; qrSvg = null; linkMode = 'qr';
       schedule(500);
     },
     // Home Assistant stops/updates the add-on with SIGTERM: finish session writes first.
