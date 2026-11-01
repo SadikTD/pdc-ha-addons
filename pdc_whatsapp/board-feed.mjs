@@ -2,7 +2,9 @@
 // (Trello, the AotF sheet, Asana). Writers are moving to the board, so for a
 // while a pitch may be on either one: each site's scan reads both, and its
 // older pitches include the board's last 90 days too. A board pitch in Pitched
-// counts as a new pitch; the rest are earlier pitches to compare against.
+// or Writing counts as a new pitch (editors add theirs straight to Writing); the
+// rest are earlier pitches to compare against. Each card is checked once, so one
+// that moves from Pitched to Writing isn't checked again.
 // Sites listed in board_only_sites stop reading their old platform (its 90
 // days of history are still compared against until they run out).
 //
@@ -13,6 +15,7 @@ import { platformOf } from './slack-layout.mjs';
 
 export const BOARD_SLUG = { wgtc: 'wgtc', aotf: 'aotf', os: 'os-curveball', tms: 'tms' };
 export const BOARD_PITCHED = 'board_pitched';
+const NEW_PITCH_COLS = ['pitched', 'writing'];
 const HISTORY_EVERY = 15 * 60000;
 const clean = (s, n = 180) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
 
@@ -30,7 +33,7 @@ export async function loadBoardPitches(options, site, days, fetcher = fetch) {
   if (!Array.isArray(json?.pitches)) throw new Error('Kanban board read failed (invalid response)');
   return json.pitches.map(p => ({
     id: `kb${clean(p.id, 20)}`, name: clean(p.title, 2000), desc: (p.sources || []).map(s => clean(s, 500)).join('\n'),
-    idList: p.col === 'pitched' ? BOARD_PITCHED : 'board', closed: false,
+    idList: NEW_PITCH_COLS.includes(p.col) ? BOARD_PITCHED : 'board', closed: false,
     shortUrl: /^https?:\/\//.test(p.url || '') ? p.url : '',
     _listName: `Board · ${clean(p.colLabel || p.col, 90)}`, _writer: clean(p.writer, 180) || 'Unassigned',
     _site: site.label, _created: p.created || null,

@@ -20,14 +20,15 @@ function feed(pitches, status = 200) {
   return { fetcher, calls };
 }
 
-test('board pitches become monitor cards; only Pitched ones are new pitches', async () => {
-  const { fetcher, calls } = feed([pitch(1, 'pitched'), pitch(2, 'writing', { url: 'javascript:alert(1)' })]);
+test('board pitches become monitor cards; Pitched and Writing ones are new pitches', async () => {
+  const { fetcher, calls } = feed([pitch(1, 'pitched'), pitch(2, 'writing', { url: 'javascript:alert(1)' }), pitch(3, 'ready_for_edit')]);
   const cards = await loadBoardPitches(options, OS_SITE, 8, fetcher);
   assert.deepEqual(calls, [{ url: 'https://board.example/api/feed/pitches?site=os-curveball&days=8', auth: `Bearer ${options.boardToken}`, method: 'GET' }]);
   assert.deepEqual(cards[0], { id: 'kb1', name: 'Pitch 1', desc: 'https://x.com/a/status/1', idList: BOARD_PITCHED, closed: false,
     shortUrl: 'https://board.example/b/wgtc/c/1', _listName: 'Board · Pitched', _writer: 'Nadia', _site: 'OS', _created: '2026-10-20T10:00:00.000Z' });
-  assert.equal(cards[1].idList, 'board');
+  assert.equal(cards[1].idList, BOARD_PITCHED);
   assert.equal(cards[1].shortUrl, '');
+  assert.equal(cards[2].idList, 'board');
 });
 
 test('a refused or broken feed fails the scan instead of checking a partial list', async () => {
