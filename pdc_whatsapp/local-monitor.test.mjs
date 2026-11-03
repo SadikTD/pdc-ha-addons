@@ -273,3 +273,14 @@ test('Test a pitch: same check as a scan, without and with the double-check, not
   await assert.rejects(() => s.monitor.tryPitch('nope', 'x'.repeat(20)));
   s.monitor.stop();
 });
+
+test('board-only sites are named after the Kanban board and need no old-platform login', async () => {
+  const options = { token, recipient: '15551234567', workerUrl: 'https://worker.example', boardUrl: 'https://board.example', boardToken: 'f'.repeat(48), boardOnly: ['aotf', 'os'] };
+  const s = setup({ sites: SITES, options });
+  await runTrelloMonitor(s.worker, engine, { load: s.load });
+  await s.monitor.tick();
+  const d = await s.monitor.api('/bridge/dashboard').then(r => r.json());
+  assert.deepEqual(d.sites.map(x => [x.id, x.platform, x.needs]),
+    [['wgtc', 'Trello', null], ['aotf', 'Kanban board', null], ['os', 'Kanban board', null], ['tms', 'Trello', null]]);
+  s.monitor.stop();
+});

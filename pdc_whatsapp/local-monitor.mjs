@@ -214,7 +214,11 @@ function writePrivate(file, data) {
 // `onAlert(text, recovered, site)` tells the recipient about one site.
 // `sites` and `dependencies.loaders[siteId]` let tests run without the network.
 export function createLocalMonitor({ options, events, onRun = () => {}, onAlert = async () => false, onStuck = () => {}, fetcher = fetch, engine, dependencies = {},
-  file = `${DATA}/monitor.db`, configFile = `${DATA}/monitor.json`, watchFile = `${DATA}/monitor-watch.json`, clock = Date.now, limits = {}, sites = SITES }) {
+  file = `${DATA}/monitor.db`, configFile = `${DATA}/monitor.json`, watchFile = `${DATA}/monitor-watch.json`, clock = Date.now, limits = {}, sites: allSites = SITES }) {
+  // A board-only site (board_only_sites) reads nothing from its old platform, so it
+  // is named after the board and needs none of the old platform's logins.
+  const boardOnly = site => boardOn(options) && options.boardOnly?.includes(site.id);
+  const sites = allSites.map(s => boardOnly(s) ? { ...s, platform: 'Kanban board', validate() {}, needs: () => null } : s);
   const db = openD1(file);
   let config = null;
   try { config = JSON.parse(readFileSync(configFile, 'utf8')); } catch { /* not moved yet */ }
@@ -227,7 +231,7 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
   const engineFor = site => engine || { ...monitorEngine, call: (prompt, e, _fetcher, meta) => monitorLLM(prompt, e, guarded[site.id], meta) };
   const loaders = {
     [TRELLO_SITE.id]: dependencies.load || (e => loadMonitorCards(e, (path, params, e2) => monitorTrelloGet(path, params, e2, guarded[TRELLO_SITE.id]))),
-    ...Object.fromEntries(sites.filter(s => s !== TRELLO_SITE).map(s => [s.id, dependencies.loaders?.[s.id] || (e => s.load(e, guarded[s.id]))])),
+    ...Object.fromEntries(sites.filter(s => s.id !== TRELLO_SITE.id).map(s => [s.id, dependencies.loaders?.[s.id] || (e => s.load(e, guarded[s.id]))])),
   };
   // Each site also reads its pitches on the Gamurs Kanban board (board-feed.mjs).
   for (const s of sites) loaders[s.id] = withBoard(loaders[s.id], s, options, guarded[s.id]);
@@ -465,7 +469,7 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
     // The Slack layout of a duplicate alert, from its key (null: not an alert).
     async slackPayload(key) {
       const m = /^(trello|pitch):([^:]+):([^:]+)$/.exec(key);
-      const site = m && sites.find(s => s.alertKey(m[2], m[3]) === key && (m[1] === 'trello' ? s === TRELLO_SITE : s.board(env()) === m[2]));
+      const site = m && sites.find(s => s.alertKey(m[2], m[3]) === key && (m[1] === 'trello' ? s.id === TRELLO_SITE.id : s.board(env()) === m[2]));
       if (!site || !config) return null;
       const job = db.sqlite.prepare('SELECT card_json,result_json FROM trello_monitor_jobs WHERE board_id=? AND card_id=?').get(m[2], m[3]);
       return job ? slackAlert(job, alertFilter(await withMonitorSettings(env())), site) : null;

@@ -903,7 +903,8 @@ function renderSettings(force = false) {
       <div class="field col"><div class="fl">Sites<small>Each site is scanned every minute, and a new pitch is only compared with that site's own pitches</small></div>
         <div class="site-toggles">${sites().map(x => {
           const key = { wgtc: 'enabled', aotf: 'aotf_enabled', os: 'os_enabled', tms: 'tms_enabled' }[x.id];
-          const what = { wgtc: 'Kanban board · the board lists below, plus the old Trello board', aotf: 'Kanban board · the board lists below, plus the old Google Sheet', os: 'Kanban board · the board lists below, plus the old Asana project', tms: 'Kanban board · the board lists below, plus the old Trello board' }[x.id] || x.platform;
+          const old = { wgtc: 'Trello board', aotf: 'Google Sheet', os: 'Asana project', tms: 'Trello board' }[x.id];
+          const what = !old ? x.platform : x.platform === 'Kanban board' ? `The board lists below. Older pitches from the old ${old} are still compared for 90 days` : `Kanban board · the board lists below, plus the old ${old}`;
           return `<label class="site-toggle" style="--sc:${SITE_COLOR[x.id]}"><span class="st-mark">${esc(x.label)}</span><span class="st-t"><b>${esc(x.label)} <span class="muted">· ${esc(x.platform)}</span></b><small>${esc(what)}${x.needs ? `<em>${esc(x.needs)}, under WhatsApp and add-on below</em>` : ''}</small></span>${toggle(key, d[key], `Watch ${x.label}`)}</label>`;
         }).join('')}</div></div>
       <div class="field"><div class="fl">Double-check duplicates<small>Asks the AI a second, focused question about every possible duplicate before deciding. Catches reworded duplicates and stops look-alike stories from being flagged</small></div>${toggle('second_opinion', d.second_opinion, 'Double-check duplicates')}</div>
