@@ -93,7 +93,7 @@ export function validateBridgeSettings(changes) {
 }
 
 // `localMonitor()` returns the in-add-on monitor's API, or null before it has moved.
-export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, tryPitch = async () => { throw new Error('not available'); }, optionsFile = `${DATA}/options.json`, target = alertTarget(options, wa, events), deliver = createDelivery({ options, ledger, wa, events, target, fetcher }) }) {
+export function createUiHandler({ options, ledger, wa, events, version, supervisor, restart, fetcher = fetch, localMonitor = () => null, monitorHealth = () => null, tryPitch = async () => { throw new Error('not available'); }, boardLists = async () => ({ sites: [], error: 'not available' }), optionsFile = `${DATA}/options.json`, target = alertTarget(options, wa, events), deliver = createDelivery({ options, ledger, wa, events, target, fetcher }) }) {
   let monitorCache = null;
   const remote = remoteApi(options, fetcher);
 
@@ -210,6 +210,7 @@ export function createUiHandler({ options, ledger, wa, events, version, supervis
     if (route === 'GET /api/monitor') return [200, await monitor(false)];
     if (route === 'GET /api/lists') return [200, (await worker('/bridge/lists')).body];
     if (route === 'GET /api/lists/tms') return [200, (await worker('/bridge/lists?site=tms')).body];
+    if (route === 'GET /api/board-lists') return [200, await boardLists()];
     if (route === 'POST /api/monitor/settings') {
       const body = await readBody(req);
       const { status: code, body: result } = await worker('/bridge/settings', { method: 'POST', body: JSON.stringify({ settings: body.settings }) });

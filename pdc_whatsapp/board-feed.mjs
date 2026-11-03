@@ -1,8 +1,8 @@
 // The Gamurs Kanban board as a pitch source, next to each site's old platform
 // (Trello, the AotF sheet, Asana). Writers are moving to the board, so for a
 // while a pitch may be on either one: each site's scan reads both, and its
-// older pitches include the board's last 90 days too. A board pitch in Pitched
-// or Writing counts as a new pitch (editors add theirs straight to Writing); the
+// older pitches include the board's last 90 days too. A board pitch in one of
+// the site's watched lists (Settings > Board lists) counts as a new pitch; the
 // rest are earlier pitches to compare against. Each card is checked once, so one
 // that moves from Pitched to Writing isn't checked again.
 // Sites listed in board_only_sites stop reading their old platform (its 90
@@ -16,10 +16,22 @@ import { platformOf } from './slack-layout.mjs';
 export const BOARD_SLUG = { wgtc: 'wgtc', aotf: 'aotf', os: 'os-curveball', tms: 'tms' };
 export const BOARD_PITCHED = 'board_pitched';
 const NEW_PITCH_COLS = ['pitched', 'writing'];
+const BUILTIN_COLS = ['squelched', 'pitched', 'writing', 'ready_for_edit', 'scheduled', 'submitted', 'check_daily', 'archive'];
 const HISTORY_EVERY = 15 * 60000;
 const clean = (s, n = 180) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
 
-export async function loadBoardPitches(options, site, days, fetcher = fetch) {
+// Whether new cards in a board list are checked. `pick` is the site's saved
+// choice ({ on, off } list keys). A list picked neither way (one added on the
+// board later) is watched if it's a pitch or writing list; of the board's own
+// lists only Pitched and Writing are, as before.
+export function boardListWatched(pick, col) {
+  if (pick?.on?.includes(col.key)) return true;
+  if (pick?.off?.includes(col.key)) return false;
+  if (BUILTIN_COLS.includes(col.key)) return NEW_PITCH_COLS.includes(col.key);
+  return col.stage === 'pitch' || col.stage === 'progress';
+}
+
+async function readFeed(options, site, days, fetcher) {
   const url = new URL(`${options.boardUrl}/api/feed/pitches`);
   url.searchParams.set('site', BOARD_SLUG[site.id]);
   url.searchParams.set('days', String(days));
@@ -31,16 +43,35 @@ export async function loadBoardPitches(options, site, days, fetcher = fetch) {
   if (!res.ok) throw new Error(`Kanban board read failed (${res.status})`);
   const json = await res.json().catch(() => null);
   if (!Array.isArray(json?.pitches)) throw new Error('Kanban board read failed (invalid response)');
-  return json.pitches.map(p => ({
+  return json;
+}
+
+export async function loadBoardPitches(options, site, days, fetcher = fetch, pick) {
+  const { pitches } = await readFeed(options, site, days, fetcher);
+  return pitches.map(p => ({
     id: `kb${clean(p.id, 20)}`, name: clean(p.title, 2000), desc: (p.sources || []).map(s => clean(s, 500)).join('\n'),
-    idList: NEW_PITCH_COLS.includes(p.col) ? BOARD_PITCHED : 'board', closed: false,
+    idList: boardListWatched(pick, { key: p.col, stage: p.stage }) ? BOARD_PITCHED : 'board', closed: false,
     shortUrl: /^https?:\/\//.test(p.url || '') ? p.url : '',
     _listName: `Board · ${clean(p.colLabel || p.col, 90)}`, _writer: clean(p.writer, 180) || 'Unassigned',
     _site: site.label, _created: p.created || null,
   }));
 }
 
-const boardOn = options => Boolean(options.boardUrl && options.boardToken && options.boardEnabled !== false);
+// A site's board lists for the Settings picker: those the feed names (if the
+// board sends `columns`), plus every list holding a pitch from the last 90 days.
+export async function boardLists(options, site, pick, fetcher = fetch) {
+  const json = await readFeed(options, site, 90, fetcher);
+  const cols = new Map();
+  for (const c of Array.isArray(json.columns) ? json.columns : []) cols.set(c.key, { key: c.key, label: c.label || c.key, stage: c.stage || null, cards: 0 });
+  for (const p of json.pitches) {
+    if (!cols.has(p.col)) cols.set(p.col, { key: p.col, label: p.colLabel || p.col, stage: p.stage || null, cards: 0 });
+    cols.get(p.col).cards++;
+  }
+  return [...cols.values()].filter(c => /^[\w-]{1,40}$/.test(c.key))
+    .map(c => ({ ...c, label: clean(c.label, 60), watched: boardListWatched(pick, c) }));
+}
+
+export const boardOn = options => Boolean(options.boardUrl && options.boardToken && options.boardEnabled !== false);
 
 // A site's loader plus the board's pitches from the same reference window.
 export function withBoard(load, site, options, fetcher = fetch) {
@@ -49,7 +80,7 @@ export function withBoard(load, site, options, fetcher = fetch) {
   return async env => {
     const [own, board] = await Promise.all([
       oldPlatform ? load(env) : { cards: [], watched: [] },
-      loadBoardPitches(options, site, effectiveSettings(env).reference_days + 1, fetcher),
+      loadBoardPitches(options, site, effectiveSettings(env).reference_days + 1, fetcher, effectiveSettings(env).board_lists[site.id]),
     ]);
     return { cards: [...own.cards, ...board], watched: [...own.watched, BOARD_PITCHED] };
   };

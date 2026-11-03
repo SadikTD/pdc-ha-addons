@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadBoardPitches, withBoard, withBoardHistory, pushBoardFlags, BOARD_PITCHED } from './board-feed.mjs';
+import { loadBoardPitches, withBoard, withBoardHistory, pushBoardFlags, boardLists, BOARD_PITCHED } from './board-feed.mjs';
 import { openD1 } from './local-monitor.mjs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -119,4 +119,17 @@ test('board duplicates are flagged on the board once, retried on failure, and on
   await pushBoardFlags({ db, options, sites: [OS_SITE], settings: { TRELLO_MONITOR_SEND: 'true' }, qualifies: () => true, fetcher: gone, clock: () => now * 1000 });
   assert.equal(db.sqlite.prepare("SELECT sent_at FROM board_flags WHERE card_id = 'kb10'").get().sent_at, now);
   db.sqlite.close();
+});
+
+test('board lists: new pitch and writing lists are watched until picked otherwise; picks are per site', async () => {
+  const pitches = [pitch(1, 'pitched', { stage: 'pitch' }), pitch(2, 'xab12cd34', { colLabel: 'Pitch Pool', stage: 'pitch' }), pitch(3, 'xab12cd34', { stage: 'pitch' }),
+    pitch(4, 'ready_for_edit', { colLabel: 'Ready for Edit', stage: 'progress' }), pitch(5, 'x0000beef', { colLabel: 'Evergreen', stage: 'publish' })];
+  const ids = async pick => (await loadBoardPitches(options, OS_SITE, 8, feed(pitches).fetcher, pick)).filter(c => c.idList === BOARD_PITCHED).map(c => c.id);
+  assert.deepEqual(await ids(undefined), ['kb1', 'kb2', 'kb3']); // the new pitch list is picked up on its own
+  assert.deepEqual(await ids({ on: ['ready_for_edit'], off: ['xab12cd34', 'pitched'] }), ['kb4']);
+  const { fetcher, calls } = feed(pitches);
+  const lists = await boardLists(options, OS_SITE, { on: ['x0000beef'], off: [] }, fetcher);
+  assert.match(calls[0].url, /days=90$/);
+  assert.deepEqual(lists.map(l => [l.key, l.label, l.cards, l.watched]), [
+    ['pitched', 'Pitched', 1, true], ['xab12cd34', 'Pitch Pool', 2, true], ['ready_for_edit', 'Ready for Edit', 1, false], ['x0000beef', 'Evergreen', 1, true]]);
 });

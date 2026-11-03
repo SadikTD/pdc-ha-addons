@@ -17,13 +17,13 @@
 // monitoring and this add-on keeps collecting its alerts.
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
-import { runPitchMonitor, checkMonitorCard, monitorLLM, withMonitorSettings, alertFilter, loadMonitorCards, monitorTrelloGet, formatPitchTime, TRELLO_SITE } from './monitor/trello-monitor.mjs';
+import { runPitchMonitor, checkMonitorCard, monitorLLM, withMonitorSettings, effectiveSettings, alertFilter, loadMonitorCards, monitorTrelloGet, formatPitchTime, TRELLO_SITE } from './monitor/trello-monitor.mjs';
 import { slackAlert } from './slack-layout.mjs';
 import { AOTF_SITE, OS_SITE, TMS_SITE, loadAotfHistory } from './monitor/pitch-sources.mjs';
 import { handleBridgeApi } from './monitor/bridge-api.mjs';
 import { monitorEngine } from './monitor/match-engine.mjs';
 import { DATA, log, remoteApi } from './bridge.mjs';
-import { withBoard, withBoardHistory, pushBoardFlags } from './board-feed.mjs';
+import { withBoard, withBoardHistory, pushBoardFlags, boardLists, boardOn, BOARD_SLUG } from './board-feed.mjs';
 
 const SCHEMA = new URL('./monitor/monitor-schema.sql', import.meta.url);
 const INTERVAL = 60000;
@@ -427,6 +427,17 @@ export function createLocalMonitor({ options, events, onRun = () => {}, onAlert 
       const bySite = config ? Object.fromEntries(sites.map(s => [s.id, siteHealth(s)])) : {};
       const wgtc = bySite[TRELLO_SITE.id] || { problem: null, problemSince: null, lastOk: null, running: null };
       return { ...wgtc, problem: wgtc.problem || general, general, sites: bySite };
+    },
+    // Settings "Board lists": each site's Kanban board lists and which are watched.
+    async boardLists() {
+      if (!boardOn(options)) return { sites: [], error: 'The Kanban board is off or not set up (board_url and board_token)' };
+      const picks = effectiveSettings(config ? await withMonitorSettings(env()) : {}).board_lists;
+      return {
+        sites: await Promise.all(sites.filter(s => BOARD_SLUG[s.id]).map(async s => {
+          try { return { id: s.id, label: s.label, lists: await boardLists(options, s, picks[s.id], limits.fetch || fetch) }; }
+          catch (e) { return { id: s.id, label: s.label, lists: [], error: String(e?.message || e).slice(0, 200) }; }
+        })),
+      };
     },
     // Dashboard "Test a pitch": the same check a scan runs (the site's live
     // board plus its 90 days) with "Double-check duplicates" on, showing the

@@ -104,7 +104,7 @@ const prefs = Object.assign({ theme: 'auto', refresh: 10, motion: true, site: 'a
 const S = {
   page: 'overview', site: prefs.site, status: null, monitor: null, monitorError: null, messages: [], events: [],
   clockOffset: 0, filter: 'all', q: '', shown: 60, dailyDays: 14, scanHours: 24, msgFilter: 'all', msgShown: 120,
-  lists: null, listsError: null, draft: null, bridgeDraft: null, fieldErrors: {}, restarting: false, openJob: null,
+  boardLists: null, boardListsError: null, draft: null, bridgeDraft: null, fieldErrors: {}, restarting: false, openJob: null,
   firstPaint: { overview: true },
 };
 const serverNow = () => Date.now() + S.clockOffset;
@@ -815,15 +815,27 @@ function renderActivity() {
 // ------------------------------------------------------------------ settings
 const toggle = (name, on, label = name) => `<span class="toggle"><input type="checkbox" name="${name}" ${on ? 'checked' : ''} aria-label="${esc(label)}"><span></span></span>`;
 const err = k => (S.fieldErrors[k] ? `<div class="err">${esc(S.fieldErrors[k])}</div>` : '');
-function monitorDraftFrom(m, lists, tmsLists) {
+function monitorDraftFrom(m, board) {
   const v = m.settings.values;
   return {
     enabled: v.enabled, aotf_enabled: v.aotf_enabled, os_enabled: v.os_enabled, tms_enabled: v.tms_enabled, second_opinion: v.second_opinion,
     sending: v.sending, alert_verdicts: [...v.alert_verdicts], min_confidence: v.min_confidence,
     quiet_hours: v.quiet_hours, health_alerts: v.health_alerts, reference_days: v.reference_days, alert_template: v.alert_template || '',
-    list_ids: lists ? lists.lists.filter(l => l.watched).map(l => l.id) : null,
-    tms_list_ids: tmsLists ? tmsLists.lists.filter(l => l.watched).map(l => l.id) : null,
+    board_lists: board?.sites?.length ? boardPicks(v.board_lists || {}, board.sites.map(s => [s.id, s.lists])) : null,
   };
+}
+// Saved board-list picks with the shown lists' ticks laid over them. Lists not
+// shown keep their saved pick; a list never picked follows the monitor's default.
+function boardPicks(saved, shown) {
+  const out = JSON.parse(JSON.stringify(saved));
+  for (const [site, lists] of shown) {
+    const keys = lists.map(l => l.key), p = out[site] || { on: [], off: [] };
+    out[site] = {
+      on: [...p.on.filter(k => !keys.includes(k)), ...lists.filter(l => l.watched).map(l => l.key)],
+      off: [...p.off.filter(k => !keys.includes(k)), ...lists.filter(l => !l.watched).map(l => l.key)],
+    };
+  }
+  return out;
 }
 function bridgeDraftFrom(s) {
   return { board_enabled: s.board_enabled !== false, recipient_number: s.recipient_number, sender_number: s.sender_number, ha_notifications: s.ha_notifications, offline_notify_minutes: s.offline_notify_minutes, worker_url: s.worker_url, asana_token: '', alert_group: s.alert_group || '', slack_webhook_url: '', slack_webhook_wgtc: '', slack_webhook_aotf: '', slack_webhook_os: '', slack_webhook_tms: '', slack_mentions_wgtc: s.slack_mentions_wgtc ?? '', slack_mentions_aotf: s.slack_mentions_aotf ?? '', slack_mentions_os: s.slack_mentions_os ?? '', slack_mentions_tms: s.slack_mentions_tms ?? '', slack_sites: s.slack_sites ?? '', route_duplicates: s.route_duplicates, route_problems: s.route_problems, route_connection: s.route_connection };
@@ -831,7 +843,7 @@ function bridgeDraftFrom(s) {
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function monitorChanges() {
   if (!S.draft || !S.monitor) return {};
-  const base = monitorDraftFrom(S.monitor, S.lists, S.tmsLists), out = {};
+  const base = monitorDraftFrom(S.monitor, S.boardLists), out = {};
   for (const k of Object.keys(S.draft)) if (S.draft[k] !== null && !same(S.draft[k], base[k])) out[k] = S.draft[k];
   return out;
 }
@@ -848,11 +860,11 @@ function renderSettings(force = false) {
   if (!force && el.dataset.built && (Object.keys(monitorChanges()).length || Object.keys(bridgeChanges()).length || el.contains(document.activeElement))) { renderConnection(); return; }
   const st = S.status, m = S.monitor;
   // Only rebuild when the saved settings themselves changed, not on every poll.
-  const sig = JSON.stringify([m?.settings, S.lists, S.listsError, S.tmsLists, S.tmsListsError, st?.settings, S.monitorError, prefs, S.fieldErrors, S.chats, S.chatsError]);
+  const sig = JSON.stringify([m?.settings, S.boardLists, S.boardListsError, st?.settings, S.monitorError, prefs, S.fieldErrors, S.chats, S.chatsError]);
   if (!force && el.dataset.built && el.dataset.sig === sig) { renderConnection(); return; }
   el.dataset.sig = sig;
   if (st) S.bridgeDraft = bridgeDraftFrom(st.settings);
-  if (m) S.draft = monitorDraftFrom(m, S.lists, S.tmsLists);
+  if (m) S.draft = monitorDraftFrom(m, S.boardLists);
   const d = S.draft, bd = S.bridgeDraft;
   const quietOn = Boolean(d?.quiet_hours), [qFrom, qTo] = (d?.quiet_hours || '23:00-07:00').split('-');
   el.innerHTML = `
@@ -891,15 +903,17 @@ function renderSettings(force = false) {
       <div class="field col"><div class="fl">Sites<small>Each site is scanned every minute, and a new pitch is only compared with that site's own pitches</small></div>
         <div class="site-toggles">${sites().map(x => {
           const key = { wgtc: 'enabled', aotf: 'aotf_enabled', os: 'os_enabled', tms: 'tms_enabled' }[x.id];
-          const what = { wgtc: 'Trello board · the watched lists below', aotf: 'Google Sheet · Pitches tab, plus The Archive for earlier pitches', os: 'Asana · OS Curveball project', tms: 'Trello board · The Mary Sue, the watched lists below' }[x.id] || x.platform;
+          const what = { wgtc: 'Kanban board · the board lists below, plus the old Trello board', aotf: 'Kanban board · the board lists below, plus the old Google Sheet', os: 'Kanban board · the board lists below, plus the old Asana project', tms: 'Kanban board · the board lists below, plus the old Trello board' }[x.id] || x.platform;
           return `<label class="site-toggle" style="--sc:${SITE_COLOR[x.id]}"><span class="st-mark">${esc(x.label)}</span><span class="st-t"><b>${esc(x.label)} <span class="muted">· ${esc(x.platform)}</span></b><small>${esc(what)}${x.needs ? `<em>${esc(x.needs)}, under WhatsApp and add-on below</em>` : ''}</small></span>${toggle(key, d[key], `Watch ${x.label}`)}</label>`;
         }).join('')}</div></div>
       <div class="field"><div class="fl">Double-check duplicates<small>Asks the AI a second, focused question about every possible duplicate before deciding. Catches reworded duplicates and stops look-alike stories from being flagged</small></div>${toggle('second_opinion', d.second_opinion, 'Double-check duplicates')}</div>
       <div class="field"><div class="fl">Send alerts<small>When off, findings are recorded as a dry run and nothing is sent</small></div>${toggle('sending', d.sending, 'Send alerts')}</div>
-      <div class="field col"><div class="fl">WGTC watched lists<small>A Trello card is checked the first time it appears in one of these lists</small></div>
-        <div class="chips" id="lists">${S.lists ? S.lists.lists.map(l => `<label class="chk"><input type="checkbox" name="list" value="${l.id}" ${d.list_ids?.includes(l.id) ? 'checked' : ''}><span><i class="mark"></i>${esc(l.name)}</span></label>`).join('') : `<span class="muted">${esc(S.listsError || 'Loading lists from Trello…')}</span>`}</div>${err('list_ids')}</div>
-      <div class="field col"><div class="fl">TMS watched lists<small>A Trello card on The Mary Sue board is checked the first time it appears in one of these lists</small></div>
-        <div class="chips">${S.tmsLists ? S.tmsLists.lists.map(l => `<label class="chk"><input type="checkbox" name="tms_list" value="${l.id}" ${d.tms_list_ids?.includes(l.id) ? 'checked' : ''}><span><i class="mark"></i>${esc(l.name)}</span></label>`).join('') : `<span class="muted">${esc(S.tmsListsError || 'Loading lists from Trello…')}</span>`}</div>${err('tms_list_ids')}</div>
+      <div class="field"><div class="fl">Board lists<small>Scans pick up new lists on their own. Refresh to show a list you just added on the board here.</small></div><button class="btn" id="btn-board-refresh" type="button"><svg><use href="#i-refresh"/></svg>Refresh lists</button></div>
+      ${!S.boardLists?.sites?.length ? `<div class="field col"><span class="muted">${esc(S.boardListsError || S.boardLists?.error || 'Loading lists from the Kanban board…')}</span></div>`
+        : S.boardLists.sites.map(s => `
+      <div class="field col"><div class="fl">${esc(s.label)} board lists<small>A card on the ${esc(s.label)} board is checked the first time it appears in one of these lists. A list added on the board later is checked automatically if it's a pitch or writing list, and shows here once it has a card.</small></div>
+        <div class="chips">${s.error ? `<span class="muted">${esc(s.error)}</span>` : s.lists.length ? s.lists.map(l => `<label class="chk" title="${l.cards} card${l.cards === 1 ? '' : 's'} from the last 90 days"><input type="checkbox" name="board_list" data-site="${esc(s.id)}" value="${esc(l.key)}" ${d.board_lists?.[s.id]?.on.includes(l.key) ? 'checked' : ''}><span><i class="mark"></i>${esc(l.label)}</span></label>`).join('') : '<span class="muted">No cards on this board in the last 90 days yet</span>'}</div></div>`).join('')}
+      ${err('board_lists')}
       <div class="field col"><div class="fl">Alert me for<small>Other findings are still shown here but don't send a message</small></div>
         <div class="chips">${FLAGS.map(v => `<label class="chk"><input type="checkbox" name="verdict" value="${v}" ${d.alert_verdicts.includes(v) ? 'checked' : ''}><span class="v-${v}"><svg style="fill:currentColor;stroke:none"><use href="#v-${v}"/></svg><span style="color:var(--ink)">${VERDICTS[v].label}</span></span></label>`).join('')}</div>${err('alert_verdicts')}</div>
       <div class="field"><div class="fl">Minimum confidence<small>Only alert when the AI is at least this sure</small></div>
@@ -1009,8 +1023,7 @@ function onSettingsInput(e) {
   if (t.name === 'pref_motion') { prefs.motion = t.checked; savePrefs(); return; }
   if (d) {
     if (['enabled', 'aotf_enabled', 'os_enabled', 'tms_enabled', 'sending', 'health_alerts', 'second_opinion'].includes(t.name)) d[t.name] = t.checked;
-    if (t.name === 'tms_list') d.tms_list_ids = $$('input[name=tms_list]:checked').map(x => x.value);
-    if (t.name === 'list') d.list_ids = $$('input[name=list]:checked').map(x => x.value);
+    if (t.name === 'board_list') d.board_lists = boardPicks(d.board_lists, [[t.dataset.site, $$('input[name=board_list]').filter(x => x.dataset.site === t.dataset.site).map(x => ({ key: x.value, watched: x.checked }))]]);
     if (t.name === 'verdict') d.alert_verdicts = $$('input[name=verdict]:checked').map(x => x.value);
     if (t.name === 'min_confidence') { d.min_confidence = Number(t.value); t.nextElementSibling.textContent = `${t.value}%`; }
     if (t.name === 'reference_days') { d.reference_days = Number(t.value); t.nextElementSibling.textContent = `${t.value} d`; }
@@ -1030,15 +1043,13 @@ function onSettingsInput(e) {
 async function saveSettings() {
   const mc = monitorChanges(), bc = bridgeChanges(), btn = $('#save');
   if (mc.alert_verdicts && !mc.alert_verdicts.length) { S.fieldErrors = { alert_verdicts: 'Pick at least one' }; renderSettings(true); return; }
-  if (mc.list_ids && !mc.list_ids.length) { S.fieldErrors = { list_ids: 'Pick at least one list' }; renderSettings(true); return; }
-  if (mc.tms_list_ids && !mc.tms_list_ids.length) { S.fieldErrors = { tms_list_ids: 'Pick at least one list' }; renderSettings(true); return; }
   btn.classList.add('busy'); S.fieldErrors = {};
   try {
     if (Object.keys(mc).length) {
       try { await api('api/monitor/settings', { method: 'POST', body: { settings: mc } }); }
       catch (e) { if (e.data?.errors) { S.fieldErrors = Object.fromEntries(Object.entries(e.data.errors).map(([k, v]) => [k, v])); } throw e; }
       await loadMonitor(true);
-      if (mc.list_ids || mc.tms_list_ids) await loadLists();
+      if (mc.board_lists) await loadLists();
       toast('Monitor settings saved', 'ok');
     }
     if (Object.keys(bc).length) {
@@ -1092,8 +1103,7 @@ async function loadChats() {
   if (S.page === 'settings') renderSettings();
 }
 async function loadLists() {
-  try { S.lists = await api('api/lists'); S.listsError = S.lists.error; } catch (e) { S.listsError = e.message; }
-  try { S.tmsLists = await api('api/lists/tms'); S.tmsListsError = S.tmsLists.error; } catch (e) { S.tmsListsError = e.message; }
+  try { S.boardLists = await api('api/board-lists'); S.boardListsError = null; } catch (e) { S.boardListsError = e.message; }
   if (S.page === 'settings') renderSettings(true);
 }
 
@@ -1117,7 +1127,7 @@ function go() {
   $('#page-title').textContent = sec.dataset.title; $('#page-sub').textContent = sec.dataset.sub;
   $('#card-pulse').innerHTML = ''; // rebuilt for the current site selection
   document.title = `${sec.dataset.title} · PDC Monitor`;
-  if (page === 'settings') { $('#settings').dataset.built = ''; if (!S.lists) loadLists(); loadChats(); }
+  if (page === 'settings') { $('#settings').dataset.built = ''; if (!S.boardLists) loadLists(); loadChats(); }
   if (page === 'activity') loadEvents();
   if (page === 'messages') { $('#chat').dataset.ready = ''; loadMessages(); }
   scrollTo({ top: 0 });
@@ -1186,6 +1196,12 @@ document.addEventListener('click', async e => {
     catch (err) { out.innerHTML = `<div class="field col"><div class="err">${esc(err.message)}</div></div>`; }
     finally { t.classList.remove('busy'); }
     return;
+  }
+  if (t.id === 'btn-board-refresh') {
+    if (Object.keys(monitorChanges()).length) { toast('Save or discard your changes first', 'bad'); return; }
+    t.classList.add('busy');
+    await loadLists();
+    toast('Board lists refreshed', 'ok'); return;
   }
   if (t.id === 'btn-tpl-reset') {
     const box = $('#f-tpl'); box.value = S.status.alertTemplate.default;

@@ -50,6 +50,13 @@ export const MONITOR_SETTINGS = {
   // "Double-check duplicates": a second AI opinion on every duplicate or
   // similar-story finding (match-engine.mjs schedVerifyPrompt).
   second_opinion: { env: 'MONITOR_SECOND_OPINION', fallback: 'false', parse: v => v === 'true', store: bool },
+  // Kanban board lists whose new cards are checked, per site: { wgtc: { on: [col keys], off: [col keys] } }.
+  // A list in neither is watched by its default (board-feed.mjs boardListWatched), so new lists are picked up.
+  board_lists: { env: 'MONITOR_BOARD_LISTS', fallback: '{}', parse: v => { try { const o = JSON.parse(v); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch { return {}; } }, store: v => {
+    const keys = a => Array.isArray(a) && a.length <= 60 && a.every(k => typeof k === 'string' && /^[\w-]{1,40}$/.test(k));
+    if (!v || typeof v !== 'object' || Array.isArray(v) || Object.entries(v).some(([site, p]) => !/^[a-z]{2,10}$/.test(site) || !p || !keys(p.on) || !keys(p.off))) throw new Error('must be board lists picked per site');
+    return JSON.stringify(Object.fromEntries(Object.entries(v).map(([site, p]) => [site, { on: [...new Set(p.on)], off: [...new Set(p.off)] }])));
+  } },
   tms_enabled: { env: 'TMS_MONITOR_ENABLED', fallback: 'true', parse: v => v === 'true', store: bool },
   tms_list_ids: { env: 'TMS_MONITOR_LIST_IDS', fallback: '', parse: v => v.split(',').map(x => x.trim()).filter(Boolean), store: v => {
     if (!Array.isArray(v) || v.length > 8 || v.some(id => !ID.test(id)) || new Set(v).size !== v.length) throw new Error('must be up to eight distinct Trello list IDs');
