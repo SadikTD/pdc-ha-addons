@@ -122,7 +122,7 @@ test('board duplicates are flagged on the board once, retried on failure, and on
 });
 
 test('board lists: new pitch and writing lists are watched until picked otherwise; picks are per site', async () => {
-  const pitches = [pitch(1, 'pitched', { stage: 'pitch' }), pitch(2, 'xab12cd34', { colLabel: 'Pitch Pool', stage: 'pitch' }), pitch(3, 'xab12cd34', { stage: 'pitch' }),
+  const pitches = [pitch(1, 'pitched', { stage: 'pitch' }), pitch(2, 'xab12cd34', { colLabel: 'Pitch Pool', stage: 'pitch' }), pitch(3, 'xab12cd34', { colLabel: 'Pitch Pool', stage: 'pitch' }),
     pitch(4, 'ready_for_edit', { colLabel: 'Ready for Edit', stage: 'progress' }), pitch(5, 'x0000beef', { colLabel: 'Evergreen', stage: 'publish' })];
   const ids = async pick => (await loadBoardPitches(options, OS_SITE, 8, feed(pitches).fetcher, pick)).filter(c => c.idList === BOARD_PITCHED).map(c => c.id);
   assert.deepEqual(await ids(undefined), ['kb1', 'kb2', 'kb3']); // the new pitch list is picked up on its own
@@ -131,5 +131,10 @@ test('board lists: new pitch and writing lists are watched until picked otherwis
   const lists = await boardLists(options, OS_SITE, { on: ['x0000beef'], off: [] }, fetcher);
   assert.match(calls[0].url, /days=90$/);
   assert.deepEqual(lists.map(l => [l.key, l.label, l.cards, l.watched]), [
-    ['pitched', 'Pitched', 1, true], ['xab12cd34', 'Pitch Pool', 2, true], ['ready_for_edit', 'Ready for Edit', 1, false], ['x0000beef', 'Evergreen', 1, true]]);
+    ['pitched', 'Pitched', 1, true], ['writing', 'Writing', 0, true], ['ready_for_edit', 'Ready for Edit', 1, false], ['scheduled', 'Scheduled', 0, false],
+    ['check_daily', 'Check Daily', 0, false], ['xab12cd34', 'Pitch Pool', 2, true], ['x0000beef', 'Evergreen', 1, true], ['archive', 'Archive', 0, false]]);
+  // Empty board lists still show (Pitched with no cards); a board that names its lists is shown as it is.
+  assert.equal((await boardLists(options, OS_SITE, undefined, feed([]).fetcher))[0].key, 'pitched');
+  const named = async () => new Response(JSON.stringify({ pitches: [], columns: [{ key: 'xab12cd34', label: 'Editing', stage: 'progress' }] }));
+  assert.deepEqual((await boardLists(options, OS_SITE, undefined, named)).map(l => [l.key, l.watched]), [['xab12cd34', true]]);
 });

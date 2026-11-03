@@ -57,16 +57,25 @@ export async function loadBoardPitches(options, site, days, fetcher = fetch, pic
   }));
 }
 
+// The board's own lists, shown even while empty (the feed only carries cards).
+// Squelched isn't: the feed leaves squelched pitches out.
+const DEFAULT_LISTS = [['pitched', 'Pitched', 'pitch'], ['writing', 'Writing', 'progress'], ['ready_for_edit', 'Ready for Edit', 'progress'],
+  ['scheduled', 'Scheduled', 'publish'], ['check_daily', 'Check Daily', 'publish'], ['archive', 'Archive', 'archive']].map(([key, label, stage]) => ({ key, label, stage }));
+
 // A site's board lists for the Settings picker: those the feed names (if the
-// board sends `columns`), plus every list holding a pitch from the last 90 days.
+// board sends `columns`, else the board's own lists), plus every list holding a
+// pitch from the last 90 days. Archive stays last.
 export async function boardLists(options, site, pick, fetcher = fetch) {
   const json = await readFeed(options, site, 90, fetcher);
   const cols = new Map();
-  for (const c of Array.isArray(json.columns) ? json.columns : []) cols.set(c.key, { key: c.key, label: c.label || c.key, stage: c.stage || null, cards: 0 });
+  for (const c of Array.isArray(json.columns) ? json.columns : DEFAULT_LISTS) cols.set(c.key, { key: c.key, label: c.label || c.key, stage: c.stage || null, cards: 0 });
   for (const p of json.pitches) {
     if (!cols.has(p.col)) cols.set(p.col, { key: p.col, label: p.colLabel || p.col, stage: p.stage || null, cards: 0 });
-    cols.get(p.col).cards++;
+    const c = cols.get(p.col);
+    c.cards++;
+    if (p.colLabel) c.label = p.colLabel; // renamed on the board
   }
+  if (!json.columns && cols.has('archive')) { const a = cols.get('archive'); cols.delete('archive'); cols.set('archive', a); }
   return [...cols.values()].filter(c => /^[\w-]{1,40}$/.test(c.key))
     .map(c => ({ ...c, label: clean(c.label, 60), watched: boardListWatched(pick, c) }));
 }
