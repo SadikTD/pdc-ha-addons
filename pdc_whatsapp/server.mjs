@@ -9,6 +9,7 @@ import { DATA, loadOptions, createLedger, createHandler, createEventLog, createU
 import { useAtomicAuthState } from './auth-state.mjs';
 import { createUiHandler } from './ui.mjs';
 import { createLocalMonitor } from './local-monitor.mjs';
+import { useListMemory } from './board-feed.mjs';
 
 const AUTH_DIR = `${DATA}/auth`;
 const PORT = Number(process.env.PORT || 8787);
@@ -308,6 +309,7 @@ async function monitorAlert(text, recovered, site) {
   await haNotify(options, recovered ? null : text.replace(/\*/g, ''), id);
   return (await deliver(`monitor-watch:${site?.id || 'wgtc'}:${Date.now()}`, text)).status === 'sent'; // else retried next minute
 }
+useListMemory(`${DATA}/board-lists.json`); // board lists seen, for Settings
 const monitor = createLocalMonitor({
   options, events, onAlert: monitorAlert,
   onRun: () => outbox?.poll().catch(e => log('Outbox poll failed:', e?.message || e)),

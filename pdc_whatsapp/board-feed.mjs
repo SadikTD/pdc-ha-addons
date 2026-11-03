@@ -10,6 +10,7 @@
 //
 // The board is read with one fixed GET, /api/feed/pitches, and told about
 // duplicates with one fixed POST, /api/feed/duplicates, both with board_token.
+import { readFileSync, writeFileSync } from 'node:fs';
 import { effectiveSettings } from './monitor/trello-monitor.mjs';
 import { platformOf } from './slack-layout.mjs';
 
@@ -43,8 +44,32 @@ async function readFeed(options, site, days, fetcher) {
   if (!res.ok) throw new Error(`Kanban board read failed (${res.status})`);
   const json = await res.json().catch(() => null);
   if (!Array.isArray(json?.pitches)) throw new Error('Kanban board read failed (invalid response)');
+  rememberLists(site.id, json.pitches);
   return json;
 }
+
+// Every board list a card was seen in (any read: scans each minute, history
+// every 15), so Settings still shows a list once it's empty again. The feed
+// only carries cards and the feed token can't read the board's list settings.
+// A list not seen for 90 days (deleted on the board) is forgotten.
+const FORGET_AFTER = 90 * 86400000, DAY = 86400000;
+let seen = {}, seenFile = null; // site id -> { key: { label, stage, at } }
+export function useListMemory(file) {
+  seenFile = file;
+  try { seen = JSON.parse(readFileSync(file, 'utf8')) || {}; } catch { seen = {}; }
+}
+function rememberLists(siteId, pitches, now = Date.now()) {
+  const site = seen[siteId] ||= {};
+  let changed = false;
+  for (const p of pitches) {
+    if (!/^[\w-]{1,40}$/.test(p.col || '')) continue;
+    const was = site[p.col], label = clean(p.colLabel || p.col, 60), stage = p.stage || null;
+    if (!was || was.label !== label || was.stage !== stage || now - was.at > DAY) { site[p.col] = { label, stage, at: now }; changed = true; }
+  }
+  if (changed && seenFile) try { writeFileSync(seenFile, JSON.stringify(seen)); } catch { /* next read */ }
+}
+const remembered = (siteId, now = Date.now()) => Object.entries(seen[siteId] || {})
+  .filter(([, l]) => now - l.at < FORGET_AFTER).map(([key, l]) => ({ key, label: l.label, stage: l.stage }));
 
 export async function loadBoardPitches(options, site, days, fetcher = fetch, pick) {
   const { pitches } = await readFeed(options, site, days, fetcher);
@@ -63,12 +88,12 @@ const DEFAULT_LISTS = [['pitched', 'Pitched', 'pitch'], ['writing', 'Writing', '
   ['scheduled', 'Scheduled', 'publish'], ['check_daily', 'Check Daily', 'publish'], ['archive', 'Archive', 'archive']].map(([key, label, stage]) => ({ key, label, stage }));
 
 // A site's board lists for the Settings picker: those the feed names (if the
-// board sends `columns`, else the board's own lists), plus every list holding a
-// pitch from the last 90 days. Archive stays last.
+// board sends `columns`, else the board's own lists and every list a card was
+// seen in), plus every list holding a pitch from the last 90 days. Archive stays last.
 export async function boardLists(options, site, pick, fetcher = fetch) {
   const json = await readFeed(options, site, 90, fetcher);
   const cols = new Map();
-  for (const c of Array.isArray(json.columns) ? json.columns : DEFAULT_LISTS) cols.set(c.key, { key: c.key, label: c.label || c.key, stage: c.stage || null, cards: 0 });
+  for (const c of Array.isArray(json.columns) ? json.columns : [...DEFAULT_LISTS, ...remembered(site.id)]) cols.set(c.key, { key: c.key, label: c.label || c.key, stage: c.stage || null, cards: 0 });
   for (const p of json.pitches) {
     if (!cols.has(p.col)) cols.set(p.col, { key: p.col, label: p.colLabel || p.col, stage: p.stage || null, cards: 0 });
     const c = cols.get(p.col);

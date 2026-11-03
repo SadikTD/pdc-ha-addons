@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadBoardPitches, withBoard, withBoardHistory, pushBoardFlags, boardLists, BOARD_PITCHED } from './board-feed.mjs';
+import { loadBoardPitches, withBoard, withBoardHistory, pushBoardFlags, boardLists, useListMemory, BOARD_PITCHED } from './board-feed.mjs';
 import { openD1 } from './local-monitor.mjs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -137,4 +137,16 @@ test('board lists: new pitch and writing lists are watched until picked otherwis
   assert.equal((await boardLists(options, OS_SITE, undefined, feed([]).fetcher))[0].key, 'pitched');
   const named = async () => new Response(JSON.stringify({ pitches: [], columns: [{ key: 'xab12cd34', label: 'Editing', stage: 'progress' }] }));
   assert.deepEqual((await boardLists(options, OS_SITE, undefined, named)).map(l => [l.key, l.watched]), [['xab12cd34', true]]);
+});
+
+test('a board list seen once still shows after it empties, also after a restart', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'kbl-')), 'board-lists.json');
+  useListMemory(file);
+  await loadBoardPitches(options, TRELLO_SITE, 8, feed([pitch(1, 'xedit0001', { colLabel: 'Editing', stage: 'progress' })]).fetcher); // a scan sees it
+  useListMemory(file); // restart
+  const lists = await boardLists(options, TRELLO_SITE, undefined, feed([]).fetcher); // now empty
+  assert.deepEqual(lists.map(l => l.key), ['pitched', 'writing', 'ready_for_edit', 'scheduled', 'check_daily', 'xedit0001', 'archive']);
+  assert.deepEqual(lists.find(l => l.key === 'xedit0001'), { key: 'xedit0001', label: 'Editing', stage: 'progress', cards: 0, watched: true });
+  assert.deepEqual((await boardLists(options, OS_SITE, undefined, feed([]).fetcher)).map(l => l.key).includes('xedit0001'), false); // per site
+  useListMemory(null);
 });
