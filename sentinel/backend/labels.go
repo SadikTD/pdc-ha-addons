@@ -474,7 +474,10 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			}
 			// The fast model sure of a standing person, the big model's close look saying
 			// animal: a person (women in saris and men from above were "dog 0.8, person 0").
-			tallPerson := best.d.Label == "person" && best.d.Score >= 0.6 && best.d.Box.H/max(best.d.Box.W, 1e-6)/a.frameAspect(cam.ID) >= 1.5
+			// Not a small one: a cat walking along a wall is tall and thin too (0.03x0.15,
+			// "person 0.62"); the people this caught were all 0.014 of the picture or more.
+			tallPerson := best.d.Label == "person" && best.d.Score >= 0.6 && best.d.Box.W*best.d.Box.H >= 0.012 &&
+				best.d.Box.H/max(best.d.Box.W, 1e-6)/a.frameAspect(cam.ID) >= 1.5
 			person := v.score["person"]
 			animal := max(v.score["cat"], v.score["dog"])
 			o.log("closer look at %s %.2f %s (%s%s%s): person %.2f (needs %.2f), cat %.2f, dog %.2f (need %.2f)",
