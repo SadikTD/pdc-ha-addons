@@ -540,14 +540,26 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 		if len(cs) == 0 {
 			return false
 		}
+		// Something that's always there (a shoe on the rack) isn't a cat.
+		if emptyBg == nil {
+			emptyBg = a.emptyScene(ctx, e.Cam, start.Add(-5*time.Second))
+		}
+		g := a.grayNear(ctx, e.Cam, t)
+		cs = slices.DeleteFunc(cs, func(d Detection) bool {
+			s := catStatic(g, emptyBg, d.Box)
+			if s {
+				o.log("  %s %.2f %s looks just like the scene before: always there", d.Label, d.Score, fmtBox(d.Box))
+			}
+			return s
+		})
+		if len(cs) == 0 {
+			return false
+		}
 		d := cs[0]
 		hard = append(hard, Object{Label: animalLabel(d.Label, kinds), Score: d.Score, Box: d.Box, T: t.UnixMilli()})
 		sure := len(hard) >= 2 || d.Score >= hardClear
 		if !sure && d.Score >= hardSure {
-			if emptyBg == nil {
-				emptyBg = a.emptyScene(ctx, e.Cam, start.Add(-5*time.Second))
-			}
-			if g := a.grayNear(ctx, e.Cam, t); g != nil && emptyBg != nil && catNotEmpty(g, emptyBg, d.Box) {
+			if g != nil && emptyBg != nil && catNotEmpty(g, emptyBg, d.Box) {
 				sure = true
 				o.log("  its spot differs from the empty scene")
 			}

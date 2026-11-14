@@ -260,6 +260,8 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		detected          time.Time // when the detector last saw it (wall clock)
 		tpl               []float32 // what its spot looked like then
 		bgGray            []byte    // the empty scene from before it came (grey)
+		freshBg           []byte    // the empty scene from before freshAt, while no cat is seen
+		freshAt           time.Time
 		oldBlobs          []catSpot // blobs that aren't the cat moving (see catBlob)
 		sizes             []float64 // the cat's size (part of the picture) when detected
 		personAt          time.Time // when a person was last in view (wall clock)
@@ -377,6 +379,26 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				if (d.Label == "cat" || d.Label == "dog") && d.Score >= catWeakMin {
 					weakCats = append(weakCats, weakCat{t, d.Box})
 				}
+			}
+		}
+		// Something that's always there (a shoe on the rack) isn't a cat: compared with the
+		// empty scene from before this visit's cat came, or, with no cat yet, from before now.
+		if look.found {
+			bg := bgGray
+			if visit == nil || last.IsZero() {
+				if freshBg == nil || t.Sub(freshAt) > time.Minute || t.Before(freshAt) {
+					freshBg, freshAt = cw.app.emptyScene(ctx, cam, t), t
+				}
+				bg = freshBg
+			} else if bg == nil {
+				bgGray = cw.app.emptyScene(ctx, cam, first)
+				bg = bgGray
+			}
+			if catStatic(cw.app.grayNear(ctx, cam, t), bg, look.box) {
+				if debugCat.Load() {
+					logf("cat watch: cat %.2f %s looks just like the empty scene: always there", look.score, fmtBox(look.box))
+				}
+				look = catSighting{person: look.person}
 			}
 		}
 		sure := look.found // the detector saw it (not just its spot or blob, below)
@@ -1172,6 +1194,14 @@ func catNotEmpty(g, bg []byte, box Rect) bool {
 		logf("cat watch: weak sighting %s: like the empty scene %.2f (difference %.1f)", fmtBox(box), sim, diff)
 	}
 	return sim < stillMaxEmptySim && diff >= stillMinDiff
+}
+
+// catStatic: the spot of a "cat" at box in the grey frame g looks just like the empty
+// scene bg from minutes before: something that's always there, not a cat. From 2026-11-09
+// a dark shoe on top of the 3rd floor shoe rack scored 0.55-0.7 as a cat on every look and
+// became "the cat" of nearly every event. Can't tell (no frame) = not static.
+func catStatic(g, bg []byte, box Rect) bool {
+	return catPatch(g, box) != nil && catPatch(bg, box) != nil && !catNotEmpty(g, bg, box)
 }
 
 // grayNear is the grey frame (patchW×patchH) at t, or a little before when that one

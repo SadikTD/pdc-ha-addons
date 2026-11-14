@@ -94,6 +94,10 @@ func TestCatPatch(t *testing.T) {
 	if sim, diff := patchSim(cat, empty); sim >= stillMaxEmptySim || diff < stillMinDiff {
 		t.Errorf("cat vs empty floor: %.2f %.1f", sim, diff)
 	}
+	// A shoe on the rack: in the empty scene too, so it's always there; a cat that came isn't.
+	if !catStatic(withCat, withCat, box) || catStatic(withCat, floor, box) || catStatic(nil, floor, box) {
+		t.Error("catStatic")
+	}
 }
 
 func TestCatBlob(t *testing.T) {
