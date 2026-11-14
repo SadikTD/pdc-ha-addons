@@ -285,9 +285,10 @@ func (o scanOpts) log(format string, args ...any) {
 
 // Why a sighting was not counted (kept with the event, for review).
 const (
-	whyIgnoredArea = "in an ignored area"
-	whyDisagree    = "the closer look disagreed"
-	whyUnsure      = "not sure enough for a lookalike spot"
+	whyIgnoredArea  = "in an ignored area"
+	whyDisagree     = "the closer look disagreed"
+	whyUnsure       = "not sure enough for a lookalike spot"
+	whyPersonAnimal = "a standing person to the fast model, an animal up close"
 )
 
 // scan looks at the event's frames. checked is how many frames could be looked at;
@@ -460,13 +461,20 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			v := l.verifyScores(ctx, cam, best.t, best.d.Box)
 			o.log("  big model in %s: %s", fmtBox(verifyRect(best.d.Box, a.frameAspect(cam.ID))), fmtDets(v.raw))
 			need := func(label string) float64 { return needScore(label, edge, suspicious) }
-			// From above on a cat watch camera, an "animal" bigger than any cat there was a
-			// person (cat 0.74 on a man of 0.19x0.51 on the 3rd floor).
+			// An "animal" bigger than any cat these cameras see was a person (cat 0.74 on a
+			// man of 0.19x0.51 on the 3rd floor; dog 0.92 on people cut off by the bottom edge).
+			maxArea := animalMaxArea
+			if catCam {
+				maxArea = catMaxArea
+			}
 			for _, lb := range []string{"cat", "dog"} {
-				if b := v.box[lb]; catCam && b.W*b.H > catMaxArea {
+				if b := v.box[lb]; b.W*b.H > maxArea {
 					v.score[lb] = 0
 				}
 			}
+			// The fast model sure of a standing person, the big model's close look saying
+			// animal: a person (women in saris and men from above were "dog 0.8, person 0").
+			tallPerson := best.d.Label == "person" && best.d.Score >= 0.6 && best.d.Box.H/max(best.d.Box.W, 1e-6)/a.frameAspect(cam.ID) >= 1.5
 			person := v.score["person"]
 			animal := max(v.score["cat"], v.score["dog"])
 			o.log("closer look at %s %.2f %s (%s%s%s): person %.2f (needs %.2f), cat %.2f, dog %.2f (need %.2f)",
@@ -479,6 +487,8 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 					done["person"] = true
 					confirm(v.object("person", best.t), best.t)
 				}
+			case tallPerson && animal >= need("cat"):
+				reject(best.d.Label, *best, whyPersonAnimal, 0) // not learned: someone was there
 			case animal >= need("cat") && !done["animal"] && len(kinds) > 0:
 				animalChecks++
 				for _, lb := range kinds {
@@ -706,6 +716,10 @@ type zoomLook struct {
 // maxZooms: zoomed-in second looks per event (each costs one more detection).
 const maxZooms = 3
 
+// animalMaxArea: the biggest a cat gets in these cameras' pictures (real cats up to 0.035
+// over a week; every "cat" over 0.05 was a person).
+const animalMaxArea = 0.05
+
 // Looking harder for cats (cat watch cameras): the big model looks at the parts of the
 // first maxHardLooks frames (each costs one big-model look per part). A cat counts when
 // seen in two frames, or once at hardClear. On 3 days of the 3rd floor camera this
@@ -844,6 +858,11 @@ func (l *Labeler) verifyScores(ctx context.Context, cam Camera, t time.Time, box
 // clearly one animal rather than the other).
 func (l *Labeler) verify(ctx context.Context, cam Camera, t time.Time, box Rect, edge, suspicious bool) (Object, bool) {
 	v := l.verifyScores(ctx, cam, t, box)
+	for _, lb := range []string{"cat", "dog"} {
+		if b := v.box[lb]; b.W*b.H > animalMaxArea {
+			v.score[lb] = 0 // bigger than any cat here: a person (see animalMaxArea)
+		}
+	}
 	if kinds := l.app.settings.Get().Animals; len(kinds) < 2 {
 		animal := max(v.score["cat"], v.score["dog"])
 		v.score["cat"], v.score["dog"] = 0, 0
