@@ -254,13 +254,14 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 	}()
 	started, lastMotion := time.Now(), time.Now()
 	var (
-		first, last, prev time.Time // frame times
-		seenAt            time.Time // when the cat was last seen (wall clock)
-		hint              Rect      // where the cat was last seen
-		detected          time.Time // when the detector last saw it (wall clock)
-		tpl               []float32 // what its spot looked like then
-		bgGray            []byte    // the empty scene from before it came (grey)
-		freshBg           []byte    // the empty scene from before freshAt, while no cat is seen
+		first, last, prev time.Time   // frame times
+		seenAt            time.Time   // when the cat was last seen (wall clock)
+		hint              Rect        // where the cat was last seen
+		detected          time.Time   // when the detector last saw it (wall clock)
+		tpl               []float32   // what its spot looked like then
+		bgGray            []byte      // the empty scene from before it came (grey)
+		freshBg           []byte      // the empty scene from before freshAt, while no cat is seen
+		freshDets         []Detection // what the cat model saw a minute and three minutes before freshAt
 		freshAt           time.Time
 		oldBlobs          []catSpot // blobs that aren't the cat moving (see catBlob)
 		sizes             []float64 // the cat's size (part of the picture) when detected
@@ -385,16 +386,17 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 		// empty scene from before this visit's cat came, or, with no cat yet, from before now.
 		if look.found {
 			bg := bgGray
+			var before []Detection
 			if visit == nil || last.IsZero() {
 				if freshBg == nil || t.Sub(freshAt) > time.Minute || t.Before(freshAt) {
-					freshBg, freshAt = cw.app.emptyScene(ctx, cam, t), t
+					freshBg, freshDets, freshAt = cw.app.emptyScene(ctx, cam, t), cw.app.catBefore(ctx, cameraConfig(s, cam), t), t
 				}
-				bg = freshBg
+				bg, before = freshBg, freshDets
 			} else if bg == nil {
 				bgGray = cw.app.emptyScene(ctx, cam, first)
 				bg = bgGray
 			}
-			if catStatic(cw.app.grayNear(ctx, cam, t), bg, look.box) {
+			if catStatic(cw.app.grayNear(ctx, cam, t), bg, look.box) || catWasThere(before, look.box) {
 				if debugCat.Load() {
 					logf("cat watch: cat %.2f %s looks just like the empty scene: always there", look.score, fmtBox(look.box))
 				}
@@ -1202,6 +1204,24 @@ func catNotEmpty(g, bg []byte, box Rect) bool {
 // became "the cat" of nearly every event. Can't tell (no frame) = not static.
 func catStatic(g, bg []byte, box Rect) bool {
 	return catPatch(g, box) != nil && catPatch(bg, box) != nil && !catNotEmpty(g, bg, box)
+}
+
+// catBefore is what the cat model sees cat-sized a minute and three minutes before t. A
+// "cat" at the same spot then was always there: a person standing next to the shoe rack
+// hides that from catStatic's picture comparison, not from the detector.
+func (a *App) catBefore(ctx context.Context, cam Camera, t time.Time) []Detection {
+	var out []Detection
+	for _, back := range []time.Duration{time.Minute, 3 * time.Minute} {
+		if cats, weak, _, err := a.catDets(ctx, cam, t.Add(-back), Rect{}, false); err == nil {
+			out = append(append(out, cats...), weak...)
+		}
+	}
+	return out
+}
+
+// catWasThere: box is where one of before was.
+func catWasThere(before []Detection, box Rect) bool {
+	return slices.ContainsFunc(before, func(d Detection) bool { return iou(d.Box, box) >= 0.4 })
 }
 
 // grayNear is the grey frame (patchW×patchH) at t, or a little before when that one

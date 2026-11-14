@@ -353,7 +353,9 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 	}
 
 	kinds := a.settings.Get().Animals // animals that live here or visit
-	seen := map[string][]sighting{}   // candidates per group ("person", "animal")
+	cw := a.settings.Get().CatWatch
+	catCam := cw.BetterDetection && contains(cw.Cameras, e.Cam) && slices.Contains(kinds, "cat")
+	seen := map[string][]sighting{} // candidates per group ("person", "animal")
 	tried := map[string][]time.Time{}
 	triedBest := map[string]float64{}
 	done := map[string]bool{}
@@ -458,6 +460,13 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 			v := l.verifyScores(ctx, cam, best.t, best.d.Box)
 			o.log("  big model in %s: %s", fmtBox(verifyRect(best.d.Box, a.frameAspect(cam.ID))), fmtDets(v.raw))
 			need := func(label string) float64 { return needScore(label, edge, suspicious) }
+			// From above on a cat watch camera, an "animal" bigger than any cat there was a
+			// person (cat 0.74 on a man of 0.19x0.51 on the 3rd floor).
+			for _, lb := range []string{"cat", "dog"} {
+				if b := v.box[lb]; catCam && b.W*b.H > catMaxArea {
+					v.score[lb] = 0
+				}
+			}
 			person := v.score["person"]
 			animal := max(v.score["cat"], v.score["dog"])
 			o.log("closer look at %s %.2f %s (%s%s%s): person %.2f (needs %.2f), cat %.2f, dog %.2f (need %.2f)",
@@ -521,16 +530,17 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 	empty, zooms := 0, 0
 	// Cat watch cameras with "look harder": the big model looks at each part of a few
 	// frames for cats the fast one missed (small, from above, sitting still).
-	cw := a.settings.Get().CatWatch
 	hardLooks := 0
 	var hard []Object // cats seen by looking harder, one per frame
-	if !(cw.BetterDetection && contains(cw.Cameras, e.Cam) && slices.Contains(kinds, "cat")) {
+	if !catCam {
 		hardLooks = maxHardLooks
 	}
 	// hardLook looks harder for a cat at t. A cat counts when seen in two frames, once
 	// at hardClear, or once at hardSure where the picture differs from the empty scene
 	// from before the motion (a cat walking past on a sunny floor was seen once at 0.56).
 	var emptyBg []byte
+	var catsBefore []Detection
+	catsBeforeDone := false
 	hardLook := func(t time.Time) bool {
 		cs, _, _, err := a.catDets(ctx, cam, t, Rect{}, false)
 		if err != nil {
@@ -544,9 +554,14 @@ func (l *Labeler) scan(ctx context.Context, e Event, o scanOpts) (objs, rejected
 		if emptyBg == nil {
 			emptyBg = a.emptyScene(ctx, e.Cam, start.Add(-5*time.Second))
 		}
+		if !catsBeforeDone {
+			catsBeforeDone = true
+			catsBefore = a.catBefore(ctx, cam, start)
+			o.log("  cat-sized a minute and three minutes before: %s", fmtDets(catsBefore))
+		}
 		g := a.grayNear(ctx, e.Cam, t)
 		cs = slices.DeleteFunc(cs, func(d Detection) bool {
-			s := catStatic(g, emptyBg, d.Box)
+			s := catStatic(g, emptyBg, d.Box) || catWasThere(catsBefore, d.Box)
 			if s {
 				o.log("  %s %.2f %s looks just like the scene before: always there", d.Label, d.Score, fmtBox(d.Box))
 			}

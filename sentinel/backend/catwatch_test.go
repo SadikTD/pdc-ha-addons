@@ -98,6 +98,10 @@ func TestCatPatch(t *testing.T) {
 	if !catStatic(withCat, withCat, box) || catStatic(withCat, floor, box) || catStatic(nil, floor, box) {
 		t.Error("catStatic")
 	}
+	shoe := Rect{X: 0.44, Y: 0.23, W: 0.03, H: 0.05}
+	if before := []Detection{{Label: "cat", Score: 0.6, Box: Rect{X: 0.441, Y: 0.228, W: 0.03, H: 0.05}}}; !catWasThere(before, shoe) || catWasThere(before, box) {
+		t.Error("catWasThere")
+	}
 }
 
 func TestCatBlob(t *testing.T) {
