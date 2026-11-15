@@ -604,7 +604,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 				select {
 				case waBusy <- struct{}{}:
 					lastWA = time.Now()
-					id, at, n := visit.ID, last, visit.Pictures
+					id, at, n, box := visit.ID, last, visit.Pictures, hint // hint: where it was seen at last
 					name := cameraName(s, cam)
 					since := last.Sub(first)
 					extra := note
@@ -614,7 +614,7 @@ func (cw *CatWatcher) watch(ctx context.Context, cam string, f catFeed) {
 					go func() {
 						defer func() { <-waBusy }()
 						label := fmt.Sprintf("Cat outside · %s so far", fmtStay(since))
-						err := cw.app.alerts.deliver(cam, name, at, to, fmt.Sprintf("cat:%s:%d:%d", id, n, at.UnixMilli()), label, extra, 0)
+						err := cw.app.alerts.deliver(cam, name, at, to, fmt.Sprintf("cat:%s:%d:%d", id, n, at.UnixMilli()), label, extra, 0, box)
 						if err != nil {
 							cw.update(id, func(v *CatVisit) { v.Error = "WhatsApp: " + err.Error() })
 							return

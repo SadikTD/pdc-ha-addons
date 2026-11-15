@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"net/http"
 	"os"
@@ -79,4 +80,38 @@ func servePicture(w http.ResponseWriter, r *http.Request, p string) {
 	}
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeFile(w, r, p)
+}
+
+// markBoxes draws a red frame around each box (fractions of the picture) on the JPEG img,
+// a little outside it so the frame doesn't cover what it marks. On any error img is
+// returned as it was: a picture without the frame beats no picture.
+func markBoxes(img []byte, boxes []Rect) []byte {
+	src, err := jpeg.Decode(bytes.NewReader(img))
+	if err != nil || len(boxes) == 0 {
+		return img
+	}
+	b := src.Bounds()
+	out := image.NewRGBA(b)
+	draw.Draw(out, b, src, b.Min, draw.Src)
+	W, H := float64(b.Dx()), float64(b.Dy())
+	t := max(3, b.Dx()/320) // line width: 6 px on a 1920 px picture
+	red := &image.Uniform{color.RGBA{255, 40, 40, 255}}
+	for _, r := range boxes {
+		pad := 0.15
+		x0 := b.Min.X + int((r.X-r.W*pad)*W) - t
+		y0 := b.Min.Y + int((r.Y-r.H*pad)*H) - t
+		x1 := b.Min.X + int((r.X+r.W*(1+pad))*W) + t
+		y1 := b.Min.Y + int((r.Y+r.H*(1+pad))*H) + t
+		for _, side := range []image.Rectangle{
+			image.Rect(x0, y0, x1, y0+t), image.Rect(x0, y1-t, x1, y1),
+			image.Rect(x0, y0, x0+t, y1), image.Rect(x1-t, y0, x1, y1),
+		} {
+			draw.Draw(out, side.Intersect(b), red, image.Point{}, draw.Src)
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, out, &jpeg.Options{Quality: 88}); err != nil {
+		return img
+	}
+	return buf.Bytes()
 }

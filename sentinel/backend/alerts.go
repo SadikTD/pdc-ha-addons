@@ -568,11 +568,13 @@ func cameraConfig(s Settings, cam string) Camera {
 
 // deliver renders the pictures and sends them, retrying while the bridge or WhatsApp is
 // down (e.g. during a router restart) for up to `patience`.
-func (al *Alerter) deliver(cam, name string, t time.Time, to, key, label, note string, patience time.Duration) error {
+// mark: boxes to frame in red on the picture (where cat watch saw the cat).
+func (al *Alerter) deliver(cam, name string, t time.Time, to, key, label, note string, patience time.Duration, mark ...Rect) error {
 	img, err := al.picture(cam, t)
 	if err != nil {
 		return err
 	}
+	img = markBoxes(img, mark)
 	when := t.In(time.Local).Format("Mon 2 Jan · 3:04:05 PM")
 	if label == "" {
 		label = "Motion"
