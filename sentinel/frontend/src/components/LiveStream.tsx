@@ -20,6 +20,9 @@ const rememberPictures = (key: string) => {
   localStorage.setItem(PIC_KEY, JSON.stringify([...picturesOnly]));
 };
 const neverStarted = new Map<string, number>();
+// Cameras whose substream sends nothing (it can break on the camera while the main stream
+// still records): their tiles play the main stream instead, for the rest of the visit.
+const deadSub = new Set<string>();
 const hasVideoCodec = (codecs: string) => /avc1|hvc1|hev1/.test(codecs);
 
 type VideoStreamEl = HTMLElement & {
@@ -99,7 +102,8 @@ export function LiveStream({
   useEffect(() => {
     let cancelled = false;
     let stallTimer = 0;
-    const key = hq ? camera : `${camera}_sub`;
+    const main = hq || deadSub.has(camera);
+    const key = main ? camera : `${camera}_sub`;
     const pictures = picturesOnly.has(key);
     let posterWatch: MutationObserver | null = null;
     let lastPoster = 0;
@@ -161,7 +165,11 @@ export function LiveStream({
         return;
       }
       if (played && v?.paused && !lastPoster) v.play().catch(() => {});
-      if (Date.now() - lastMove > (played ? 12_000 : 20_000)) {
+      // A substream that never starts gets 8 s; then the main stream is tried.
+      if (!played && !main && !pictures && Date.now() - lastMove > 8000) {
+        deadSub.add(camera);
+        setAttempt((n) => n + 1);
+      } else if (Date.now() - lastMove > (played ? 12_000 : 20_000)) {
         // Video that never starts twice in a row: this browser can't play it; use pictures.
         if (!played && !pictures) {
           const n = (neverStarted.get(key) ?? 0) + 1;

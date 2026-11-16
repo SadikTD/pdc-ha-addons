@@ -752,51 +752,67 @@ func (a *App) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 var (
 	frameMu      sync.Mutex
 	frameFetches = map[string]chan struct{}{}
+	frameFailed  sync.Map // src -> time of the last failed grab
 )
 
 // frame returns a picture from the camera, reusing one up to maxAge old. Viewers asking
-// at the same time share one grab (each takes a second or two); if the camera can't
-// give one, the last picture is better than nothing.
+// at the same time share one grab (each takes a second or two). A camera whose stream is
+// down makes a grab hang for 12 s, so with an older picture at hand callers wait at most
+// 2 s for a new one, and a failed grab isn't retried for 30 s: each hung grab also leaves
+// a waiting viewer inside go2rtc that keeps the dead camera connection open.
 func (a *App) frame(ctx context.Context, src string, maxAge time.Duration) ([]byte, error) {
-	for {
-		if v, ok := snapCache.Load(src); ok && time.Since(v.(snapEntry).at) < maxAge {
-			return v.(snapEntry).img, nil
-		}
-		frameMu.Lock()
-		if ch, ok := frameFetches[src]; ok {
-			frameMu.Unlock()
-			select {
-			case <-ch:
-				maxAge = time.Minute // take what that grab got
-				if _, ok := snapCache.Load(src); !ok {
-					return nil, errors.New("no picture from the camera")
-				}
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-		ch := make(chan struct{})
-		frameFetches[src] = ch
-		frameMu.Unlock()
-		fctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-		img, err := a.go2rtc.Frame(fctx, src)
-		cancel()
-		if err == nil {
-			snapCache.Store(src, snapEntry{time.Now(), img})
-		}
-		frameMu.Lock()
-		delete(frameFetches, src)
-		close(ch)
-		frameMu.Unlock()
-		if err != nil {
-			if v, ok := snapCache.Load(src); ok {
-				return v.(snapEntry).img, nil
-			}
-			return nil, err
-		}
-		return img, nil
+	old, _ := snapCache.Load(src)
+	if c, ok := old.(snapEntry); ok && time.Since(c.at) < maxAge {
+		return c.img, nil
 	}
+	frameMu.Lock()
+	ch, ok := frameFetches[src]
+	if !ok {
+		if t, failed := frameFailed.Load(src); failed && time.Since(t.(time.Time)) < 30*time.Second {
+			frameMu.Unlock()
+			if old != nil {
+				return old.(snapEntry).img, nil
+			}
+			return nil, errors.New("no picture from the camera")
+		}
+		ch = make(chan struct{})
+		frameFetches[src] = ch
+		go a.grabFrame(src, ch)
+	}
+	frameMu.Unlock()
+	wait := ctx
+	if old != nil {
+		var cancel context.CancelFunc
+		wait, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+	}
+	select {
+	case <-ch:
+	case <-wait.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	if v, ok := snapCache.Load(src); ok {
+		return v.(snapEntry).img, nil
+	}
+	return nil, errors.New("no picture from the camera")
+}
+
+func (a *App) grabFrame(src string, ch chan struct{}) {
+	fctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	img, err := a.go2rtc.Frame(fctx, src)
+	cancel()
+	if err == nil {
+		snapCache.Store(src, snapEntry{time.Now(), img})
+		frameFailed.Delete(src)
+	} else {
+		frameFailed.Store(src, time.Now())
+	}
+	frameMu.Lock()
+	delete(frameFetches, src)
+	close(ch)
+	frameMu.Unlock()
 }
 
 func (a *App) handleCoverage(w http.ResponseWriter, r *http.Request) {
