@@ -370,8 +370,12 @@ func (a *App) Routes(www string) http.Handler {
 		img := a.previews.Latest(r.PathValue("id"))
 		if img == nil {
 			// No motion detection on this camera, so no frames of our own: ask it for one.
+			// Only a placeholder while the live video starts: never hold the page up for it.
+			// A slow grab carries on in the background and is ready next time.
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
 			var err error
-			if img, err = a.frame(r.Context(), r.PathValue("id")+"_sub", time.Minute); err != nil {
+			if img, err = a.frame(ctx, r.PathValue("id")+"_sub", time.Minute); err != nil {
 				writeErr(w, 404, "no frame yet")
 				return
 			}
