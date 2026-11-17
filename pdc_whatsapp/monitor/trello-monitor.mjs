@@ -296,7 +296,7 @@ export async function checkMonitorCard(card, cards, env, engine, meta = {}, { ve
 // An unreadable answer fails the check (retried), never guesses.
 async function secondOpinion(f, target, env, engine, meta) {
   if (f.verdict !== 'duplicate' && f.verdict !== 'same_story') return f;
-  const v = engine.parse(await engine.call(engine.verify(target, f.candidate), env, undefined, meta));
+  const v = engine.parse(await engine.call(engine.verify(target, f.candidate, f.verdict), env, undefined, meta));
   if (!v || typeof v.same_incident !== 'boolean' || typeof v.later_or_new_kind !== 'boolean') throw new Error('Incomplete AI second opinion; retry pending');
   meta.secondOpinions = (meta.secondOpinions || 0) + 1;
   return { ...f, verdict: !v.same_incident ? 'near_miss' : v.later_or_new_kind ? 'same_story' : 'duplicate' };

@@ -290,20 +290,29 @@ function schedBuildAuditPrompt(targetRow, candidates) {
 // different incident 8 of 11 times; telling it the timing and that writers
 // reword the same moment fixed that (10/10), with 0 of 16 look-alike traps
 // flagged and follow-ups ("host breaks silence") still similar stories.
-function schedVerifyPrompt(target, candidate) {
+// 2026-11-17: still too strict when the first check said "duplicate": a
+// rewrite leading with another part of the story ("buys Forever stamps ... greeting
+// card as a deadly weapon" vs "charged ... card covered in peanut butter") was
+// called a different incident 12/12. A first-check duplicate is now only
+// overruled on a clear sign of a different incident (veto question): 0/12 -> 4/4,
+// all traps rejected ("another", other named place, other method). Similar
+// stories keep the strict question: the veto one upgraded look-alikes there.
+function schedVerifyPrompt(target, candidate, firstVerdict) {
   const q = s => `"${String(s || '').replace(/"/g, '\\"')}"`;
   const gap = target.date && candidate.date ? (new Date(target.date) - new Date(candidate.date)) / 864e5 : NaN;
   const days = Math.round(Math.abs(gap));
   const timing = !(Math.abs(gap) <= 120) ? [] /* no or implausible dates: say nothing */ : [Math.abs(gap) < 1 ? 'Both were pitched on the same day.'
     : `The new pitch came ${days} day${days === 1 ? '' : 's'} ${gap > 0 ? 'after' : 'before'} the earlier one.`];
   return [
-    'Two news pitches from a pitch desk. Decide how they relate.',
+    firstVerdict === 'duplicate' ? 'Two news pitches from a pitch desk. A first check judged them to be the same story; check whether that holds.'
+      : 'Two news pitches from a pitch desk. Decide how they relate.',
     '',
     `EARLIER PITCH: ${q(candidate.title)}`,
     `NEW PITCH: ${q(target.title)}`,
     ...timing,
     '',
-    'Q1 same_incident: Do both describe the SAME specific incident (the same people, the same happening, the same place)? Pitches often name someone in one and only describe them in the other (an outlet vs "a right-wing outlet", an actor vs their famous role, a city vs its state); that is fine. Writers also describe the same moment in their own words: a place by its landmark or by the wider site it sits in, an action in milder or stronger words ("yelled at" vs "reacted to", "slammed" vs "criticized"), and they pick different parts of the same quote. The same named person in the same situation, with the same distinctive quote or detail, pitched around the same time, is the same incident. A later statement, apology, or response about it is still the same incident (Q2 then decides it is later news). But "another" or "a second" person, a different named person, or a different mishap or complaint means false. If you are not sure, answer false.',
+    firstVerdict === 'duplicate' ? 'Q1 same_incident: Answer true unless there is a CLEAR sign they describe different incidents. Clear signs: "another" or "a second" person, a different named person, two different named places or events (Disneyland vs Disney World, Toronto vs Vancouver, one show vs another; a landmark and the wider site it sits in are the same place), a different mishap, accusation, or complaint, or a different way it was done (mailed vs thrown, peanut butter vs a razor blade, a cashier vs an ex-friend). Pitches about one incident often lead with different parts of it (one tells how it started, one tells the charge), name someone in one and only describe them in the other, reword the action ("yelled at" vs "reacted to"), or leave out details the other has (an age, the item, the place, the motive). A detail that is only missing from one pitch is NOT a sign of a different incident; only details that contradict each other are. A later statement, apology, or response about it is still the same incident (Q2 then decides it is later news).'
+      : 'Q1 same_incident: Do both describe the SAME specific incident (the same people, the same happening, the same place)? Pitches often name someone in one and only describe them in the other (an outlet vs "a right-wing outlet", an actor vs their famous role, a city vs its state); that is fine. Writers also describe the same moment in their own words: a place by its landmark or by the wider site it sits in, an action in milder or stronger words ("yelled at" vs "reacted to", "slammed" vs "criticized"), and they pick different parts of the same quote. The same named person in the same situation, with the same distinctive quote or detail, pitched around the same time, is the same incident. A later statement, apology, or response about it is still the same incident (Q2 then decides it is later news). But "another" or "a second" person, a different named person, or a different mishap or complaint means false. If you are not sure, answer false.',
     'Q2 later_or_new_kind: If Q1 is true, does the NEW pitch report something that happened AFTER the incident in the earlier pitch (an official response, a resignation, a statement by someone involved, a ruling, an outcome), is it a tribute, reaction, or statement made separately by a different person than the one speaking in the earlier pitch (including the person at the center of the story responding to it), or is it a different kind of article (explainer, opinion, list)? A different detail, quote, or reaction from the same incident does NOT count. If Q1 is false, answer false.',
     '',
     'Return ONLY JSON: {"same_incident":true|false,"later_or_new_kind":true|false,"confidence":<0-100>}',
