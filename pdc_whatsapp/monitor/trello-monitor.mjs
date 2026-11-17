@@ -34,6 +34,12 @@ export const MONITOR_SETTINGS = {
     if (!Array.isArray(v) || !v.length || v.some(x => !ALERT_VERDICTS.includes(x))) throw new Error('pick at least one of ' + ALERT_VERDICTS.join(', '));
     return [...new Set(v)].join(',');
   } },
+  // Only these writers' new pitches send an alert ([] = every writer). Matched
+  // by name, ignoring case; a pitch with several writers counts if any is listed.
+  alert_writers: { env: 'MONITOR_ALERT_WRITERS', fallback: '[]', parse: v => { try { const a = JSON.parse(v); return Array.isArray(a) ? a.filter(x => typeof x === 'string') : []; } catch { return []; } }, store: v => {
+    if (!Array.isArray(v) || v.length > 200 || v.some(x => typeof x !== 'string' || !clean(x) || clean(x).length > 80)) throw new Error('must be a list of writer names');
+    return JSON.stringify([...new Set(v.map(x => clean(x)))]);
+  } },
   min_confidence: { env: 'MONITOR_MIN_CONFIDENCE', fallback: '0', parse: v => Number(v) || 0, store: int(0, 100) },
   quiet_hours: { env: 'MONITOR_QUIET_HOURS', fallback: '', parse: v => v, store: v => {
     if (v !== '' && !(typeof v === 'string' && v.split('-').length === 2 && v.split('-').every(p => HHMM.test(p)))) throw new Error('must be empty or HH:MM-HH:MM');
@@ -95,6 +101,13 @@ export async function saveMonitorSettings(db, changes, clock = now) {
   if (Object.keys(errors).length) return { errors };
   if (writes.length) await db.batch(writes);
   return { ok: true, changed: Object.keys(changes || {}) };
+}
+
+// Whether a new pitch's writer(s) may send an alert (the alert_writers setting).
+const writerKey = s => clean(s).toLowerCase();
+export function writerAlerts(env) {
+  const picked = new Set(effectiveSettings(env).alert_writers.map(writerKey));
+  return writer => !picked.size || String(writer || '').split(/\s*[,·]\s*/).some(w => picked.has(writerKey(w)));
 }
 
 export function alertFilter(env) {
@@ -642,6 +655,7 @@ export async function runPitchMonitor(env, engine, dependencies = {}, site = TRE
     await safeHealthCheck(env, dependencies, site);
     const pending = (await sql(db, `SELECT * FROM trello_monitor_jobs WHERE board_id=? AND check_status='pending' AND next_check<=? ORDER BY first_seen,card_id LIMIT 5`, board, started).all()).results;
     const qualifies = alertFilter(env);
+    const writerOk = writerAlerts(env);
     const discovered = new Set(eligible.filter(e => !known.has(e.id)).map(e => e.id));
     const byId = new Map(cards.map(c => [c.id, c]));
     for (const job of pending) {
@@ -674,7 +688,7 @@ export async function runPitchMonitor(env, engine, dependencies = {}, site = TRE
         const result = await checkMonitorCard(card, peers, env, engine, meta, { verify: effectiveSettings(env).second_opinion });
         meta.ms = Date.now() - t0;
         // Findings outside the alert rules are kept but not sent ('skipped').
-        const sendStatus = !result.length ? 'none' : !result.some(qualifies) ? 'skipped' : env.TRELLO_MONITOR_SEND === 'true' ? 'pending' : 'dry_run';
+        const sendStatus = !result.length ? 'none' : !result.some(qualifies) || !writerOk(card._writer) ? 'skipped' : env.TRELLO_MONITOR_SEND === 'true' ? 'pending' : 'dry_run';
         await sql(db, `UPDATE trello_monitor_jobs SET check_status='checked',result_json=?,checked_at=?,send_status=?,attempts=0,last_error=NULL WHERE board_id=? AND card_id=?`,
           JSON.stringify(result), now(), sendStatus, board, job.card_id).run();
         await sql(db, 'UPDATE trello_monitor_jobs SET check_meta=? WHERE board_id=? AND card_id=?', JSON.stringify(meta), board, job.card_id).run().catch(() => {});

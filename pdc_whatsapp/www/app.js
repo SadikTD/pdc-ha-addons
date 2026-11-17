@@ -73,7 +73,7 @@ const vIcon = o => `<svg class="vi"><use href="#v-${o}"/></svg>`;
 const chip = o => `<span class="chip v-${o}"><svg><use href="#v-${o}"/></svg>${VERDICTS[o].label}</span>`;
 const SEND = {
   none: { label: 'No alert needed', tick: 'none' },
-  skipped: { label: 'Below your alert rules', tick: 'none' },
+  skipped: { label: 'Not alerted (your alert rules)', tick: 'none' },
   dry_run: { label: 'Dry run: not sent', tick: 'none' },
   pending: { label: 'Queued to send', tick: 'wait' },
   sending: { label: 'Sending now', tick: 'wait' },
@@ -815,11 +815,20 @@ function renderActivity() {
 // ------------------------------------------------------------------ settings
 const toggle = (name, on, label = name) => `<span class="toggle"><input type="checkbox" name="${name}" ${on ? 'checked' : ''} aria-label="${esc(label)}"><span></span></span>`;
 const err = k => (S.fieldErrors[k] ? `<div class="err">${esc(S.fieldErrors[k])}</div>` : '');
+const byName = (a, b) => a.localeCompare(b);
+// Everyone who wrote a checked pitch, one name each (pitches can list several),
+// plus anyone already picked, so a saved name never drops off the list.
+function writerChoices(picked) {
+  const names = allJobs().flatMap(j => String(j.writer || '').split(/\s*[,·]\s*/)).map(w => w.trim()).filter(w => w && w !== 'Unassigned');
+  const seen = new Map();
+  for (const w of [...picked, ...names]) if (!seen.has(w.toLowerCase())) seen.set(w.toLowerCase(), w);
+  return [...seen.values()].sort(byName);
+}
 function monitorDraftFrom(m, board) {
   const v = m.settings.values;
   return {
     enabled: v.enabled, aotf_enabled: v.aotf_enabled, os_enabled: v.os_enabled, tms_enabled: v.tms_enabled, second_opinion: v.second_opinion,
-    sending: v.sending, alert_verdicts: [...v.alert_verdicts], min_confidence: v.min_confidence,
+    sending: v.sending, alert_verdicts: [...v.alert_verdicts], min_confidence: v.min_confidence, alert_writers: [...(v.alert_writers || [])].sort(byName),
     quiet_hours: v.quiet_hours, health_alerts: v.health_alerts, reference_days: v.reference_days, alert_template: v.alert_template || '',
     board_lists: board?.sites?.length ? boardPicks(v.board_lists || {}, board.sites.map(s => [s.id, s.lists])) : null,
   };
@@ -917,6 +926,8 @@ function renderSettings(force = false) {
       ${err('board_lists')}
       <div class="field col"><div class="fl">Alert me for<small>Other findings are still shown here but don't send a message</small></div>
         <div class="chips">${FLAGS.map(v => `<label class="chk"><input type="checkbox" name="verdict" value="${v}" ${d.alert_verdicts.includes(v) ? 'checked' : ''}><span class="v-${v}"><svg style="fill:currentColor;stroke:none"><use href="#v-${v}"/></svg><span style="color:var(--ink)">${VERDICTS[v].label}</span></span></label>`).join('')}</div>${err('alert_verdicts')}</div>
+      <div class="field col"><div class="fl">Only alert for these writers<small>A duplicate sends a message only when one of these writers pitched the new one. Other writers' duplicates still show here and are still flagged on the Kanban board. Tick none to alert for every writer.</small></div>
+        <div class="chips">${writerChoices(d.alert_writers).map(w => `<label class="chk"><input type="checkbox" name="alert_writer" value="${esc(w)}" ${d.alert_writers.some(x => x.toLowerCase() === w.toLowerCase()) ? 'checked' : ''}><span><i class="mark"></i>${esc(w)}</span></label>`).join('') || '<span class="muted">Writers show here once their pitches have been checked</span>'}</div>${err('alert_writers')}</div>
       <div class="field"><div class="fl">Minimum confidence<small>Only alert when the AI is at least this sure</small></div>
         <div class="range"><input type="range" name="min_confidence" min="0" max="100" step="5" value="${d.min_confidence}"><output>${d.min_confidence}%</output></div></div>
       <div class="field"><div class="fl">Quiet hours<small>Hold alerts overnight and send them when the window ends (Bangladesh time)</small></div>
@@ -1026,6 +1037,7 @@ function onSettingsInput(e) {
     if (['enabled', 'aotf_enabled', 'os_enabled', 'tms_enabled', 'sending', 'health_alerts', 'second_opinion'].includes(t.name)) d[t.name] = t.checked;
     if (t.name === 'board_list') d.board_lists = boardPicks(d.board_lists, [[t.dataset.site, $$('input[name=board_list]').filter(x => x.dataset.site === t.dataset.site).map(x => ({ key: x.value, watched: x.checked }))]]);
     if (t.name === 'verdict') d.alert_verdicts = $$('input[name=verdict]:checked').map(x => x.value);
+    if (t.name === 'alert_writer') d.alert_writers = $$('input[name=alert_writer]:checked').map(x => x.value).sort(byName);
     if (t.name === 'min_confidence') { d.min_confidence = Number(t.value); t.nextElementSibling.textContent = `${t.value}%`; }
     if (t.name === 'reference_days') { d.reference_days = Number(t.value); t.nextElementSibling.textContent = `${t.value} d`; }
     if (['quiet_on', 'q_from', 'q_to'].includes(t.name)) {
