@@ -177,6 +177,7 @@ a.vh-cmp:hover b { color: var(--v-red); }
 .vh-table td { padding: 9px 10px; border-bottom: 1px solid var(--v-line); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .vh-table th:first-child, .vh-table td:first-child { padding-left: 0; }
 .vh-table .num { text-align: right; }
+.vh-table td.lv-warn, .vh-table td.lv-bad { color: var(--lv); font-weight: 600; }
 .vh-tip { position: fixed; z-index: 10; pointer-events: none; padding: 7px 10px; background: #213243; color: #ece8e1; border: 1px solid rgba(236, 232, 225, 0.18); font-size: 12.5px; white-space: nowrap; }
 
 @media (max-width: 640px) {

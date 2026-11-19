@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -1939,46 +1939,79 @@ def _best_window(hours, width=3, worst=False):
     return {"start_hour": best[0], "end_hour": (best[0] + width) % 24, "ready_pct": 100 * best[1]} if best else None
 
 
+def _runs(rows, hit, min_s=0):
+    """Runs of minutes where hit(row) is true (gaps up to 3 minutes bridged), at least min_s long."""
+    runs, cur = [], None
+    for r in rows:
+        if hit(r):
+            if cur and r["ts"] - cur["end"] <= 180:
+                cur["end"] = r["ts"] + 60
+                cur["rows"].append(r)
+            else:
+                cur = {"start": r["ts"], "end": r["ts"] + 60, "rows": [r]}
+                runs.append(cur)
+    return [x for x in runs if x["end"] - x["start"] >= min_s]
+
+
 def valorant_history(region, days):
     now = time.time()
-    rows = db.query("SELECT ts, ping_ms, loss_pct, playable FROM valorant_min WHERE region=? AND ts > ? ORDER BY ts",
+    rows = db.query("SELECT ts, ping_ms, jitter_ms, loss_pct, playable FROM valorant_min WHERE region=? AND ts > ? ORDER BY ts",
                     (region, now - days * 86400))
     heat, hours, buckets = {}, {}, {}
+    limit = OPTS["valorant_max_ping_ms"]
+
+    def causes(rs):
+        """What made those minutes bad, most common first."""
+        n = Counter()
+        for r in rs:
+            if r["ping_ms"] is None:
+                n["No reply"] += 1
+                continue
+            n["High ping"] += r["ping_ms"] > limit
+            n["Packet loss"] += (r["loss_pct"] or 0) >= 3
+            n["Jumpy ping"] += (r["jitter_ms"] or 0) >= 20
+        return [k for k, v in n.most_common() if v]
     bucket_s = 3600 if days <= 30 else 3 * 3600
     for r in rows:
         lt = time.localtime(r["ts"])
         for d, key in ((heat, (lt.tm_wday, lt.tm_hour)), (hours, lt.tm_hour), (buckets, int(r["ts"] // bucket_s * bucket_s))):
-            c = d.setdefault(key, [0, 0, []])
+            c = d.setdefault(key, [0, 0, [], []])
             c[0] += r["playable"]
             c[1] += 1
             c[2].append(r["ping_ms"])
-    # Bad stretches: runs of not-playable minutes (gaps up to 3 minutes bridged), 10+ minutes long.
-    stretches, cur = [], None
-    for r in rows:
-        if not r["playable"]:
-            if cur and r["ts"] - cur["end"] <= 180:
-                cur["end"], cur["pings"] = r["ts"] + 60, cur["pings"] + [r["ping_ms"]]
-            else:
-                cur = {"start": r["ts"], "end": r["ts"] + 60, "pings": [r["ping_ms"]]}
-                stretches.append(cur)
-    stretches = [{"start": s["start"], "end": s["end"], "peak_ms": max((p for p in s["pings"] if p is not None), default=None),
-                  "median_ms": _median(s["pings"])} for s in stretches if s["end"] - s["start"] >= 600]
+            c[3].append(r["loss_pct"])
+    peak = lambda rs, f: max((x[f] for x in rs if x[f] is not None), default=None)
+    # Bad stretches: runs of not-playable minutes, 10+ minutes long.
+    stretches = [{"start": s["start"], "end": s["end"], "peak_ms": peak(s["rows"], "ping_ms"),
+                  "median_ms": _median(x["ping_ms"] for x in s["rows"]), "peak_loss_pct": peak(s["rows"], "loss_pct"),
+                  "why": causes(s["rows"])}
+                 for s in _runs(rows, lambda r: not r["playable"], 600)]
+    # Loss events: runs of minutes that lost any packets, whatever their length.
+    lossy = lambda r: (r["loss_pct"] or 0) > 0
+    losses = [{"start": s["start"], "end": s["end"], "lossy_minutes": len(s["rows"]),
+               "avg_loss_pct": _mean(x["loss_pct"] for x in s["rows"]), "peak_loss_pct": peak(s["rows"], "loss_pct"),
+               "median_ms": _median(x["ping_ms"] for x in s["rows"])}
+              for s in _runs(rows, lossy)]
     hour_counts = {h: (c[0], c[1]) for h, c in hours.items()}
-    compare = db.query("SELECT region, COUNT(*) AS n, AVG(playable) AS ready, AVG(ping_ms) AS avg_ms "
+    compare = db.query("SELECT region, COUNT(*) AS n, AVG(playable) AS ready, AVG(ping_ms) AS avg_ms, AVG(loss_pct) AS loss_pct "
                        "FROM valorant_min WHERE ts > ? GROUP BY region", (now - days * 86400,))
+    cell = lambda c: {"ready_pct": 100 * c[0] / c[1], "median_ms": _median(c[2]), "loss_pct": _mean(c[3]), "n": c[1]}
     return {
         "region": region, "region_name": VALORANT_REGIONS[region][0], "days": days,
         "max_ping_ms": OPTS["valorant_max_ping_ms"], "minutes": len(rows),
         "since": rows[0]["ts"] if rows else None,
         "ready_pct": 100 * sum(r["playable"] for r in rows) / len(rows) if rows else None,
         "median_ms": _median(r["ping_ms"] for r in rows),
+        "loss_pct": _mean(r["loss_pct"] for r in rows),
+        "lossy_minutes": sum(map(lossy, rows)),
         "best": _best_window(hour_counts), "worst": _best_window(hour_counts, worst=True),
-        "heat": [{"wday": w, "hour": h, "ready_pct": 100 * c[0] / c[1], "median_ms": _median(c[2]), "n": c[1]}
-                 for (w, h), c in sorted(heat.items())],
-        "hours": [{"hour": h, "ready_pct": 100 * c[0] / c[1], "median_ms": _median(c[2]), "n": c[1]}
-                  for h, c in sorted(hours.items())],
-        "series": [{"ts": t, "ready_pct": 100 * c[0] / c[1], "median_ms": _median(c[2])} for t, c in sorted(buckets.items())],
+        "heat": [{"wday": w, "hour": h, **cell(c)} for (w, h), c in sorted(heat.items())],
+        "hours": [{"hour": h, **cell(c)} for h, c in sorted(hours.items())],
+        "series": [{"ts": t, **cell(c), "peak_loss_pct": max((x for x in c[3] if x is not None), default=None)}
+                   for t, c in sorted(buckets.items())],
         "stretches": stretches[::-1][:15],
+        "loss_events": len(losses),
+        "losses": losses[::-1][:30],
         "compare": [{**r, "name": VALORANT_REGIONS[r["region"]][0], "ready_pct": 100 * r["ready"]}
                     for r in sorted(compare, key=lambda r: -r["ready"]) if r["region"] in VALORANT_REGIONS],
     }

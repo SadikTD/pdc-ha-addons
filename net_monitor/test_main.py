@@ -102,4 +102,19 @@ assert sv["mumbai"] == (bytes.fromhex("b20829dde632f111"), ["151.106.246.1"])
 assert sv["tokyo"] == (m.valorant_ids()["tokyo"], m.VALORANT_REGIONS["tokyo"][1])
 m.OPTS["valorant_ids"] = ["mumbai:00112233445566ff"]
 assert m.valorant_ids()["mumbai"] == bytes.fromhex("00112233445566ff") and len(m.valorant_ids()) == 6
+# Packet loss history: minutes that lost packets become events (gaps up to 3 minutes bridged).
+now0 = m.time.time() - 3600
+for i, loss in enumerate([0, 5.6, 0, 11.1, 0, 0, 0, 0, 0, 33.3]):
+    m.db.execute("INSERT INTO valorant_min(ts, region, ping_ms, jitter_ms, loss_pct, playable) VALUES(?, ?, ?, ?, ?, ?)",
+                 (now0 + i * 60, "manila", 40.0, 1.0, loss, int(loss < 3)))
+h = m.valorant_history("manila", 1)
+assert h["stretches"] == [] and m.valorant_history("mumbai", 1)["minutes"] == 0
+assert h["lossy_minutes"] == 3 and h["loss_events"] == 2, h
+assert h["losses"][0]["peak_loss_pct"] == 33.3 and h["losses"][1]["lossy_minutes"] == 2
+assert abs(h["loss_pct"] - 5.0) < 0.01 and h["series"][-1]["peak_loss_pct"] == 33.3
+# A bad stretch names its cause, most common first.
+for i in range(12):
+    m.db.execute("INSERT INTO valorant_min(ts, region, ping_ms, jitter_ms, loss_pct, playable) VALUES(?, ?, ?, ?, ?, ?)",
+                 (now0 + i * 60, "sydney", 150.0, 1.0, 11.1 if i < 3 else 0, 0))
+assert m.valorant_history("sydney", 1)["stretches"][0]["why"] == ["High ping", "Packet loss"]
 print("valorant history ok")

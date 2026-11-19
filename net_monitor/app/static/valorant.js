@@ -18,6 +18,8 @@
   const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
   const dShort = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
   const ms = (v) => (v == null ? "—" : Math.round(v));
+  const pct = (v) => (v == null ? "—" : v < 0.05 ? "0" : v.toFixed(1));
+  const lossLevel = (v) => (v == null ? "" : v < 1 ? "good" : v < 3 ? "warn" : "bad");
   const level = (ready) => (ready == null ? "" : ready >= 80 ? "good" : ready >= 50 ? "warn" : "bad");
   const dur = (s) => {
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.round((s % 3600) / 60);
@@ -66,7 +68,8 @@
       <dl class="valo-stats">
         <div><dt>Ready to queue</dt><dd>${Math.round(d.ready_pct)}<small>% of the time</small></dd></div>
         <div><dt>Typical ping</dt><dd>${ms(d.median_ms)}<small>ms</small></dd><span class="sub">Your limit is ${limit} ms</span></div>
-        <div><dt>Rough patches</dt><dd>${d.stretches.length}<small>${d.stretches.length === 15 ? "+" : ""}</small></dd><span class="sub">10 minutes or longer</span></div>
+        <div><dt>Bad times to play</dt><dd>${d.stretches.length}<small>${d.stretches.length === 15 ? "+" : ""}</small></dd><span class="sub">High ping or packet loss, 10+ min</span></div>
+        <div><dt>Packet loss</dt><dd>${pct(d.loss_pct)}<small>% average</small></dd><span class="sub">${d.lossy_minutes ? `${dur(d.lossy_minutes * 60)} with some loss, ${d.loss_events} time${d.loss_events === 1 ? "" : "s"}` : "No lost packets"}</span></div>
         <div><dt>Measured</dt><dd>${dur(d.minutes * 60)}</dd><span class="sub">Since ${dShort.format(d.since * 1000)}</span></div>
       </dl>
 
@@ -83,23 +86,36 @@
           <div class="valo-sec"><h2>Ping over time</h2><span>Dashed line: your ${limit} ms limit</span></div>
           <div class="valo-chart"><canvas id="vh-series" aria-label="Typical ping over time"></canvas></div>
         </div>
+        <div>
+          <div class="valo-sec"><h2>Packet loss over time</h2><span>Bars: average packet loss · line: highest in one minute</span></div>
+          <div class="valo-chart"><canvas id="vh-loss" aria-label="Packet loss over time"></canvas></div>
+        </div>
       </div>
 
       <div class="valo-sec"><h2>Servers compared</h2><span>Last ${d.days} days</span></div>
       <div class="valo-routes">${d.compare.map((c) => `<a class="vrt vh-cmp lv-${level(c.ready_pct)}" href="?region=${c.region}" data-key="${c.region}">
-        <span><b>${esc(c.name)}</b><span class="ip">${ms(c.avg_ms)} ms average</span></span>
+        <span><b>${esc(c.name)}</b><span class="ip">${ms(c.avg_ms)} ms average · ${pct(c.loss_pct)}% packet loss</span></span>
         <span class="vrt-bar"><i style="width:${c.ready_pct.toFixed(1)}%"></i></span>
         <span class="vrt-val">${Math.round(c.ready_pct)}<small>%</small></span></a>`).join("")}</div>
 
-      <div class="valo-sec"><h2>Rough patches</h2><span>When ${esc(d.region_name)} wasn't worth queuing for 10+ minutes</span></div>
+      <div class="valo-sec"><h2>Bad times to play</h2><span>When ${esc(d.region_name)} had high ping (over ${limit} ms), packet loss or jumpy ping for 10+ minutes</span></div>
       ${d.stretches.length ? `<div class="vh-table"><table>
-        <thead><tr><th>When</th><th class="num">Lasted</th><th class="num">Typical ping</th><th class="num">Worst</th></tr></thead>
+        <thead><tr><th>When</th><th class="num">Lasted</th><th>Cause</th><th class="num">Typical ping</th><th class="num">Highest ping</th><th class="num">Highest packet loss</th></tr></thead>
         <tbody>${d.stretches.map((s) => `<tr><td>${dayTime.format(s.start * 1000)} to ${timeFmt.format(s.end * 1000)}</td>
-          <td class="num">${dur(s.end - s.start)}</td><td class="num">${ms(s.median_ms)} ms</td><td class="num">${ms(s.peak_ms)} ms</td></tr>`).join("")}</tbody>
-      </table></div>` : `<p class="valo-note">None in this period. Clean.</p>`}`;
+          <td class="num">${dur(s.end - s.start)}</td><td>${esc(s.why.join(", ") || "High ping")}</td><td class="num">${ms(s.median_ms)} ms</td><td class="num">${ms(s.peak_ms)} ms</td><td class="num">${pct(s.peak_loss_pct)}%</td></tr>`).join("")}</tbody>
+      </table></div>` : `<p class="valo-note">None in this period. Clean.</p>`}
+
+      <div class="valo-sec"><h2>Packet loss</h2><span>Every time ${esc(d.region_name)} dropped packets${d.loss_events > d.losses.length ? `, latest ${d.losses.length} of ${d.loss_events}` : ""}</span></div>
+      ${d.losses.length ? `<div class="vh-table"><table>
+        <thead><tr><th>When</th><th class="num">Lasted</th><th class="num">Minutes losing packets</th><th class="num">Average packet loss</th><th class="num">Highest in one minute</th><th class="num">Typical ping</th></tr></thead>
+        <tbody>${d.losses.map((s) => `<tr><td>${dayTime.format(s.start * 1000)}${s.end - s.start > 60 ? ` to ${timeFmt.format(s.end * 1000)}` : ""}</td>
+          <td class="num">${dur(s.end - s.start)}</td><td class="num">${s.lossy_minutes}</td><td class="num">${pct(s.avg_loss_pct)}%</td>
+          <td class="num lv-${lossLevel(s.peak_loss_pct)}">${pct(s.peak_loss_pct)}%</td><td class="num">${ms(s.median_ms)} ms</td></tr>`).join("")}</tbody>
+      </table></div>` : `<p class="valo-note">No packets lost in this period.</p>`}`;
     renderHeat(d);
     renderHours(d);
     renderSeries(d);
+    renderLoss(d);
   }
 
   function renderHeat(d) {
@@ -110,7 +126,7 @@
       html += `<span class="vh-dy">${day}</span>`;
       for (let h = 0; h < 24; h++) {
         const c = cells.get(`${w}-${h}`);
-        const tip = c ? `${day} ${hour(h)}: ready ${Math.round(c.ready_pct)}%, typical ping ${ms(c.median_ms)} ms` : `${day} ${hour(h)}: no data yet`;
+        const tip = c ? `${day} ${hour(h)}: ready ${Math.round(c.ready_pct)}%, typical ping ${ms(c.median_ms)} ms, ${pct(c.loss_pct)}% packet loss` : `${day} ${hour(h)}: no data yet`;
         html += `<span class="vh-c ${c ? `lv-${level(c.ready_pct)}` : ""}${`${w}-${h}` === nowKey ? " now" : ""}" data-tip="${esc(tip)}"></span>`;
       }
     });
@@ -147,7 +163,7 @@
     opts.scales.y.ticks.callback = (v) => `${v}%`;
     opts.plugins.tooltip.callbacks = {
       title: (items) => hour(rows[items[0].dataIndex].hour),
-      label: (item) => { const r = rows[item.dataIndex]; return r.n ? ` Ready ${Math.round(r.ready_pct)}%, typical ${ms(r.median_ms)} ms` : " No data yet"; },
+      label: (item) => { const r = rows[item.dataIndex]; return r.n ? ` Ready ${Math.round(r.ready_pct)}%, typical ${ms(r.median_ms)} ms, ${pct(r.loss_pct)}% packet loss` : " No data yet"; },
     };
     mount("hours", $("vh-hours"), { type: "bar", options: opts, data: {
       labels: rows.map((r) => (r.hour % 3 === 0 ? hour(r.hour) : "")),
@@ -171,6 +187,26 @@
         borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 4, tension: 0.2 },
       { data: [{ x: lo, y: d.max_ping_ms }, { x: hi, y: d.max_ping_ms }], borderColor: vcss("--v-red"), borderWidth: 1.2, borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 0 },
     ] } });
+  }
+
+  function renderLoss(d) {
+    const opts = chartBase(), lo = Date.now() - d.days * 86400e3, hi = Date.now();
+    Object.assign(opts.scales.x, { type: "linear", min: lo, max: hi });
+    opts.scales.x.ticks.callback = (v) => dShort.format(v);
+    opts.scales.y.suggestedMax = 5;
+    opts.scales.y.ticks.callback = (v) => `${v}%`;
+    opts.plugins.tooltip.callbacks = {
+      title: (items) => dayTime.format(items[0].parsed.x),
+      label: (item) => { const p = d.series[item.dataIndex]; return item.datasetIndex ? ` Highest in one minute: ${pct(p.peak_loss_pct)}% packet loss` : ` Average packet loss ${pct(p.loss_pct)}%`; },
+    };
+    const bar = d.days <= 30 ? 3600e3 : 3 * 3600e3;
+    mount("loss", $("vh-loss"), { type: "bar", data: { datasets: [
+      { type: "bar", data: d.series.map((p) => ({ x: p.ts * 1000 + bar / 2, y: p.loss_pct ?? 0 })),
+        backgroundColor: d.series.map((p) => { const l = lossLevel(p.loss_pct); return l ? vcss(`--v-${l}`) + { good: "66", warn: "b3", bad: "e6" }[l] : vcss("--v-line"); }),
+        barThickness: "flex", borderRadius: 0 },
+      { type: "line", data: d.series.map((p) => ({ x: p.ts * 1000 + bar / 2, y: p.peak_loss_pct ?? 0 })), borderColor: vcss("--v-red"),
+        borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 3, tension: 0.2 },
+    ] }, options: opts });
   }
 
   // Heatmap tooltip, for mouse and keyboard-less touch alike.

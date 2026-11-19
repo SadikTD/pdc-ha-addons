@@ -124,8 +124,8 @@ that's when the in-game ping jumps while the dashboard stays fine.) It's ready t
 `valorant_max_ping_ms`, packet loss under 3% and jitter under 20 ms.
 
 **History** shows, per server, the best and worst times of day to play, a
-week-at-a-glance heatmap, ping over time, all servers compared, and every rough patch
-of 10 minutes or more. One reading per server per minute is kept for 90 days.
+week-at-a-glance heatmap, ping and packet loss over time, all servers compared, every
+rough patch of 10 minutes or more, and every time the server dropped packets. One reading per server per minute is kept for 90 days.
 
 Each server's ping starts with an ID Riot hands the game, and Riot reissues those IDs
 every few days. The **Valorant Store Tracker** add-on, which holds your Riot login, reads
