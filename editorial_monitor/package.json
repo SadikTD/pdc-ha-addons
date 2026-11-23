@@ -1,0 +1,8 @@
+{
+  "name": "editorial-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": { "test": "node --test --disable-warning=ExperimentalWarning test/*.test.mjs" }
+}

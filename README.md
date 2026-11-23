@@ -19,6 +19,17 @@ See [sentinel/DOCS.md](sentinel/DOCS.md). UI source is in `sentinel/frontend` (`
 
 A dedicated Android app for Sentinel: live cameras, the scrubbing timeline, events and clips, at home or from anywhere, connecting **directly** to Sentinel (QUIC with NAT hole punching, end-to-end encrypted, no port forwarding or VPN). Per-user logins managed under Sentinel → Settings → Sentinel app. Download the APK from the [releases](https://github.com/SadikTD/pdc-ha-addons/releases/latest); see [sentinel-app/README.md](sentinel-app/README.md).
 
+## Editorial Monitor
+
+Checks every pitch and every published article on the Gamurs board (WGTC, TMS, OS, AOTF) against the seven syndication guides, word for word, and WhatsApps what needs you through the PDC WhatsApp Bridge.
+
+- Pitches: a WhatsApp message if a card has no sources 3 minutes after it was made; once sources are on the card, headline rules, post date, freshness and an AI review against the pitching and headline guides.
+- Articles: waits for scheduled posts to go live, then checks shape, length, paragraphs, H2s, style, interlinks, the embed (and cursing in it), the featured image (missing, size, Imager, title, credit, what's in the picture), SEO title, meta description, tags and categories, plus an AI review of tone, value and hedging.
+- Gemini 3.5 Flash-Lite first, MiMo V2.6 Flash as backup; AI findings are kept only if their evidence is really in the article.
+- Sidebar dashboard: a "Needs you" desk, every check with each issue next to the guide's own words, writers' most common issues, the guides themselves, messages, activity and settings.
+
+See [editorial_monitor/DOCS.md](editorial_monitor/DOCS.md). Tests: `cd editorial_monitor && npm test`.
+
 ## PDC WhatsApp Bridge
 
 Runs the Pitch Duplicate Checker's Trello monitor and sends its alerts through a self-hosted [Baileys](https://github.com/WhiskeySockets/Baileys) WhatsApp session.

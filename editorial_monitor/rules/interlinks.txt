@@ -1,0 +1,43 @@
+Interlinking guide
+An interlink is a link to another article on our own site. Most sites need at least two in every article. Attack of the Fanboy needs one.
+The words you link must say where the reader is going
+The linked words (the “anchor text”) should be 3 to 5 words, 7 at most. They must describe what happens in the other story, not just who it’s about.
+Bad anchor
+	Good anchor
+	Why
+	Donald Trump
+	Donald Trump punched a man
+	A name alone could link to any of 500 articles.
+	seems happy
+	blowup between teammates
+	The reader can’t guess where “seems happy” goes.
+	Outback Steakhouse
+	Outback Steakhouse viral infection
+	Now they know what they’ll read.
+	How to fit the link in: start at step 1
+Work down the ladder and stop at the first step that works.
+1. Use words that are already there. Your article might already say “a customer threw a drink at a cashier.” If we have a story about that, link it.
+2. Change a few words. Reword part of an existing sentence so it describes the other story, while still saying the same thing about yours.
+3. Add a short clause between commas. Example: “The crowd gave Messi a minute-long ovation, a tribute that has become common at his matches, before the drone show began.”
+4. Last resort: one new sentence. It must be about your story, never about the linked one.
+No U-turns
+A U-turn is when the article suddenly talks about something else just to fit a link. Readers notice, and it looks like an ad.
+U-turn (wrong)
+	Stays on the story (right)
+	“The crowd gave Messi a minute-long ovation. Jerseys are a big part of sports culture, and a former Nike designer has explained why modern jerseys are boring.”
+	“The crowd gave Messi a minute-long ovation. Despite some saying modern sports jerseys are boring, jerseys are a big part of sports culture.”
+	“Chef Ramirez called a volunteer to the stage. Ramirez has also been asked about rumors of his restaurant closing.”
+	(Nothing in the story is about the restaurant. Pick a different link.)
+	Other link rules
+* Never use the same link twice in one article.
+* Never put two links in the same paragraph.
+* Never tie a light story to a crime, abuse or Epstein story. It makes the person look guilty by association.
+* Don’t write “similar to” or “along with” unless the stories really are connected.
+* No “click here” or “read more.”
+How to find a link with and without the tool
+1. Read your finished article and pick a phrase that sounds like it could be its own story (“a passenger refused to switch seats”).
+2. Google site: plus your site’s address and those words, like site:themarysue.com passenger refused to switch seats.
+3. Exact match? Link it.
+4. Close but not exact? Change a few of your words so they describe the story you found, as long as it’s still true about yours.
+5. Nothing fits? Try a different phrase. Never force it.
+The Interlinker tool does that for you. But always check that the story really matches.

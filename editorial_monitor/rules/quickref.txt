@@ -1,0 +1,54 @@
+Syndication quick reference
+The rules that matter most, on one page. For the full detail, open the guide for that topic.
+The 10 golden rules
+1. Sentence case for everything. Headlines, H2s, SEO titles. No title case, ever.
+2. News only, and fresh. News stories must be under 24 hours old. Social stories (TikTok, Reddit, X) can be up to a week old.
+3. The answer goes first. Tell the reader what happened right away.
+4. Don’t just retell the video. The reader already watched it. Add something new. Only retelling the video breaks our rules and our partners’ rules.
+5. Charged is not convicted. Until a court says guilty, it’s “allegedly.”
+6. Religion, LGBTQ+ and medical topics are never the main topic. They can only come up in rare cases, with high-level approval.
+7. The headline must match the video. If it didn’t happen on screen, it doesn’t go in the title.
+8. Interlinks (two on all sites, one on Attack), one embed, one Imager image. Every article.
+9. SEO title only. Leave every other SEO box as is.
+10. Read your old notes. A note on one article is a note for all of them.
+Before you submit
+Headline
+* Sentence case, under 150 characters
+* Says only what the source shows, with anything unproven hedged
+* No dashes, no colon joining two titles, single quotes, no bad words
+* No words like rape or molestation or something like that in headings, must be ‘SA’
+* Quotes only come from the source, not from the comments
+Article
+* Three paragraphs, then the H2, then a paragraph, then the embed
+* Source named and linked in the first three paragraphs
+* The answer is at the top (inverted pyramid)
+* Adds something beyond the video, with no section of comments
+* H2 is a sentence-case comment, no period
+* Every paragraph is 2+ sentences and 5 lines or fewer
+* 400+ words
+* Neutral tone: no jokes, sarcasm or opinions
+* Charged people are “accused” or “allegedly” the whole way through
+* Quotes checked word for word, and only from the source, never from the comments
+* Curse words censored (f*** or ****)
+* Movie and show titles italicized, outlets not italicized
+Links and embed
+* Enough interlinks (two, or one on Attack), 3 to 5 words each, describing the story they link to
+* No U-turns, no repeated links, no two links in one paragraph
+* Embed is in place
+Image
+* From the Imager, 1280 x 720, matches the headline
+* Title describes the picture; credit reads “Image by ___, license”
+* Nothing on the MSN or NewsBreak banned list (no guns, no gore)
+WordPress
+* SEO title filled in, and nothing else in the SEO section
+* Existing tags only, names not common nouns
+* Primary category is News
+You
+* You checked your old revision notes
+The guides
+* Pitching guide: finding stories, topics to avoid, the board and working with editors
+* Headline guide: writing headlines that get clicks without lying
+* Article format guide: the article shape, the inverted pyramid, H2s, paragraphs and style
+* Content and accuracy guide: adding value, comments, tone, charged vs. convicted, and fact-checking
+* Interlinking guide: anchor text, fitting links in, and finding them
+* Embeds, images and WordPress guide: embeds (including Facebook), images, SEO title, tags and categories

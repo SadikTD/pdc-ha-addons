@@ -1,0 +1,86 @@
+Embeds, images and WordPress guide
+How to add embeds, pick and credit images, and set up your post in WordPress.
+Embeds
+An embed puts the actual video or post inside your article. Almost every article needs one. There’s almost never a good reason to skip it.
+* Where: right after the first paragraph under the H2.
+* How (TikTok, X, YouTube): paste the plain link on its own line. WordPress turns it into the embed for you.
+* If your source is a video or tweet, you must embed it as well as link it.
+* Facebook works differently. See the steps below.
+* Never embed a celebrity’s Instagram.
+* Cursing in the post? Use a censored screenshot instead and link the embed somewhere near it.
+Facebook embeds
+A plain Facebook link won’t turn into an embed. You need to copy Facebook’s embed code and paste it into a Custom HTML block.
+Step 1. On the Facebook post, click the three dots (⋯) in the top right corner, then click Embed.
+ Facebook post menu with Embed highlighted 
+
+Step 2. Leave Include full post ticked and click Copy Code.
+ Facebook Embed Post window with the Copy Code button 
+
+Step 3. In WordPress, click the + where the embed should go, type “html”, and pick Custom HTML.
+ WordPress block search showing Custom HTML 
+
+Step 4. Paste the code into the block, then click Preview to check the post shows up properly.
+ Custom HTML block with the Facebook code pasted and the Preview tab 
+
+Images
+Images get us in trouble faster than anything else. MSN and Yahoo reject bad ones, and copyright is a big deal. Check your images every single time.
+Use the Imager. It’s NOT OPTIONAL.
+The Imager finds images we’re allowed to use (Creative Commons). Still double-check anything that feels off.
+1. Search the Imager and pick your image (side-by-side or triple-panel images work well).
+2. Size: 1280 x 720.
+3. Open the credits log and copy the credit.
+4. Title: describe what’s happening in the picture. No date, no place.
+   * Wrong: “Samsung” or “LeBron James in Los Angeles on January 22”
+   * Right: “LeBron James controls the ball against Kobe Sanders”
+5. Credit: “Image by ___” plus the license, like: Image by TheBetterDay, CC BY-ND 2.0.
+Image rules
+* The image must match the headline. If the headline names a person, show that person.
+* Never use an Instagram image as the featured image.
+* Never use a mugshot or bodycam image unless the person has been officially charged. Suspects, people who were only detained, and arrests without charges get no photo (see the Content and accuracy guide).
+* Avoid stills from animated movies as the featured image; they don’t perform.
+* US government images (like the White House gallery) are free to use.
+Never use these (MSN and NewsBreak rules)
+Not allowed
+	Platform
+	Violence, blood, gore, dead bodies, body bags
+	MSN
+	Anything that identifies a crime victim (unless they went public themselves)
+	MSN
+	Nudity or suggestive poses
+	MSN
+	Animals in distress, “medical voyeurism”
+	MSN
+	Images that glorify terrorists or extremists
+	MSN
+	Any visible gun. No exceptions, even for real news.
+	NewsBreak
+	Images you can’t use
+Competitors’ images, fan art, multi-panel images made by other sites, magazine-exclusive photoshoots, and anything from Google, Flickr or social media where you can’t confirm the license.
+Someone complains about an image of them? Don’t reply. Tell your editor right away.
+WordPress setup
+The writing is done. Now set up the post the same way every time.
+SEO: fill in the SEO title, nothing else
+Leave every other SEO box empty: no meta description, no focus keyphrase. We don’t write for Google; we write for our syndication partners. Editors are tired of correcting this one.
+The SEO title is separate from your headline. It’s a short sentence someone would actually type into Google. Work it out like this:
+1. What’s going on? Georgia police are following a Black woman through a park.
+2. Can I make it a question? Yes: “Why did Georgia police follow a Black woman through a park?”
+3. If not, use “explained”: “Georgia police following a Black woman through a park explained.”
+Bad SEO title
+	Why
+	Who is Jake Lang, and why did he target a Seattle convention?
+	Two questions in one. Nobody types that.
+	What did a former male prostitute do to his elite art dealer ex-husband vacationing in Brazil?
+	Far too many details stacked up.
+	Anything with the site name, a pipe ( | ) or a colon
+	Not allowed.
+	The SEO title is sentence case too.
+Tags
+* Always add tags. An article with no tags isn’t finished.
+* Tags are names of things: people, places, brands, states, teams (Donald Trump, Texas, Starbucks, TikTok).
+* Never common nouns (“customer,” “wedding,” “video”).
+* Only use tags that already exist. Never create a new one. If a tag looks wrong or duplicated, tell your editor.
+Categories
+* The primary category is always News.
+* Add the topic as the second category (for example, True Crime, Politics). 
+Internal tags
+If you’re writing a pitch that Grace (the Assigning Editor) gave out on the board, select grace-pitch in the internal tags.
