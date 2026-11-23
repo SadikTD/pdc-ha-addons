@@ -1,0 +1,64 @@
+Article format guide
+Every article is built the same way. Copy this shape every time.
+The shape
+1. Paragraph (what happened, who, where)
+2. Paragraph
+3. Paragraph (name and link your source somewhere in these first three)
+4. H2
+5. Paragraph
+6. Embed (the TikTok, tweet or video)
+7. Paragraph
+8. Paragraph, and so on
+The inverted pyramid
+Put the most important facts at the top and the smaller details lower down. Picture an upside-down triangle: the wide top holds what the reader must know, and it gets less important as you go down.
+ The inverted pyramid 
+
+The inverted pyramid
+* Don’t bury the answer. If the headline makes the reader ask “what happened?”, the first paragraphs answer it.
+* Never hold information back to keep people reading. That’s old SEO thinking. Give them the answer.
+H2s
+An H2 is a comment, not a title. Test: would you text it to a friend?
+Not like this
+	Like this
+	The incident
+	The employee clearly had enough
+	Vince’s reaction
+	Vince is clearly mad at this person
+	Internet Reacts To Viral Video
+	People online weren’t buying her story
+	The H2 is sentence case with no period at the end, and it’s never a fan tweet or comment.
+Paragraphs
+* Two sentences minimum. Only the very last paragraph can be one sentence.
+* Five lines maximum (lines, not sentences). If it’s longer, split it.
+* Don’t start a sentence with “And,” “But” or “Moreover.”
+* “However” can start a sentence, but never a paragraph.
+Length and small rules
+* 400 words minimum. If the story is short, add real context (backstory, laws, the people involved). Never add fluff.
+* No dates unless the story needs one. A reader tomorrow will think a dated article is old.
+* Past tense for things that already happened.
+* American units: miles, feet, pounds, Fahrenheit, US dollars.
+* Numbers: write out one to nine; use digits from 10 up.
+Style details
+Small things that editors fix again and again. Get them right the first time.
+Rule
+	Right
+	Wrong
+	Italicize titles of movies, shows, books and songs
+	The Odyssey
+	The Odyssey
+	Don’t italicize news outlets or publications
+	The New York Times, CNN
+	The New York Times
+	Name your source once, then move on
+	“According to CNN…” once
+	“According to CNN” in every paragraph
+	Link only the source’s name
+	“As reported by BroBible…” (only the word BroBible is the link)
+	the whole sentence linked
+	TikTok users: @ the first time only
+	@janedoe posted… then janedoe said…
+	@janedoe every time
+	Censor curse words (first letter + stars, or all stars)
+	f*** or ****
+	f-word, fck, f—
+	A tweet with cursing in it? Don’t embed it. Take a screenshot, cover the bad word, and use the screenshot instead with a link to the Tweet in the piece.

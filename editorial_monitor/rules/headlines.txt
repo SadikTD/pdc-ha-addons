@@ -1,0 +1,31 @@
+Headline guide
+The headline’s job is to make someone click, without lying to them. Before you write one, ask: “Why should I care?” If you can’t answer, the reader can’t either.
+The hard rules
+* Sentence case. Capitalize it like a normal sentence.
+* Under 150 characters. The board won’t let you go over.
+* Only what’s in the source. Watch the video yourself. If it doesn’t show it, the headline can’t say it, even if another outlet did.
+* Single quotes for quotes: ‘Pure evil’, not “Pure evil”.
+* No hyphens or dashes. They get cut off in partner feeds.
+* No colon joining two headlines into one.
+* No bad words. If it was a bad word when you were nine, it’s out. That includes drug names. For sexual assault, write “SA,” never “rape” or “molestation.”
+* No commenter quotes in the headline. A quote in the title must come from someone in the story.
+Make it clickable
+* Give them something to picture: a face, a quote, a moment. Not a label or a summary.
+* Use names. With politicians, a name usually beats a mystery.
+* Hide the right part. Keep the exciting detail in, and hide how it ends.
+* Cut every word that doesn’t change the meaning. Don’t repeat a name.
+* Use active voice.
+Hedge anything unproven. For rumors, use “reportedly” or “suggests,” never “confirmed” or “revealed.”
+Before and after
+Weak
+	Strong
+	Why
+	Missouri GOP candidate is charged with plotting to plant cocaine in his opponent’s purse
+	A recording caught Missouri GOP candidate Thomas Ross responding ‘if you can pull it off … pull it off’ about planting drugs on his rival
+	Uses the real quote and the name.
+	The FBI’s AI can recognize your car and analyze your voice. Here’s what else it can do
+	A North Carolina man threatened to shoot up a Black preschool online. The FBI’s AI flagged it in minutes, and he’s now in federal prison
+	A real case beats a vague explainer.
+	…and you’ll never believe what happened
+	(give the actual shocking detail)
+	Crutch endings promise drama but tell the reader nothing.
