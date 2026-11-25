@@ -12,7 +12,7 @@ import { useStatus } from "../lib/status";
 import { useToast } from "../lib/toast";
 import { useTimeline } from "../lib/useTimeline";
 import { usePreviewFrame, prefetchPreviews } from "../lib/usePreview";
-import { linkRate } from "../lib/vodCache";
+import { linkRate, canHevc, HEVC_HELP } from "../lib/vodCache";
 import { api, type SentinelEvent, type Span } from "../lib/api";
 import { DAY, HOUR, fmtDay, fmtTimeSec } from "../lib/format";
 import { fitGrid } from "../lib/layout";
@@ -265,6 +265,15 @@ export function PlaybackPage() {
     },
     [master],
   );
+  // H.265 cameras in a browser that can't decode H.265 (Edge without the extension).
+  const noVideo = useCallback(
+    (id: string) => !canHevc && status?.cameras.find((c) => c.id === id)?.recorder?.stream?.video_codec === "hevc",
+    [status?.cameras],
+  );
+  useEffect(() => {
+    if (cams.some((c) => noVideo(c.id))) toast(HEVC_HELP, "info");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cams.some((c) => noVideo(c.id))]);
   const kbps = useRef<Record<string, number>>({});
   kbps.current = Object.fromEntries((status?.cameras ?? []).map((c) => [c.id, c.recorder?.bitrate_kbps || 1500]));
   const onStarved = useCallback(
@@ -335,8 +344,9 @@ export function PlaybackPage() {
       muted={audio !== c.id}
       scrubT={scrubT}
       focused={focus === c.id}
-      lite={lite.includes(c.id) || fast(c.id)}
+      lite={lite.includes(c.id) || fast(c.id) || noVideo(c.id)}
       fastForward={fast(c.id)}
+      noVideo={noVideo(c.id)}
       waits={waits}
       onStarved={onStarved}
       onVideo={onVideo}
@@ -355,7 +365,7 @@ export function PlaybackPage() {
   // that has footage now.
   lead.current =
     focus ??
-    cams.find((c) => !lite.includes(c.id) && lanes.find((l) => l.id === c.id)?.spans.some((sp) => t >= sp.s && t < sp.e))?.id ??
+    cams.find((c) => !lite.includes(c.id) && !noVideo(c.id) && lanes.find((l) => l.id === c.id)?.spans.some((sp) => t >= sp.s && t < sp.e))?.id ??
     null;
 
   return (
@@ -486,6 +496,7 @@ const Tile = memo(function Tile({
   focused,
   lite,
   fastForward,
+  noVideo,
   waits,
   onStarved,
   onVideo,
@@ -506,6 +517,7 @@ const Tile = memo(function Tile({
   focused: boolean;
   lite: boolean;
   fastForward: boolean;
+  noVideo: boolean;
   waits: Map<string, (t: number) => boolean>;
   onStarved: (id: string) => void;
   onVideo: (id: string) => void;
@@ -517,7 +529,7 @@ const Tile = memo(function Tile({
   const picture = (
     <>
       {lite ? (
-        <PictureTile id={id} master={master} small={small} onVideo={onVideo} fastForward={fastForward} />
+        <PictureTile id={id} master={master} small={small} onVideo={onVideo} fastForward={fastForward} noVideo={noVideo} />
       ) : (
         <SyncPlayer camera={id} master={master} playing={playing} rate={rate} epoch={epoch} muted={muted} onStarved={onStarved} waits={waits} />
       )}
@@ -525,7 +537,7 @@ const Tile = memo(function Tile({
         {scrubT !== null && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.3 } }} transition={{ duration: 0.1 }} className="absolute inset-0 bg-black">
             {preview?.url ? (
-              <img src={preview.url} className="h-full w-full object-contain" draggable={false} />
+              <img src={preview.url} className="h-full w-full object-fill" draggable={false} />
             ) : (
               <div className="flex h-full items-center justify-center text-xs text-slate-500">{preview ? <ImageOff className="size-5" /> : <Loader2 className="size-5 animate-spin" />}</div>
             )}
@@ -563,7 +575,7 @@ const Tile = memo(function Tile({
 });
 
 // A camera shown as pictures (its preview frames, following the clock) instead of video.
-function PictureTile({ id, master, small, onVideo, fastForward }: { id: string; master: () => number; small: boolean; onVideo: (id: string) => void; fastForward: boolean }) {
+function PictureTile({ id, master, small, onVideo, fastForward, noVideo }: { id: string; master: () => number; small: boolean; onVideo: (id: string) => void; fastForward: boolean; noVideo: boolean }) {
   const [t, setT] = useState(() => Math.floor(master() / 2000) * 2000);
   useEffect(() => {
     const i = window.setInterval(() => setT(Math.floor(master() / 2000) * 2000), 500);
@@ -578,7 +590,7 @@ function PictureTile({ id, master, small, onVideo, fastForward }: { id: string; 
   return (
     <div className="absolute inset-0 bg-black">
       {shown ? (
-        <img src={shown} className="h-full w-full object-contain" draggable={false} />
+        <img src={shown} className="h-full w-full object-fill" draggable={false} />
       ) : (
         <div className="flex h-full items-center justify-center text-slate-500">{frame ? <ImageOff className="size-5" /> : <Loader2 className="size-5 animate-spin" />}</div>
       )}
@@ -587,7 +599,12 @@ function PictureTile({ id, master, small, onVideo, fastForward }: { id: string; 
           <ImageIcon className="size-3.5" /> Fast-forward preview
         </span>
       )}
-      {!small && !fastForward && (
+      {!small && noVideo && (
+        <span title={HEVC_HELP} className="absolute bottom-2 left-2 right-2 rounded-lg bg-black/70 px-2.5 py-1 text-[11px] text-white/80 backdrop-blur">
+          Pictures only — {HEVC_HELP}
+        </span>
+      )}
+      {!small && !fastForward && !noVideo && (
         <button
           onClick={(e) => {
             e.stopPropagation();

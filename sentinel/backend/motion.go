@@ -137,9 +137,11 @@ func (m *MotionDetector) run(ctx context.Context) {
 		args = append(args, inputArgs(url)...)
 		args = append(args, "-threads", "1")
 		// One decode feeds both motion (tiny grey frames on stdout) and timeline previews
-		// (small JPEGs on fd 3).
+		// (small JPEGs on fd 3). Previews are 16:9 like the recordings: the Hikvision
+		// substreams are 640x480, a squeezed 16:9 picture.
+		// ponytail: assumes every camera's main stream is 16:9 (all are today).
 		args = append(args, "-i", url, "-an", "-sn",
-			"-filter_complex", "[0:v]fps=3,split=2[a][b];[a]scale=128:72:flags=area,format=gray[m];[b]fps=1/2,scale=320:-2[p]",
+			"-filter_complex", "[0:v]fps=3,split=2[a][b];[a]scale=128:72:flags=area,format=gray[m];[b]fps=1/2,scale=320:180[p]",
 			"-map", "[m]", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
 			"-map", "[p]", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "7", "pipe:3")
 		pr, pw := io.Pipe()

@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import Hls from "hls.js";
 import { Loader2 } from "lucide-react";
-import { cachingLoader, vodWindow } from "../lib/vodCache";
+import { cachingLoader, vodWindow, isCodecError, HEVC_HELP } from "../lib/vodCache";
 
 // Plays recordings as HLS. The playlist carries EXT-X-PROGRAM-DATE-TIME for every file, which
 // we parse ourselves to map player position <-> wall-clock time (gaps are skipped over).
@@ -79,6 +79,7 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
   const [loading, setLoading] = useState(true);
   // Something went wrong and the player is starting over by itself.
   const [trouble, setTrouble] = useState(false);
+  const [codec, setCodec] = useState(false);
   const retries = useRef(0);
   const stallTimer = useRef(0);
   const cb = useRef({ onTime, onPlaying, onCaughtUp, onNoFootage, onMutedByBrowser });
@@ -116,6 +117,7 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
     const v = video.current;
     if (!v) return;
     const seq = ++loadSeq.current;
+    setCodec(false);
     pending.current?.abort();
     pending.current = null;
     setLoading(true);
@@ -169,6 +171,13 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
           h.destroy();
           if (hls.current === h) hls.current = null;
           place([]);
+          return;
+        }
+        // The browser can't decode this camera's video: retrying won't change that.
+        if (isCodecError(data.details)) {
+          h.destroy();
+          if (hls.current === h) hls.current = null;
+          setCodec(true);
           return;
         }
         if (!data.fatal) return;
@@ -314,7 +323,8 @@ export const VodPlayer = forwardRef<VodHandle, Props>(function VodPlayer({ camer
         onSeeked={() => setLoading(false)}
         onEnded={onEnded}
       />
-      {loading && (
+      {codec && <div className="absolute inset-0 flex items-center justify-center bg-ink-950/90 p-6 text-center text-sm text-slate-300">{HEVC_HELP}</div>}
+      {loading && !codec && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <Loader2 className="size-8 animate-spin text-white/70" />
           {trouble && <span className="absolute bottom-4 rounded-full bg-black/60 px-3 py-1 text-xs text-white/70">Connection trouble — retrying…</span>}

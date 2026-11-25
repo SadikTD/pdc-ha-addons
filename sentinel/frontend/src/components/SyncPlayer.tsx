@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { Loader2, VideoOff } from "lucide-react";
-import { cachingLoader, vodWindow } from "../lib/vodCache";
+import { cachingLoader, vodWindow, isCodecError, HEVC_HELP } from "../lib/vodCache";
 import { releaseVideo } from "./VodPlayer";
 
 // One camera's recording, kept in step with a shared clock. Every quarter second the
@@ -75,7 +75,7 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
   const started = useRef(true);
   const seq = useRef(0);
   const pending = useRef<AbortController | null>(null);
-  const [state, setState] = useState<"loading" | "playing" | "gap" | "error">("loading");
+  const [state, setState] = useState<"loading" | "playing" | "gap" | "error" | "codec">("loading");
   const live = useRef({ playing, rate, onStarved });
   live.current = { playing, rate, onStarved };
   // Time spent waiting for data while the clock runs, slowly forgotten while playing: a
@@ -137,6 +137,15 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
           h.destroy();
           if (hls.current === h) hls.current = null;
           return gap();
+        }
+        // The browser can't decode this camera's video: retrying won't change that.
+        if (isCodecError(data.details)) {
+          h.destroy();
+          if (hls.current === h) hls.current = null;
+          busy.current = true;
+          shown.current = "codec";
+          setState("codec");
+          return;
         }
         if (!data.fatal) return;
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) return h.recoverMediaError();
@@ -286,6 +295,9 @@ export const SyncPlayer = memo(function SyncPlayer({ camera, master, playing, ra
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <Loader2 className="size-7 animate-spin text-white/60" />
         </div>
+      )}
+      {state === "codec" && (
+        <div className="absolute inset-0 flex items-center justify-center bg-ink-950/80 p-4 text-center text-xs text-slate-300">{HEVC_HELP}</div>
       )}
       {(state === "gap" || state === "error") && (
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/80 text-sm text-slate-400">

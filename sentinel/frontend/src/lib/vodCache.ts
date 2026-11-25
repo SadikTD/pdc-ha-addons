@@ -265,3 +265,12 @@ export function warmMoments(moments: { camera: string; t: number }[]) {
     }
   });
 }
+
+// Most cameras record H.265. Chrome, Safari and the app decode it; Edge only with
+// Microsoft's "HEVC Video Extensions" installed. Without it the player gets the footage
+// at once but can't show it, so say so instead of loading forever.
+const MS: typeof MediaSource | undefined = (window as unknown as { ManagedMediaSource?: typeof MediaSource }).ManagedMediaSource ?? window.MediaSource;
+export const canHevc = !!MS?.isTypeSupported?.('video/mp4; codecs="hvc1.1.6.L120.90"');
+export const HEVC_HELP = "This browser can't play H.265 video. In Edge install \"HEVC Video Extensions\" from the Microsoft Store (then restart Edge), or use Chrome.";
+export const isCodecError = (details: string) =>
+  details === Hls.ErrorDetails.BUFFER_ADD_CODEC_ERROR || details === Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR || details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR;
